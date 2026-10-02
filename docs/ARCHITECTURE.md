@@ -23,13 +23,15 @@ flows and the reasoning behind the shape. Decision records are in [AMR.md](AMR.m
  |      xproxy       |  |      xgate      |  |    xrelay    |  |    xot     |
  |  http tcp udp     |  |   ssh telnet    |  | smtp ftp     |  | modbus s7  |
  |  forward dns      |  |   vnc rdp       |  | ldap amqp    |  | iec104 mms |
- |                   |  |                 |  | postgres     |  | bacnet     |
+ |  kkdcp            |  |                 |  | postgres     |  | bacnet     |
  |                   |  |                 |  | mysql tds    |  | opcua coap |
- |                   |  |                 |  | redis        |  |            |
+ |                   |  |                 |  | redis kkdcp  |  |            |
  |                   |  |                 |  | mqtt syslog  |  | mqtt syslog|
  |                   |  |                 |  | snmp tftp    |  | snmp tftp  |
  |                   |  |                 |  | dhcp dhcp6   |  | dhcp dhcp6 |
  |                   |  |                 |  | ntp ntske    |  | ntp ntske  |
+ |                   |  |                 |  | radius tacacs|  | radius     |
+ |                   |  |                 |  |              |  | tacacs     |
  |  user: xproxy     |  |  user: xgate    |  | user: xrelay |  | user: xot  |
  +--+-------------+--+  +--+-----------+--+  +--+--------+--+  +--+------+--+
     |             |        |           |        |        |        |      |
@@ -103,13 +105,15 @@ authority a cluster peer has by design.
 ## 2. Repository layout
 
 ```
-cmd/xproxy          edge daemon: links the http, forward, tcp and dns kinds
+cmd/xproxy          edge daemon: links the http, forward, tcp, udp and dns
+                    kinds, and kkdcp, which it shares with xrelay
 cmd/xgate           gate daemon: links the ssh, telnet, vnc and rdp kinds
 cmd/xrelay          relay daemon: links the smtp, ftp, ldap, postgres, mysql,
-                    tds, redis and amqp kinds, and the eight it shares with
-                    xot: mqtt, syslog, snmp, tftp, dhcp, dhcp6, ntp, ntske
+                    tds, redis and amqp kinds, kkdcp, and the ten it shares
+                    with xot: mqtt, syslog, snmp, tftp, dhcp, dhcp6, ntp,
+                    ntske, radius, tacacs
 cmd/xot             OT daemon: links the modbus, iec104, s7, mms, bacnet,
-                    opcua and coap kinds, and the same shared eight. Nothing
+                    opcua and coap kinds, and the same shared ten. Nothing
                     from the relay's own list is in this binary
 cmd/xproxyctl       management CLI and TUI (talks to any of them)
 cmd/xproxy-admin    web GUI process (users, sessions, embedded assets)
@@ -246,7 +250,7 @@ internal/cache      in-memory response cache (LRU, byte bound, Vary)
 internal/dns        DNS wire codec, cache, block list, resolver, servers
 internal/smtp internal/mqtt internal/ftp internal/syslog internal/sftp
 internal/modbus internal/iec104 internal/snmp internal/ntp internal/tftp
-internal/dhcp
+internal/dhcp internal/radius internal/tacacs internal/kerberos
 internal/ldap       the LDAP wire format, shared: the client the identity
                     filter authenticates with and the message reader the
                     relay kind decides about, over one BER codec
@@ -308,7 +312,8 @@ cmd/xot    ─┘             metrics, ingress, listener, paths, version}
          kinds/{smtp,ftp,ldap,postgres,mysql,tds,redis,amqp} |
          kinds/{modbus,iec104,s7,mms,bacnet,opcua,coap}
        and, in both of the last two, the shared
-         kinds/{mqtt,syslog,snmp,tftp,dhcp,dhcp6,ntp,ntske}
+         kinds/{mqtt,syslog,snmp,tftp,dhcp,dhcp6,ntp,ntske,radius,tacacs}
+       and, in the edge and the relay, kinds/kkdcp
 
 kinds/<k> -> {proxy, config, listener, and that protocol's wire package}
 proxy     -> {listener, router, upstream, limits, netutil, tlsconf, logging,
@@ -346,7 +351,8 @@ So the binary is split by who is on the other end of the socket:
 | `xgate` | people | `ssh`, `telnet`, `vnc`, `rdp` |
 | `xrelay` | services | `smtp`, `ftp`, `ldap`, `postgres`, `mysql`, `tds`, `redis`, `amqp` |
 | `xot` | the plant | `modbus`, `iec104`, `s7`, `mms`, `bacnet`, `opcua`, `coap` |
-| `xrelay` **and** `xot` | both estates run them | `mqtt`, `syslog`, `snmp`, `tftp`, `dhcp`, `dhcp6`, `ntp`, `ntske` |
+| `xrelay` **and** `xot` | both estates run them | `mqtt`, `syslog`, `snmp`, `tftp`, `dhcp`, `dhcp6`, `ntp`, `ntske`, `radius`, `tacacs` |
+| `xproxy` **and** `xrelay` | a KDC proxy stands at either edge | `kkdcp` |
 
 One repository, one module, one version and one configuration format;
 four programs, four users, four systemd units, four sandboxes, four
@@ -1181,9 +1187,9 @@ templating, an operation policy and YARA over what is written. Sessions
 are recorded to asciicast files (`internal/asciicast`) bounded by count
 and size, and a second factor can be demanded after the key.
 
-### The relay: SMTP, MQTT, FTP, syslog, Modbus, IEC 104, SNMP, LDAP, PostgreSQL, MySQL, NTP and NTS
+### The relay: SMTP, MQTT, FTP, syslog, Modbus, IEC 104, SNMP, LDAP, PostgreSQL, MySQL, NTP and NTS, RADIUS, TACACS+ and Kerberos
 
-The relay kinds (`internal/kinds/{smtp,mqtt,ftp,syslog,modbus,iec104,snmp,ldap,tftp,dhcp,postgres,mysql,tds,redis,ntp,ntske}`)
+The relay kinds (`internal/kinds/{smtp,mqtt,ftp,syslog,modbus,iec104,snmp,ldap,tftp,dhcp,postgres,mysql,tds,redis,ntp,ntske,radius,tacacs,kkdcp}`)
 share a shape:
 each parses its protocol rather than forwarding bytes, holds a policy in
 that protocol's own terms, and bounds what a peer may say.
@@ -1251,8 +1257,9 @@ that protocol's own terms, and bounds what a peer may say.
   would have to carry a digest this relay has no key to compute. It
   serves datagrams and streams at once, like `syslog`, because the
   protocol is used both ways.
-- `ldap` is the one relay kind whose traffic is *identity*, and it is the
-  only one that shares its wire package with a filter: `internal/ldap` holds
+- `ldap` is the first of the four relay kinds whose traffic is *identity* --
+  `radius`, `tacacs` and `kkdcp` below are the others -- and the only one that
+  shares its wire package with a filter: `internal/ldap` holds
   both the client the `ldap_auth` filter authenticates with and the message
   reader this kind decides about, over one BER codec, because two readings
   of the same bytes in one binary is the class of bug a relay exists to
@@ -1557,10 +1564,58 @@ that protocol's own terms, and bounds what a peer may say.
   the ClientHello, refuses what is not an NTS client, bounds the
   handshakes in flight, and leaves the cryptography to the servers whose
   keys it is.
+- `radius` is the authentication protocol the network equipment speaks, and the
+  one kind whose **integrity check is optional in the protocol itself**. An
+  Access-Request's Request Authenticator is a nonce and the reply's is an MD5
+  digest over the shared secret -- CVE-2024-3596 is a collision on exactly that
+  digest -- while RFC 3579's Message-Authenticator is keyed, so
+  `require_message_authenticator` is the setting that makes the protocol's own
+  mitigation mandatory, and the relay verifies both before it decides anything.
+  Which authenticator a code carries is part of the check: Accounting-Request
+  and the RFC 5176 codes carry a *computed* digest rather than a nonce, so
+  verifying them against the sixteen octets they arrived with would accept
+  anything. It is a datagram kind with an **eight-bit identifier**, so the
+  relay renumbers per client -- which forces it to re-sign both authenticators,
+  which it can only do because it holds a secret for each leg. Its policy reads
+  codes, the authentication method (EAP where a packet carries one, PAP or CHAP
+  otherwise), the EAP method both as offered and as Naked toward, attributes,
+  and the privilege level a *reply* grants, which is a policy about the answer
+  as `dhcp`'s is. Dynamic authorization -- RFC 5176 CoA and Disconnect, an
+  unsolicited request that logs a user out -- is counted and refused rather
+  than carried.
+- `tacacs` is the device administration protocol, and the kind where **policy
+  is per command**: TACACS+ asks the server about each command line a person
+  types on a switch, which is a finer thing to decide about than any other
+  protocol here offers. The command arrives split across a `cmd` argument and
+  its `cmd-arg` arguments, and a rule is written as the one line an engineer
+  would recognise. RFC 8907's own section 10.3 says the body obfuscation is
+  "not cryptographically sound" -- it is an MD5 pad keyed by the secret and the
+  sequence number -- so the kind implements it for what it is, refuses a body
+  sent in the clear, and offers TLS toward the upstream where the equipment has
+  it. A `FOLLOW` reply, which hands the client another server's address, port
+  and key, is never carried, in shadow mode either. And its commands are mapped
+  into engineering classes -- configuration, restart, firmware, file transfer --
+  so a change to a switch lands in the same work-order ledger as a change to a
+  PLC.
+- `kkdcp` is Kerberos over HTTPS (MS-KKDCP), the one kind whose transport is
+  HTTP and whose payload is DER, and the one shared by the edge and the relay
+  rather than by the two plant-facing daemons: a KDC proxy stands where the
+  clients are. The envelope carries a length-prefixed KDC message, which this
+  proxy parses before the KDC ever sees it (`internal/kerberos`, with a DER
+  reader that refuses non-minimal lengths and bounded nesting). Three attacks
+  are what the policy is for: a TGS-REQ offering RC4 and nothing else is
+  Kerberoasting, an AS-REP to a request that carried no pre-authentication is
+  AS-REP roasting -- which is visible on the *reply*, so this kind decides
+  about answers as well -- and a burst of pre-authentication failures from one
+  address is a password spray. Constrained delegation is two halves,
+  S4U2Self and S4U2Proxy, each separately allowed. Its refusal is a minted
+  KRB-ERROR rather than an HTTP status, because a Kerberos client reads
+  Kerberos errors.
 
 All of them reach the engine through `Host` alone, which is why the
-protocol code links into one daemon -- or, for the seven both estates
-run, into the two relays and nowhere else.
+protocol code links into one daemon -- or, for the ten both estates run,
+into the two relays and nowhere else, and for `kkdcp` into the edge and
+the relay.
 
 What each of these protocols *is* -- its framing, the security it was designed
 with, and what this project decided to read of it -- is one page per kind under

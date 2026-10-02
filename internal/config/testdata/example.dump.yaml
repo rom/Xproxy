@@ -46,6 +46,9 @@ server:
           s7: null
           opcua: null
           mms: null
+          radius: null
+          tacacs: null
+          kkdcp: null
           policy: null
         - name: public
           address: :443
@@ -115,6 +118,9 @@ server:
           s7: null
           opcua: null
           mms: null
+          radius: null
+          tacacs: null
+          kkdcp: null
           policy: null
     limits:
         max_header_bytes: 65536

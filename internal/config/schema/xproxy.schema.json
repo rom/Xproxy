@@ -6149,6 +6149,283 @@
       },
       "additionalProperties": false
     },
+    "KKDCPListener": {
+      "description": "KKDCPListener is the settings of a kind: kkdcp listener: a Kerberos KDC proxy, serving HTTPS and speaking TCP to the KDC behind it. MS-KKDCP exists because Kerberos is UDP and TCP on port 88 and the places people work from are not on the network the KDC is on. A client POSTs its AS-REQ to an HTTPS endpoint wrapped in a KDC-PROXY-MESSAGE, the proxy unwraps it, speaks TCP to the KDC, and wraps the answer back. Windows has shipped the client since 2012; MIT and Heimdal both speak it. It is the only listener in this file that translates one protocol into another, and it is one of the few places an estate's Kerberos traffic can be read at all. Six things shape these settings. **It must be HTTPS.** MS-KKDCP says so and the reason is not ceremonial: the inner message carries a pre-authentication blob derived from the user's password. A listener with no certificate is refused at load rather than warned about. **A proxy with no realm policy is an open relay.** The envelope names a target domain and the inner message names a realm, and a proxy that forwards whatever it is handed will relay Kerberos for realms that are not the estate's, to KDCs that are not the estate's, from the estate's own address. `realms` is therefore required, and a request whose two realms disagree is refused rather than resolved -- the outer one is what the proxy routes by and the inner one is what the KDC decides on, and a proxy that picked one would be deciding about a different realm than the KDC. **Everything a policy needs is in the clear.** Which realm, which client principal, which service principal, which encryption types the client will take, which pre-authentication it brought: those are the fields the KDC itself decides on, and they are readable because they have to be. What is encrypted is the ticket and the reply's enc-part, and no setting here needs those. **The attacks are visible in those fields, and three of them have knobs of their own.** A TGS-REQ offering nothing but RC4 is Kerberoasting (`etypes`, and the finding it raises). An AS-REP that arrives for a request which carried no pre-authentication means the account is pre-authentication exempt, and the reply is an offline password-cracking target: that is AS-REP roasting, and `refuse_preauth_exempt` refuses the *reply*, because the question cannot be answered on the request -- a bare AS-REQ is the normal first message of every exchange. A TGS-REQ carrying PA-FOR-USER is S4U2Self and one carrying the constrained-delegation option with an additional ticket is S4U2Proxy, and both default off. **A run of failures is the other half.** An internet-facing KDC proxy is where password spraying lands, and the signal is a burst of KDC_ERR_PREAUTH_FAILED: `max_preauth_failures` counts them per client over a window and refuses past the bound, which is a control the KDC's own lockout policy cannot give -- it locks the account, which is what the sprayer wanted. **Password changes are a separate decision.** RFC 3244's kpasswd is a different service on a different port, reached through the same proxy by a client that sends an AP-REQ for kadmin/changepw. It is off by default and has its own upstream pool when it is on.",
+      "type": "object",
+      "properties": {
+        "alert_on_deny": {
+          "description": "AlertOnDeny writes a security event for every refusal. Default true.",
+          "type": "boolean"
+        },
+        "allow_anonymous": {
+          "description": "AllowAnonymous carries a request asking for the anonymous principal (RFC 8062). Default false: it is authentication with no identity in it, and a proxy carrying it is carrying something nobody can attribute afterwards.",
+          "type": "boolean"
+        },
+        "allow_forwarded_tickets": {
+          "description": "AllowForwardedTickets carries a request with the `forwarded` or `proxy` option set, meaning the ticket is being presented from somewhere other than where it was issued to. Default true: it is how ordinary delegation works, and an estate that does none can turn it off.",
+          "type": "boolean"
+        },
+        "allow_password_change": {
+          "description": "AllowPasswordChange carries RFC 3244's kpasswd exchange, which arrives as an AP-REQ for kadmin/changepw. Default false.",
+          "type": "boolean"
+        },
+        "allow_s4u2proxy": {
+          "description": "AllowS4U2Proxy carries a TGS-REQ with the constrained-delegation option and an additional ticket. Default false.",
+          "type": "boolean"
+        },
+        "allow_s4u2self": {
+          "description": "AllowS4U2Self carries a TGS-REQ with PA-FOR-USER: a service asking for a ticket to itself as another user. Default false.",
+          "type": "boolean"
+        },
+        "anomaly": {
+          "description": "Anomaly watches what each client has been doing and reports when it stops. See Anomaly.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Anomaly"
+            }
+          ]
+        },
+        "default_action": {
+          "description": "DefaultAction is deny (the default) or allow.",
+          "type": "string"
+        },
+        "deny_etypes": {
+          "description": "DenyETypes are types no rule can allow.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_options": {
+          "description": "DenyOptions are KDC options a request may not set, by the standard's names: renew, validate, enc-tkt-in-skey, disable-transited-check, postdated. Empty denies none beyond what the settings above cover.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_principals": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_response": {
+          "description": "DenyResponse is how a refused request is answered: error (the default: a KRB-ERROR with KDC_ERR_POLICY and a text saying which proxy refused it, wrapped in the envelope the client expects) or status, which answers the HTTP request with 403 and no Kerberos message at all. error is the better default, because silence on this protocol is a client that falls back to port 88 -- where there is no relay -- and then reports a network fault to whoever is sitting at it. The KRB-ERROR says no in the only language the client reads.",
+          "type": "string"
+        },
+        "deny_services": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "etypes": {
+          "description": "ETypes is the allow list of encryption types a request may ask for, by name (aes256-cts-hmac-sha1-96, rc4-hmac) or number. Empty allows any that is not weak.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "failure_window": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "log_requests": {
+          "description": "LogRequests writes an access line per request: the realm, the client principal, the service, the encryption types and how it was decided. Default true.",
+          "type": "boolean"
+        },
+        "max_distinct_services": {
+          "description": "MaxDistinctServices and ServiceWindow bound how many different service principals one client may ask for inside a window. Zero disables the check; the default window is 5m. This is the behavioural half of the Kerberoasting control and it catches what the encryption-type rules cannot: a client that asks for forty service tickets in a minute is enumerating the realm's service accounts, whatever encryption it asked for them in.",
+          "type": "integer"
+        },
+        "max_message_bytes": {
+          "description": "MaxMessageBytes bounds one inner Kerberos message, each way. Default 131072. The bound has to be generous: a Windows TGS-REP for a user in several hundred groups carries a PAC of tens of kilobytes, and a listener that refused one would refuse exactly the users whose group membership matters most. The HTTP body is bounded separately and more tightly.",
+          "type": "integer"
+        },
+        "max_preauth_failures": {
+          "description": "MaxPreauthFailures and FailureWindow bound how many KDC_ERR_PREAUTH_FAILED replies one client may collect inside a window before this listener refuses it. Zero disables the check; the default window is 5m.",
+          "type": "integer"
+        },
+        "max_requests_per_connection": {
+          "description": "MaxRequestsPerConnection bounds the POSTs one keep-alive connection may make. Default 64.",
+          "type": "integer"
+        },
+        "max_sessions": {
+          "description": "MaxSessions and MaxSessionsPerClient bound the connections held. Zero is unbounded.",
+          "type": "integer"
+        },
+        "max_sessions_per_client": {
+          "type": "integer"
+        },
+        "max_ticket_lifetime": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "message_types": {
+          "description": "MessageTypes is the allow list of request types: as-req, tgs-req, ap-req. Empty allows the two KDC requests, and ap-req only when AllowPasswordChange is set.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "monitor_only": {
+          "description": "MonitorOnly evaluates the policy and enforces nothing, which is the same as policy: {mode: shadow}. The bounds, the realm check and the malformed-message refusals still apply: a message this listener cannot read is not a policy question, and neither is a realm it does not serve -- forwarding that would make it the open relay the realm list exists to prevent.",
+          "type": "boolean"
+        },
+        "password_upstream": {
+          "description": "PasswordUpstream is the pool kpasswd requests go to, which is a different service on a different port. Required when AllowPasswordChange is set.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Path is the HTTP path this listener serves. Default /KdcProxy, which is what Windows asks for.",
+          "type": "string"
+        },
+        "principals": {
+          "description": "Principals and DenyPrincipals are the client principals this listener carries, by name without the realm. Empty allows any. DenyPrincipals is where the names nobody should be authenticating as from outside go: the built-in administrator, the service accounts, krbtgt itself.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "rate_burst": {
+          "type": "integer"
+        },
+        "rate_limit": {
+          "description": "RateLimit and RateBurst bound requests per second per client address. Zero disables them. They are worth setting here more than on most kinds: this is a listener whose whole purpose is to be reachable from the open internet, and every request it carries costs the KDC a cryptographic operation.",
+          "type": "integer"
+        },
+        "realms": {
+          "description": "Realms is the allow list of realms this proxy will carry, matched case-insensitively against both the envelope's target domain and the inner message's realm. Required: a KDC proxy with no realm policy is an open relay.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "refuse_preauth_exempt": {
+          "description": "RefusePreauthExempt refuses an AS-REP answering a request that carried no pre-authentication. Default true. This is the AS-REP roasting control, and it is on the reply because that is the only place the question can be answered: a bare AS-REQ is the first message of every normal exchange, and the KDC answers one with KDC_ERR_PREAUTH_REQUIRED. A KDC that answers it with a *ticket* has told you the account does not require pre-authentication, and the reply's encrypted part is crackable offline against that account's password.",
+          "type": "boolean"
+        },
+        "refuse_weak_etypes": {
+          "description": "RefuseWeakETypes refuses a request offering nothing but weak encryption types: single DES, triple DES and RC4-HMAC. Default true. \"Nothing but\" rather than \"any\", and the distinction is the whole setting. A Windows client in a mixed estate lists aes256, aes128 and rc4 in that order and the KDC takes the first it can, so a request *mentioning* RC4 is ordinary traffic and refusing it would break the estate. A request offering RC4 alone has asked for a ticket it can crack offline, and on a TGS-REQ for a service principal that is Kerberoasting with no ambiguity left in it.",
+          "type": "boolean"
+        },
+        "refuse_weak_ticket_etypes": {
+          "description": "RefuseWeakTicketETypes refuses a *reply* whose ticket was encrypted in a weak type. Default false. It is the same finding seen from the other end, and it is off by default because by then the ticket exists: the KDC has minted it, and refusing the reply denies the client a ticket the KDC was willing to issue. On a listener where the requests are already bounded this is the belt to that braces, and it is the counter worth reading either way.",
+          "type": "boolean"
+        },
+        "require_target_domain": {
+          "description": "RequireTargetDomain refuses an envelope that names no target domain. Default false. The field is optional in MS-KKDCP and MIT's client omits it, so requiring it refuses real traffic. What this listener does without it is decide on the inner realm alone, which is the realm the KDC will use.",
+          "type": "boolean"
+        },
+        "rules": {
+          "description": "Rules decide each request, in order, first match wins. A request that matches no rule takes DefaultAction.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/KKDCPRule"
+          }
+        },
+        "service_window": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "services": {
+          "description": "Services and DenyServices are the service principals a TGS-REQ may ask for, matched on the whole name or on the service class alone -- so `MSSQLSvc` covers every SQL Server instance and `host/dc1.corp.example` covers one host. Empty allows any.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "upstream": {
+          "description": "Upstream is the pool of KDCs this listener relays to, reached over TCP. Required.",
+          "type": "string"
+        },
+        "upstream_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "KKDCPRule": {
+      "description": "KKDCPRule decides one request.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "Action is allow, deny or observe.",
+          "type": "string"
+        },
+        "clients": {
+          "description": "Clients are the networks the client is in. On an internet-facing listener this will usually be empty; on one in front of a branch office it is the strongest line in the rule.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_services": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "etypes": {
+          "description": "ETypes are the encryption types this rule covers.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_ticket_lifetime": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "message_types": {
+          "description": "MessageTypes are the request types this rule covers.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "description": "Name identifies the rule in the logs and the counters. Required.",
+          "type": "string"
+        },
+        "principals": {
+          "description": "Principals are the client principals this rule covers.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "realms": {
+          "description": "Realms are the realms this rule covers.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "schedule": {
+          "description": "Schedule limits the rule to a time window.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/ModbusSchedule"
+            }
+          ]
+        },
+        "services": {
+          "description": "Services and DenyServices are the service principals this rule covers, and the ones it does not cover even when Services would match.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "LDAPListener": {
       "description": "LDAPListener is a kind: ldap listener: an LDAP and LDAPS relay in front of a directory.",
       "type": "object",
@@ -6634,6 +6911,14 @@
             "dns"
           ]
         },
+        "kkdcp": {
+          "description": "KKDCP configures a kind: kkdcp listener.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/KKDCPListener"
+            }
+          ]
+        },
         "ldap": {
           "description": "LDAP configures a kind: ldap listener.",
           "allOf": [
@@ -6733,6 +7018,14 @@
           "description": "ProxyProtocol enables PROXY protocol v1/v2 parsing on accepted connections. Only enable behind a trusted L4 balancer.",
           "type": "boolean"
         },
+        "radius": {
+          "description": "RADIUS configures a kind: radius listener.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/RADIUSListener"
+            }
+          ]
+        },
         "rdp": {
           "description": "RDP configures a kind: rdp listener.",
           "allOf": [
@@ -6790,6 +7083,14 @@
           "allOf": [
             {
               "$ref": "#/$defs/SyslogListener"
+            }
+          ]
+        },
+        "tacacs": {
+          "description": "TACACS configures a kind: tacacs listener.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/TACACSListener"
             }
           ]
         },
@@ -10834,6 +11135,298 @@
       },
       "additionalProperties": false
     },
+    "RADIUSListener": {
+      "description": "RADIUSListener is the settings of a kind: radius listener: a relay in front of a RADIUS server, on UDP 1812 for authentication and 1813 for accounting. RADIUS is what authenticates most of the network equipment in most estates: every 802.1X switch port, every VPN concentrator, every wireless controller, and on the routers that do not run TACACS+ the administrative logins too. It is also a protocol whose entire cryptography is one shared secret and MD5. Five things shape these settings. **The secret is how this listener earns its keep.** Without it a relay can read the code, the identifier and the attributes -- all of that is in the clear -- but it cannot tell a packet the server will accept from one it will not. With it, every arriving packet's integrity is checked before anything is forwarded, which is the difference between a relay that filters and a relay that filters *and* authenticates. So `secret_file` is not optional in any deployment worth the name, and the validator says so. **require_message_authenticator defaults ON, and that is the Blast-RADIUS answer.** The Response Authenticator is MD5 over the reply with the request's authenticator spliced in and the secret appended; a chosen-prefix MD5 collision turns an Access-Reject into an Access-Accept on the wire, which is CVE-2024-3596. RFC 3579's Message-Authenticator is a keyed HMAC over the whole packet and the attack does not reach it. Every current server and NAS can send it; requiring it is the published mitigation, and this is the knob. **The dynamic authorization codes are a different protocol wearing the same clothes.** RFC 5176's Disconnect-Request ends a live user's session and CoA-Request re-authorises it -- a new VLAN, a new filter, a new privilege level -- from one UDP datagram on port 3799. They run from a server towards the equipment, which is the opposite direction to everything else here, and `allow_dynamic_authorization` defaults false because a relay in the ordinary position has no business carrying them. **The reply leg is where privilege is granted.** A client asks for access by logging in; the *server's* answer is what says this login gets the enable prompt -- Service-Type = Administrative-User, or `shell:priv-lvl=15` in a Cisco av-pair. So `max_privilege_level` and `deny_administrative_replies` are checks on what comes back, and they are the ones that bound what a compromised or spoofed RADIUS server can hand out across a whole estate of routers. **A password is read, never recovered.** User-Password is XORed with MD5(secret || authenticator), so anybody with the secret -- including this relay -- can recover it. This listener does not: it reports that a request carried one and how long it was. `refuse_plaintext_passwords` defaults OFF for the reason the same knob on the mms listener does: PAP is most of the installed base, refusing it removes the only authentication a lot of equipment has, and counting it does not.",
+      "type": "object",
+      "properties": {
+        "accounting_upstream": {
+          "description": "AccountingUpstream is the pool Accounting-Request goes to, where an estate separates them. Empty sends accounting to Upstream.",
+          "type": "string"
+        },
+        "alert_on_deny": {
+          "description": "AlertOnDeny writes a security event for every refusal. Default true.",
+          "type": "boolean"
+        },
+        "allow_clients": {
+          "description": "AllowClients and DenyClients are the networks a client may send from. Deny is evaluated first. On a protocol where the client is a switch or a concentrator with a fixed address, this is a strong control and the cheapest line in the section.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_dynamic_authorization": {
+          "description": "AllowDynamicAuthorization carries RFC 5176's Disconnect-Request and CoA-Request. Default false.",
+          "type": "boolean"
+        },
+        "anomaly": {
+          "description": "Anomaly watches what each client has been doing and reports when it stops. The block is the same on every kind; see Anomaly.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Anomaly"
+            }
+          ]
+        },
+        "auth_types": {
+          "description": "AuthTypes is the allow list of credential shapes: pap, chap, mschap, eap, none. Empty allows any.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "codes": {
+          "description": "Codes is the allow list of packet codes, by name (access-request, accounting-request, status-server) or number. Empty allows the four a client sends: authentication, accounting, and the two status queries.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "default_action": {
+          "description": "DefaultAction is deny (the default) or allow.",
+          "type": "string"
+        },
+        "deny_administrative_replies": {
+          "description": "DenyAdministrativeReplies refuses a reply carrying Service-Type = Administrative-User. Default false. It is the standard attribute's spelling of the same grant MaxPrivilegeLevel bounds, and an estate that does its device administration over TACACS+ has no reason to carry it over RADIUS at all.",
+          "type": "boolean"
+        },
+        "deny_attributes": {
+          "description": "DenyAttributes are attribute types a request may not carry, by name or number.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_clients": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_codes": {
+          "description": "DenyCodes are codes no rule can allow.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_eap_types": {
+          "description": "DenyEAPTypes are methods no rule can allow.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_realms": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_reply_attributes": {
+          "description": "DenyReplyAttributes are attribute types a reply may not carry. The interesting ones are the tunnel attributes: Tunnel-Private-Group-Id is the VLAN a RADIUS answer puts a port in, and a listener whose job is authentication rather than authorisation can refuse to carry one.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_response": {
+          "description": "DenyResponse is how a refused request is answered: reject (the default: an Access-Reject, which the client reports as a failed login and stops on) or drop (nothing, which the client retries and then reads as a dead server). An Accounting-Request has nothing useful to refuse with -- an Accounting-Response means \"recorded\" -- so a refused one is always dropped.",
+          "type": "string"
+        },
+        "deny_users": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "eap_types": {
+          "description": "EAPTypes is the allow list of EAP methods, by name (peap, tls, ttls, mschapv2) or number. Empty allows any that is not weak.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "log_requests": {
+          "description": "LogRequests writes an access line per request: who, from where, which method and how it was decided. Default true.",
+          "type": "boolean"
+        },
+        "max_attributes": {
+          "description": "MaxAttributes bounds the attributes one packet may carry. Default 255, which is more than any real packet and far short of what a 4096-octet packet of empty attributes holds.",
+          "type": "integer"
+        },
+        "max_message_bytes": {
+          "description": "MaxMessageBytes bounds one datagram. Default 4096, which is RFC 2865's own maximum.",
+          "type": "integer"
+        },
+        "max_pending": {
+          "description": "MaxPending bounds the requests this listener is waiting for answers to. Default 256, which is the width of the identifier space.",
+          "type": "integer"
+        },
+        "max_privilege_level": {
+          "description": "MaxPrivilegeLevel bounds the administrative privilege a reply may grant, 0 to 15. Default 15, which is no bound. Read on the reply leg, where the grant is: a Cisco av-pair saying `shell:priv-lvl=15`. Setting it to 1 on the listener that fronts the switches means no RADIUS answer crossing this relay can hand out enable, whatever the server says.",
+          "type": "integer"
+        },
+        "monitor_only": {
+          "description": "MonitorOnly evaluates the policy and enforces nothing, which is the same as policy: {mode: shadow} on the listener. The bounds, the integrity checks and the malformed-packet refusals still apply: a packet whose digest does not verify is not a policy question.",
+          "type": "boolean"
+        },
+        "nas_identifiers": {
+          "description": "NASIdentifiers is the allow list of NAS-Identifier values. Empty allows any. It is a claim rather than a fact -- the client chose it -- so it is worth pairing with AllowClients rather than trusting on its own.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "rate_burst": {
+          "type": "integer"
+        },
+        "rate_limit": {
+          "description": "RateLimit and RateBurst bound requests per second per client address. Zero disables them.",
+          "type": "integer"
+        },
+        "realms": {
+          "description": "Realms and DenyRealms are the realms a user name may carry, in any of the three forms the installed base uses: user@realm, realm\\user and realm/user. Empty allows any. A realm is routing: a RADIUS server proxies by it, so a name carrying one asks this estate's server to forward the credential somewhere else. An allow list here is a say in that.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "refuse_plaintext_passwords": {
+          "description": "RefusePlaintextPasswords refuses an Access-Request carrying User-Password. Default false; see this type's own documentation for why.",
+          "type": "boolean"
+        },
+        "refuse_proxy_state": {
+          "description": "RefuseProxyState refuses a request carrying Proxy-State. Default false. The attribute exists so a proxy can recognise its own forwarded requests, and a client sending one is either a proxy or something putting state into a server's reply path.",
+          "type": "boolean"
+        },
+        "refuse_weak_eap": {
+          "description": "RefuseWeakEAP refuses the methods that provide no server authentication and no key material, and are crackable offline from one observed exchange: EAP-MD5, LEAP, and the bare one-time password and token card types. Default true. It is the one EAP line worth writing. EAP-MD5 cannot be used with WPA-Enterprise at all and RFC 3748 §5.4 says itself that it offers no protection against a dictionary attack; a client that Naks its way down to it has downgraded the estate's authentication to a hash somebody can crack on a laptop.",
+          "type": "boolean"
+        },
+        "request_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "require_message_authenticator": {
+          "description": "RequireMessageAuthenticator refuses a packet with no valid RFC 3579 Message-Authenticator. Default true. This is the Blast-RADIUS (CVE-2024-3596) mitigation and it is on by default deliberately. Turning it off on a listener that has a secret means accepting replies whose only integrity check is a collidable MD5 -- which is the attack. An estate with equipment too old to send one should name that equipment in a rule rather than turning this off for everything.",
+          "type": "boolean"
+        },
+        "require_realm": {
+          "description": "RequireRealm refuses a user name with no realm in it. Default false. An estate whose equipment is configured to send user@realm can turn it on and refuse the bare names, which is where a misconfigured supplicant and a hand-typed login both land.",
+          "type": "boolean"
+        },
+        "rules": {
+          "description": "Rules decide each request, in order, first match wins. A request that matches no rule takes DefaultAction.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RADIUSRule"
+          }
+        },
+        "secret_file": {
+          "description": "SecretFile holds the shared secret this listener verifies arriving packets with, one line, owner-readable only. It is a file rather than a value in this section on purpose: a shared secret written here is a shared secret in the configuration management, in the backups and in every review of the change that added it.",
+          "type": "string"
+        },
+        "upstream": {
+          "description": "Upstream is the pool of RADIUS servers this listener relays to. Required.",
+          "type": "string"
+        },
+        "upstream_secret_file": {
+          "description": "UpstreamSecretFile is the secret towards the servers, where it differs from the clients'. Empty uses the same one. Setting it makes this listener a secret boundary: it verifies what arrives with one secret and re-signs what it forwards with another, so the equipment's secret never reaches the server and the server's never reaches the equipment. That is worth doing, and it has a cost -- the obfuscated User-Password has to be re-obfuscated under the new secret, which means this relay recovers it in memory for the length of one packet. A listener that does not set this never does.",
+          "type": "string"
+        },
+        "users": {
+          "description": "Users and DenyUsers are the User-Name values this listener carries. Empty allows any. Matched on the whole name as the client sent it.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "verify_response_authenticator": {
+          "description": "VerifyResponseAuthenticator checks RFC 2865's own authenticator on a reply. Default true. It is the weaker of the two checks -- it is what the collision attack forges -- and it is still worth running: it catches a mismatched secret, a corrupted packet and an answer from the wrong server, which are the three things that actually happen.",
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "RADIUSRule": {
+      "description": "RADIUSRule decides one request.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "Action is allow, deny or observe. observe logs and counts and then keeps looking, which is how a rule is tried on live traffic before it decides anything.",
+          "type": "string"
+        },
+        "auth_types": {
+          "description": "AuthTypes are the credential shapes this rule covers.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "clients": {
+          "description": "Clients are the networks the client is in.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "codes": {
+          "description": "Codes are the packet codes this rule covers.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "eap_types": {
+          "description": "EAPTypes are the EAP methods this rule covers.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_privilege_level": {
+          "description": "MaxPrivilegeLevel overrides the listener's bound for this rule's traffic, which is how the one jump host that really does get enable is written down.",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Name identifies the rule in the logs and the counters. Required.",
+          "type": "string"
+        },
+        "nas_identifiers": {
+          "description": "NASIdentifiers are the NAS-Identifier values this rule covers.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "realms": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "require_message_authenticator": {
+          "description": "RequireMessageAuthenticator overrides the listener's setting, which is how the one piece of equipment too old to send one is admitted without turning the check off for the estate.",
+          "type": "boolean"
+        },
+        "schedule": {
+          "description": "Schedule limits the rule to a time window.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/ModbusSchedule"
+            }
+          ]
+        },
+        "users": {
+          "description": "Users and Realms are the names and realms this rule covers.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "RDPChannelPolicy": {
       "description": "RDPChannelPolicy decides which static virtual channels a session has. A channel that is not allowed is taken out of the list the desktop is asked for, so the desktop never learns it was wanted.",
       "type": "object",
@@ -14622,6 +15215,300 @@
         "with": {
           "description": "With replaces every match. Default \"[redacted]\".",
           "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "TACACSListener": {
+      "description": "TACACSListener is the settings of a kind: tacacs listener: a relay in front of a TACACS+ server, on TCP 49. TACACS+ is device administration. Where RADIUS answers \"may this user onto the network\", TACACS+ answers \"may this user, at this privilege level, run this command on this router\" -- it authorises each command separately, and the command is in the packet. So of every protocol in this file, this is the one where what a policy can say is worth the most: not which hosts may reach the equipment, but which commands may run on it, written as commands. Five things shape these settings. **The shared key is what makes the rest possible.** RFC 8907 calls its MD5 construction \"obfuscation\", not encryption, and §10.3 says it is \"not cryptographically sound\" -- the pad is a chain of MD5 digests over the session identifier, the key, the version and the sequence number, so anybody with the key reads everything. This listener uses that: with `secret_file` it reads the user, the command and the privilege level, and without it it reads the twelve-octet header and nothing else. A listener with no key can still bound sessions and refuse by address; it cannot police a command, and the validator says so. **The commands are the point.** `commands` and `deny_commands` match the command line a device sends split across `cmd` and one `cmd-arg` per word -- so a rule is written as `show ...` or `configure terminal`, the way it is typed, and the listener reassembles it. The patterns are prefix patterns with a trailing `...` meaning \"and anything after\": a listener whose rules admit `show ...` and `ping ...` and nothing else has made every router behind it read-only, whatever the TACACS+ server's own profiles say. **Privilege is granted in the reply, and bounded here.** An authorization *response* carries `priv-lvl=15` as a mandatory argument, and a device that receives a mandatory argument must apply it. So `max_privilege_level` is a check on what the server sends back, and it is the line that stops one compromised TACACS+ server from handing out enable across an estate. **A FOLLOW reply is refused by default.** RFC 8907 §5.2's TAC_PLUS_AUTHEN_STATUS_FOLLOW redirects the client to a different server, and the reply's data field carries that server's address, port and *key*. It is a server-chosen redirect to an arbitrary host, authenticated by an MD5 pad, after which the client sends its next credential there. The standard deprecates it and says a client should treat it as a failure; this listener does not carry it. **Device administration is engineering activity.** The `engineering` block applies here for the same reason it applies to a PLC download: a `configure terminal` on a core router at three in the morning is either a change with a work order behind it or an incident, and this is the listener that can tell the difference. With `require_grant` a command this listener classes as engineering is refused unless an approved grant is open for it.",
+      "type": "object",
+      "properties": {
+        "alert_on_deny": {
+          "description": "AlertOnDeny writes a security event for every refusal. Default true.",
+          "type": "boolean"
+        },
+        "allow_change_password": {
+          "description": "AllowChangePassword carries an authentication session whose action is CHPASS. Default false: it changes a credential on the server, and most estates do password changes somewhere else entirely.",
+          "type": "boolean"
+        },
+        "allow_clients": {
+          "description": "AllowClients and DenyClients are the networks a device may connect from. Deny is evaluated first.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_follow": {
+          "description": "AllowFollow carries a FOLLOW status, which redirects the client to another server with another key. Default false.",
+          "type": "boolean"
+        },
+        "allow_sendauth": {
+          "description": "AllowSendAuth carries a SENDAUTH session, which asks the server for a credential to send onwards to a peer. Default false. RFC 8907 §5.4.3 keeps it for outbound CHAP and PAP on dial links. In a modern estate a request for one is either dead configuration or somebody extracting credentials from the TACACS+ server.",
+          "type": "boolean"
+        },
+        "allow_unauthenticated_authorization": {
+          "description": "AllowUnauthenticatedAuthorization carries an authorization request whose authen_method says the device authenticated nobody: not-set, none, guest, or the line password. Default false. This is the whole of an attack in one octet. A device that asks \"may this unnamed user run this command\" and is told yes has authorised a command for whoever is on the port.",
+          "type": "boolean"
+        },
+        "anomaly": {
+          "description": "Anomaly watches what each device and each user has been doing and reports when it stops: a command this user has never run, a device this user has never logged in to, an hour nobody works at. See Anomaly.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Anomaly"
+            }
+          ]
+        },
+        "authen_services": {
+          "description": "AuthenServices is the allow list of the protocol's own authen_service field: login, enable, ppp, rcmd. Empty allows any. `enable` is the one to think about: it is the privilege escalation inside an existing session, and it is a separate decision from the login.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "authen_types": {
+          "description": "AuthenTypes is the allow list of credential shapes: ascii, pap, chap, mschap, mschapv2. Empty allows any.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "commands": {
+          "description": "Commands and DenyCommands are the command lines this listener carries, written the way they are typed. Empty Commands allows any. A pattern is matched against the reassembled command line, word by word, and a trailing `...` means \"and anything after\": `show ...` covers every show command, `show running-config` covers exactly that, and `copy ... tftp:` is not a pattern -- the wildcard is only at the end, because a pattern with a hole in the middle is a pattern whose author and whose reader disagree about what it covers. DenyCommands is checked first and no rule can override it, which is how an exception inside an allowed set is written: `show ...` allowed, `show running-config` denied.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "default_action": {
+          "description": "DefaultAction is deny (the default) or allow.",
+          "type": "string"
+        },
+        "deny_clients": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_commands": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_response": {
+          "description": "DenyResponse is how a refused request is answered: fail (the default, in the protocol's own terms -- an authentication FAIL, an authorization FAIL, an accounting ERROR, each carrying a message saying which proxy refused it) or drop, which closes the connection and leaves the device to time out. fail is the right default here in a way it is not on every protocol: the person refused is an engineer at a terminal, and a line saying \"refused by xproxy: command_not_allowed\" is the difference between a policy they can work with and a router they think is broken.",
+          "type": "string"
+        },
+        "deny_users": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "engineering": {
+          "description": "Engineering reports this listener's configuration commands as their own class of event and, with require_grant, refuses one with no approved work order open. See Engineering.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/Engineering"
+            }
+          ]
+        },
+        "exchanges": {
+          "description": "Exchanges is the allow list of exchanges: authentication, authorization, accounting. Empty allows all three. Naming fewer is a real control. A listener in front of the equipment that is managed from a bastion and nowhere else can carry accounting and authorization and refuse authentication, so no login can be attempted through it at all.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "idle_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "log_accounting": {
+          "description": "LogAccounting writes every accounting record as its own line. Default true. This is the estate's own copy of the device administration audit trail: who ran what, on which device, at what privilege level. It is worth having separately from the TACACS+ server's because it is in a different place, written by a different program, and whoever has just got privileged access to the routers does not have it.",
+          "type": "boolean"
+        },
+        "log_requests": {
+          "description": "LogRequests writes an access line per request. Default true.",
+          "type": "boolean"
+        },
+        "max_args": {
+          "description": "MaxArgs bounds the arguments one request may carry. Default 64; the protocol's own bound is 255.",
+          "type": "integer"
+        },
+        "max_body_bytes": {
+          "description": "MaxBodyBytes bounds one packet's body. Default 32768. RFC 8907 §4.1 says a server should refuse a body past 65536, and nothing legitimate is near either number.",
+          "type": "integer"
+        },
+        "max_privilege_level": {
+          "description": "MaxPrivilegeLevel bounds the privilege level, 0 to 15. Default 15, which is no bound. It is checked on a request's own priv_lvl field and on a `priv-lvl` argument in the server's response, because the second is the grant and the first is only the claim.",
+          "type": "integer"
+        },
+        "max_sessions": {
+          "description": "MaxSessions and MaxSessionsPerClient bound the sessions held. Zero is unbounded.",
+          "type": "integer"
+        },
+        "max_sessions_per_client": {
+          "type": "integer"
+        },
+        "max_sessions_per_connection": {
+          "description": "MaxSessionsPerConnection bounds the sessions one TCP connection may carry. Default 64. A connection carries more than one only when both ends set TAC_PLUS_SINGLE_CONNECT_FLAG, which is ordinary and is why this is a bound rather than a refusal: without it one connection can open sessions until the table this listener pairs answers in is full.",
+          "type": "integer"
+        },
+        "monitor_only": {
+          "description": "MonitorOnly evaluates the policy and enforces nothing, which is the same as policy: {mode: shadow}. The bounds, the session limits and the malformed-packet refusals still apply.",
+          "type": "boolean"
+        },
+        "rate_burst": {
+          "type": "integer"
+        },
+        "rate_limit": {
+          "description": "RateLimit and RateBurst bound connections per second per client address. Zero disables them.",
+          "type": "integer"
+        },
+        "refuse_plaintext_passwords": {
+          "description": "RefusePlaintextPasswords refuses an authentication session whose type puts the password in the body -- ascii and pap. Default false. It defaults off for the reason the same knob on the mms listener does: on a lot of equipment interactive login is the only authentication there is, refusing it removes that, and counting it does not. What this listener does by default is count every session that carries one.",
+          "type": "boolean"
+        },
+        "refuse_unencrypted": {
+          "description": "RefuseUnencrypted refuses a packet whose TAC_PLUS_UNENCRYPTED_FLAG is set, meaning the body arrived in the clear. Default true. RFC 8907 §4.5 allows it only on a secured transport. On bare TCP it is either a configuration mistake or somebody stripping the obfuscation, and either way an administrative login's user name and password are on the wire.",
+          "type": "boolean"
+        },
+        "require_tls": {
+          "description": "RequireTLS refuses a connection that is not TLS. Default false. TACACS+ over TLS is the fix for everything §10.3 admits about the obfuscation, and it is a transport this listener terminates like any other: put a certificate on the listener and the client's leg is TLS. It defaults off because almost no equipment speaks it yet; an estate whose equipment does should turn it on, and one whose equipment does not should read `refuse_unencrypted` as the weaker thing it is.",
+          "type": "boolean"
+        },
+        "rules": {
+          "description": "Rules decide each request, in order, first match wins. A request that matches no rule takes DefaultAction.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TACACSRule"
+          }
+        },
+        "secret_file": {
+          "description": "SecretFile holds the shared key, one line, owner-readable only. Without it this listener reads headers and forwards bodies unexamined.",
+          "type": "string"
+        },
+        "services": {
+          "description": "Services is the allow list of `service` argument values on an authorization request: shell, ppp, slip, or a vendor's own. Empty allows any.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "session_timeout": {
+          "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
+          "type": "string",
+          "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "upstream": {
+          "description": "Upstream is the pool of TACACS+ servers this listener relays to. Required.",
+          "type": "string"
+        },
+        "upstream_secret_file": {
+          "description": "UpstreamSecretFile is the key towards the servers, where it differs from the devices'. Empty uses the same one. Setting it makes this listener a key boundary: it de-obfuscates with one key and re-obfuscates with another, so a device's key never reaches the server and the server's never reaches a device.",
+          "type": "string"
+        },
+        "upstream_tls": {
+          "description": "UpstreamTLS is the client-side TLS settings for that leg.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/UpstreamTLS"
+            }
+          ]
+        },
+        "upstream_tls_mode": {
+          "description": "UpstreamTLSMode is how this listener reaches the servers: disable (the default), prefer or require.",
+          "type": "string"
+        },
+        "users": {
+          "description": "Users and DenyUsers are the user names this listener carries. Empty allows any.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "TACACSRule": {
+      "description": "TACACSRule decides one request.",
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "Action is allow, deny or observe.",
+          "type": "string"
+        },
+        "authen_services": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "authen_types": {
+          "description": "AuthenTypes are the credential shapes this rule covers.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "clients": {
+          "description": "Clients are the networks the device is in.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "commands": {
+          "description": "Commands and DenyCommands are the command lines this rule covers, and the ones it does not cover even when Commands would match.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny_commands": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "exchanges": {
+          "description": "Exchanges are the exchanges this rule covers.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "max_privilege_level": {
+          "description": "MaxPrivilegeLevel overrides the listener's bound for this rule's traffic.",
+          "type": "integer"
+        },
+        "name": {
+          "description": "Name identifies the rule in the logs and the counters. Required.",
+          "type": "string"
+        },
+        "schedule": {
+          "description": "Schedule limits the rule to a time window, which is what a change window is: configuration commands allowed while the engineers are on shift and not at three in the morning.",
+          "allOf": [
+            {
+              "$ref": "#/$defs/ModbusSchedule"
+            }
+          ]
+        },
+        "services": {
+          "description": "Services and AuthenServices are the service values this rule covers.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "users": {
+          "description": "Users are the user names this rule covers.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
       },
       "additionalProperties": false

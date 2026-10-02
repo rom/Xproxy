@@ -34,6 +34,7 @@ did not build it" and "it does not apply" are different promises again.
 - [Industrial control](#industrial-control)
 - [Network management](#network-management)
 - [Directory](#directory)
+- [Authentication, authorisation and accounting](#authentication-authorisation-and-accounting)
 - [Provisioning](#provisioning)
 - [Addressing](#addressing)
 - [Time](#time)
@@ -302,6 +303,32 @@ search that reaches the relay's entry bound is completed with
 administrative limit sends: the client knows it has part of an answer, rather
 than hanging on a connection that will say nothing more.
 
+## Authentication, authorisation and accounting
+
+The three protocols an estate's own equipment authenticates against,
+rather than the ones its web applications use: RADIUS and TACACS+ for
+the network gear, and Kerberos where the directory is Active Directory.
+None of them is cryptographically sound by current standards and all
+three carry credentials, which is the argument for a proxy in front of
+them.
+
+| RFC | Title | Status | Notes |
+|-----|-------|--------|-------|
+| 2865 | Remote Authentication Dial In User Service (RADIUS) | Partial | The packet, every attribute of the base dictionary, the Response Authenticator verified on the way back and recomputed for the client, and the User-Password obfuscation recognised but never undone. The relay does not authenticate anybody itself: it decides about requests and replies and carries them |
+| 2866 | RADIUS Accounting | Partial | Accounting-Request and Accounting-Response are carried and counted; the Request Authenticator of an accounting packet is a digest rather than a nonce, so it is verified as one |
+| 2869 | RADIUS Extensions | Partial | The attributes that matter to a policy: EAP-Message, Message-Authenticator and the tunnel attributes a reply grants with |
+| 3579 | RADIUS Support For Extensible Authentication Protocol | Full | The keyed Message-Authenticator, verified on both legs and recomputed when a packet is renumbered. `require_message_authenticator` makes it mandatory, which is the protocol's own mitigation for CVE-2024-3596 |
+| 3748 | Extensible Authentication Protocol (EAP) | Partial | The header, the method, an identity, and a Nak's list of methods the client would accept instead -- enough for a policy about which methods may be negotiated. No EAP method is implemented: this is not an authenticator |
+| 6929 | RADIUS Protocol Extensions | Partial | The extended attribute types (241 to 246) are read as what they are, so a rule names one by its extended number rather than by the octet it shares with 245 others |
+| 2548 | Microsoft Vendor-specific RADIUS Attributes | Partial | Vendor-specific attributes are unwrapped where the inner length agrees with the outer, which is how a privilege grant is found: the four vendor spaces an estate's equipment actually uses have names, and the rest are readable by number |
+| 5176 | Dynamic Authorization Extensions to RADIUS | Refused | A Change-of-Authorization or Disconnect-Request is an unsolicited packet that logs a session out or rewrites its authorisation, sent to a client that may accept it from any address with the right secret. It is recognised, counted and refused rather than relayed; an estate that needs it has a path that does not run through a security proxy |
+| 8907 | The TACACS+ Protocol | Partial | The header, the authentication, authorization and accounting bodies, the argument list, and the obfuscation of section 5.2 -- implemented as the keyed MD5 pad it is, which section 10.3 itself calls "not cryptographically sound". Single-connection mode is read, so several sessions on one connection are kept apart. A `FOLLOW` reply is refused rather than carried, because it redirects the device to another server with another key |
+| 4120 | The Kerberos Network Authentication Service (V5) | Partial | AS-REQ, AS-REP, TGS-REQ, TGS-REP, AP-REQ and KRB-ERROR are read down to what a policy decides about: the realm, the client and server principals, the requested options, the encryption types offered, the pre-authentication types present and the ticket lifetime. No Kerberos cryptography is performed and no key is held: an encrypted part is recognised and its encryption type read, never decrypted |
+| 4556 | Public Key Cryptography for Initial Authentication in Kerberos (PKINIT) | Partial | Its pre-authentication types are recognised as pre-authentication, so a certificate-based logon is not mistaken for an exemption. The certificate itself is not validated here |
+| 6113 | A Generalized Framework for Kerberos Pre-Authentication | Partial | An FX-FAST armoured request is recognised as pre-authenticated; what is inside the armour is not read |
+| 8009 | AES Encryption with HMAC-SHA2 for Kerberos 5 | Partial | The two encryption types, as names a policy allows or requires |
+| 4757 | The RC4-HMAC Kerberos Encryption Types | Partial | Recognised and nameable, because a request offering nothing but RC4 is what Kerberoasting looks like. An estate can refuse it outright with `refuse_weak_etypes` |
+
 ## Provisioning
 
 TFTP is four short documents and one of the oldest protocols still in daily
@@ -522,6 +549,7 @@ not mistaken for an omission:
 | Specification | Where | Notes |
 |---------------|-------|-------|
 | PROXY protocol v1 and v2 | HAProxy | Inbound from trusted peers, outbound to upstreams |
+| Kerberos KDC Proxy Protocol (MS-KKDCP) | Microsoft | The `kkdcp` listener kind: the KDC-PROXY-MESSAGE envelope, its length-prefixed inner message and its optional realm and flags, over HTTPS and one path. The `dclocator-hint` field is carried to the KDC and never acted on by the proxy, because a domain controller hint from a client is a client's opinion about where its credentials should go |
 | MQTT 3.1.1 and 5.0 | OASIS (3.1.1 also ISO/IEC 20922) | |
 | Modbus Application Protocol v1.1b3 | Modbus Organization | The `modbus` listener kind |
 | Modbus over Serial Line v1.02 | Modbus Organization | RTU and ASCII framing, tunnelled over TCP the way every Modbus gateway does it |
@@ -572,6 +600,10 @@ the peer behind it.
 | SOCKS4, SOCKS4a, SOCKS `BIND` | SOCKS | No authentication, no names, and `BIND` asks the proxy to open a listening socket on a client's say-so |
 | YARA modules, `at`, `for`, unbounded jumps, `@a` | YARA | Refused at load with the line number. A rule that silently matched nothing would be worse than one that will not start |
 | An upstream reply the proxy cannot parse | SMTP, MQTT | Never passed on: it is exactly the reply the client would read differently |
+| A `FOLLOW` reply | TACACS+ | It hands the device another server's address, port and key, so a server that has been taken can move every later authentication somewhere this proxy does not see. Refused, in shadow mode too |
+| A Change-of-Authorization or Disconnect-Request | RADIUS | An unsolicited packet that ends somebody's session, authenticated by a shared secret and nothing else. Counted and dropped |
+| A body sent with the unencrypted flag | TACACS+ | The obfuscation is weak and is still the only confidentiality the protocol has; a body in the clear is a password on the wire |
+| A Kerberos message a KDC proxy does not carry | KKDCP | Only the AS and TGS exchanges and their errors belong in a KDC-PROXY-MESSAGE. Anything else is refused rather than forwarded, because a proxy that carries what it cannot name is a tunnel |
 
 ## Keeping this honest
 

@@ -47,6 +47,10 @@ explicitly out of scope. This document is reviewed at every phase exit
 | Revoked server certificate keeps being trusted by clients that cannot reach the responder | OCSP stapling delivers the responder's answer in the handshake, refreshed in the background; a revoked answer is stapled rather than hidden (`TestOCSPStapling`) |
 | Misissued or unlogged certificate deployed unnoticed | Embedded SCTs are counted and, with a log list, verified at every load; `ct.enforce` refuses the certificate and the previous one keeps serving (`TestCertificateTransparency`) |
 | TLS SNI mismatch with `Host` | Routing uses `Host`; certificate is chosen by SNI. 1.0 adds an optional strict SNI equals Host check |
+| A forged RADIUS reply: an Access-Accept whose Response Authenticator is an MD5 collision (CVE-2024-3596, Blast-RADIUS) | The `radius` listener verifies the Response Authenticator on every reply and requires the keyed RFC 3579 Message-Authenticator by default (`require_message_authenticator`), which is the attack's documented mitigation; a packet without a valid digest is refused and counted (`radius_no_digest`, `radius_bad_digest`, bannable) |
+| An unsolicited RADIUS packet: a Change-of-Authorization or Disconnect-Request that ends somebody's session, or an answer to a request nobody made | Replies are matched to the request they answer by identifier in a bounded per-client table, and the RFC 5176 dynamic codes are refused rather than relayed (`radius_unsolicited`, `radius_denied`) |
+| A TACACS+ server that redirects the device elsewhere: a `FOLLOW` reply carrying another server's address, port and key | Refused rather than carried, in shadow mode too, so a compromised server cannot move every later authentication to a host this proxy does not see |
+| Kerberos credential harvesting at the KDC proxy: Kerberoasting (a TGS-REQ for RC4 only), AS-REP roasting (an AS-REP to a request with no pre-authentication), password spraying | The `kkdcp` listener reads the cleartext of each message: `refuse_weak_etypes` refuses a request offering nothing but DES or RC4, `refuse_preauth_exempt` refuses an AS-REP whose request carried no pre-authentication, and the pre-authentication failures and distinct service tickets of one client address are bounded per window and reach the ban ladder |
 
 ### Tampering
 
@@ -135,6 +139,8 @@ explicitly out of scope. This document is reviewed at every phase exit
 |--------|------------|
 | Memory safety bug in the parser | Go memory safety; no cgo; fuzzing of every custom parser |
 | Compromise of the process leading to host compromise | Unprivileged user, empty capability set, `NoNewPrivileges`, `ProtectSystem=strict`, `MemoryDenyWriteExecute`, syscall filter, SELinux confinement |
+| A privilege grant in an authentication reply: a RADIUS Access-Accept or a TACACS+ authorization response that hands a session level 15 on a switch | Both kinds read the grant out of the *reply* and bound it (`max_privilege_level`): a reply granting more than the rule allows is refused rather than forwarded, and the grant is counted (`radius_privilege_grants`, `tacacs_privilege_grants`) |
+| Device administration without a policy: any command a TACACS+ server would authorise, on any device | The `tacacs` kind decides per command line, allow list or deny list, keyed on the user and the device; configuration, restart, firmware and file-transfer commands are mapped to engineering operations, so a change to a switch is checked against the same work order and grant a change to a PLC is |
 | Reaching internal services through the proxy | Only configured upstreams are dialled; the `Host` header never selects an address; `Proxy` function on the transport is nil so environment proxies are ignored |
 
 ## Boundary 2: Data plane to upstream

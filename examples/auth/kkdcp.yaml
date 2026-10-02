@@ -1,0 +1,232 @@
+# Kerberos KDC proxy: HTTPS in, TCP to the KDC, and the answer wrapped back.
+#
+# MS-KKDCP exists because Kerberos is UDP and TCP on port 88 and the places
+# people work from are not on the network the KDC is on. Windows has shipped
+# the client since 2012; MIT and Heimdal both speak it. This is the only
+# listener in this project that translates one protocol into another, and one
+# of the few places an estate's Kerberos traffic can be read at all.
+#
+# Everything a policy needs is in the clear, because those fields are how the
+# two ends agree what to encrypt: the realm, the client principal, the service
+# principal, the encryption types the client will take, and the
+# pre-authentication it brought. What is encrypted is the ticket and the
+# reply's enc-part, and nothing here needs those.
+#
+# Three attacks are visible in those fields, and each has a line below.
+#
+#   A TGS request offering NOTHING BUT RC4 is Kerberoasting: the ticket's
+#   encrypted part is crackable offline against the service account's
+#   password. refuse_weak_etypes refuses those. "Nothing but" rather than
+#   "any" is the whole setting -- a Windows client lists aes256, aes128 and
+#   rc4 and the KDC takes the first it can.
+#
+#   An AS-REP for a request that brought no pre-authentication means the
+#   account is exempt and the reply is an offline cracking target. That is
+#   AS-REP roasting, and refuse_preauth_exempt refuses the REPLY -- the
+#   question cannot be answered on the request, because a bare AS-REQ is the
+#   normal first message of every exchange.
+#
+#   A burst of KDC_ERR_PREAUTH_FAILED is password spraying, which is what an
+#   internet-facing KDC proxy sees. max_preauth_failures counts per client
+#   address rather than per account: a sprayer tries one password against a
+#   thousand accounts, and the per-account bound is the KDC's own lockout --
+#   which is the outcome the sprayer wanted.
+#
+# A tls section is required rather than optional: the message carries a value
+# derived from the user's password, and a listener without one is refused at
+# load.
+#
+# Validate with: xproxyctl -config examples/auth/kkdcp.yaml validate
+version: 1
+
+logging:
+  directory: /var/log/xproxy
+  access: {file: access.log}
+  security: {file: security.log}
+
+management:
+  socket: /run/xproxy/mgmt.sock
+  socket_mode: "0660"
+
+server:
+  listeners:
+    # ---------------------------------------------------------------
+    # The internet-facing endpoint: what a laptop in a hotel reaches.
+    #
+    # It is the strictest of the three because its clients are whatever on
+    # the internet found the name. Delegation is off, the anonymous principal
+    # is off, password changes are off, and the service principals a TGS
+    # request may ask for are named -- because a client that has just
+    # authenticated from a hotel has no business asking for a ticket to the
+    # database.
+    - name: remote
+      address: ":443"
+      kind: kkdcp
+      tls:
+        certificates:
+          - cert_file: /etc/xproxy/tls/kdcproxy.pem
+            key_file: /etc/xproxy/tls/kdcproxy.key
+        min_version: "1.2"
+      kkdcp:
+        upstream: kdc
+        path: /KdcProxy
+        realms: [CORP.EXAMPLE]
+
+        message_types: [as-req, tgs-req]
+        refuse_weak_etypes: true
+        refuse_preauth_exempt: true
+
+        allow_s4u2self: false
+        allow_s4u2proxy: false
+        allow_anonymous: false
+        allow_password_change: false
+
+        # The accounts nobody should be authenticating as from the internet.
+        deny_principals: [administrator, krbtgt, guest]
+
+        # And the services a remote client legitimately needs: its own
+        # workstation session, file shares, the intranet and mail.
+        services: [krbtgt, host, cifs, HTTP, IMAP, SMTP]
+        deny_services: [MSSQLSvc, TERMSRV]
+
+        max_ticket_lifetime: 10h
+        max_distinct_services: 15
+        service_window: 5m
+        max_preauth_failures: 10
+        failure_window: 5m
+
+        max_requests_per_connection: 32
+        max_sessions_per_client: 8
+        rate_limit: 20
+        rate_burst: 40
+        upstream_timeout: 5s
+
+        default_action: deny
+        rules:
+          - name: ordinary-logins
+            action: allow
+            message_types: [as-req]
+          - name: service-tickets
+            action: allow
+            message_types: [tgs-req]
+            services: [krbtgt, host, cifs, HTTP, IMAP, SMTP]
+
+        anomaly:
+          enabled: true
+          novelty: {symbols: true}
+          talkers: {enabled: true}
+
+    # ---------------------------------------------------------------
+    # The branch-office endpoint, reached over the estate's own WAN.
+    #
+    # The same protocol and a wider policy, because the clients are known
+    # machines at known addresses: delegation is carried for the one web
+    # application that needs it, and password changes are carried so somebody
+    # whose password expired on a Monday morning can change it.
+    #
+    # allow_password_change needs its own upstream pool, because kpasswd is a
+    # different service on a different port and sending an AP-REQ to the
+    # KDC's own would reach nothing.
+    - name: branches
+      address: "10.20.2.10:443"
+      kind: kkdcp
+      tls:
+        certificates:
+          - cert_file: /etc/xproxy/tls/kdcproxy.pem
+            key_file: /etc/xproxy/tls/kdcproxy.key
+        client_auth: require
+        client_ca_file: /etc/xproxy/tls/machine-ca.pem
+      kkdcp:
+        upstream: kdc
+        password_upstream: kpasswd
+        realms: [CORP.EXAMPLE, MFG.EXAMPLE]
+
+        message_types: [as-req, tgs-req, ap-req]
+        allow_password_change: true
+        refuse_weak_etypes: true
+        refuse_preauth_exempt: true
+
+        # Delegation for the one application that was built on it, and
+        # nowhere else. The service is named on the rule rather than on the
+        # listener, so turning it on for the application does not turn it on
+        # for the realm.
+        allow_s4u2self: true
+        allow_s4u2proxy: true
+
+        max_distinct_services: 40
+        max_preauth_failures: 25
+        rate_limit: 100
+
+        default_action: deny
+        rules:
+          - name: branch-machines
+            action: allow
+            clients: [10.50.0.0/16, 10.51.0.0/16]
+          - name: the-delegating-application
+            action: allow
+            clients: [10.52.0.10/32]
+            principals: [websvc]
+          - name: password-changes
+            action: allow
+            message_types: [ap-req]
+            clients: [10.50.0.0/16, 10.51.0.0/16]
+
+    # ---------------------------------------------------------------
+    # A shadow-mode trial, which is how an estate finds out what its own
+    # Kerberos traffic is before refusing any of it.
+    #
+    # This is the listener to start with. The encryption-type rules above
+    # will refuse something on the first day on almost any real estate, and
+    # the counters -- kkdcp_weak_tickets, kkdcp_preauth_exempt,
+    # kkdcp_delegations -- are worth reading for a fortnight before anything
+    # is enforced.
+    #
+    # What is still refused in shadow mode: a realm this proxy does not
+    # serve, a malformed message, and every bound. Forwarding a message for
+    # an unknown realm would make this the open relay the realm list exists
+    # to prevent.
+    - name: trial
+      address: "10.20.2.11:443"
+      kind: kkdcp
+      policy: {mode: shadow}
+      tls:
+        certificates:
+          - cert_file: /etc/xproxy/tls/kdcproxy.pem
+            key_file: /etc/xproxy/tls/kdcproxy.key
+      kkdcp:
+        upstream: kdc
+        realms: [CORP.EXAMPLE]
+        refuse_weak_etypes: true
+        refuse_weak_ticket_etypes: true
+        refuse_preauth_exempt: true
+        max_distinct_services: 10
+        max_preauth_failures: 5
+        default_action: deny
+        rules:
+          - name: observe-everything
+            action: observe
+
+upstreams:
+  - name: kdc
+    endpoints:
+      - {address: "10.10.1.10:88"}
+      - {address: "10.10.1.11:88"}
+    health_check:
+      type: tcp
+      interval: 10s
+  - name: kpasswd
+    endpoints:
+      - {address: "10.10.1.10:464"}
+      - {address: "10.10.1.11:464"}
+
+bans:
+  triggers:
+    # An address enumerating service tickets or spraying passwords has
+    # nothing to lose by being banned, which is why this ladder is shorter
+    # than the ones on the listeners that front the estate's own equipment.
+    - name: kkdcp-refusals
+      reasons: [kkdcp_denied]
+      threshold: 10
+      window: 5m
+      duration: 1h
+      max_duration: 24h

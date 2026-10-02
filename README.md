@@ -194,6 +194,9 @@ its own for what is deliberately *not* implemented and why.
 | Messaging | AMQP 0-9-1 (the class and method catalogue RabbitMQ speaks) and AMQP 1.0 (ISO/IEC 19464: the nine performatives, its self-describing type system, and the SASL layer), read on one port because a client picks which of the two it speaks in its first eight octets | `amqp` |
 | Management | SNMP v1 (RFC 1157), v2c (RFC 1901–1908) and v3 with USM (RFC 3410–3418, RFC 3826, RFC 7860) read and verified, over UDP and over TCP (RFC 3430); RFC 6353 on both transports — TLS on TCP 10161, DTLS on UDP 10161 — with RFC 5591's transport security model and RFC 6353 §5.3 certificate-to-name mapping | `snmp` |
 | Directory | LDAP v3 (RFC 4511–4515, 4517, 4519) with LDAPS and the StartTLS of RFC 4513, as a relay: the bind methods, the search filter's shape, distinguished names compared per relative name, the attribute lists in both directions | `ldap`, filters |
+| Authentication | RADIUS (RFC 2865, 2866, 2869) with EAP inside it (RFC 3579, RFC 3748), the extended attributes of RFC 6929 and the dynamic authorization of RFC 5176, verified under the shared secret: both authenticators, the obfuscated password's shape, and the EAP exchange reassembled across its attributes | `radius` |
+| Authorisation | TACACS+ (RFC 8907): the twelve-octet header, the MD5 obfuscation the standard declines to call encryption, and all six bodies of its three exchanges -- including the argument list where the command a device is asking about actually lives, split across `cmd` and one `cmd-arg` per word | `tacacs` |
+| Authentication | Kerberos 5 (RFC 4120) carried over HTTPS by MS-KKDCP: the KDC-PROXY-MESSAGE envelope, the TCP framing inside it, and the plaintext fields of an AS-REQ, TGS-REQ, AS-REP, TGS-REP, AP-REQ and KRB-ERROR -- which is every field a KDC decides on, because they are how the two ends agree what to encrypt | `kkdcp` |
 | Addressing | DHCP (RFC 2131) with its options (RFC 2132), relay agent information (RFC 3046), long options (RFC 3396) and classless static routes (RFC 3442), as a relay agent that reads what it relays: the server a reply came from, and the configuration the reply carries | `dhcp` |
 | Addressing | DHCPv6 (RFC 8415) as a relay agent that reads what it relays, with the nested relay chain, the DUID identity, the identity associations and prefix delegation, and the options that configure something other than an address: the boot file URL (RFC 5970), the captive portal (RFC 8910), the SZTP bootstrap server (RFC 8572), the S46 transition containers (RFC 7598) and the AFTR name (RFC 6334) | `dhcp6` |
 | Provisioning | TFTP (RFC 1350) with the option extension (RFC 2347), block size (RFC 2348), timeout and transfer size (RFC 2349) and windowed transfer (RFC 7440), as a relay: the filename read as a path, the direction of the transfer, and the bounds on what comes back | `tftp` |
@@ -236,6 +239,9 @@ protocol so that a policy can be written in that protocol's own terms:
 | `iec104` | `xot` | IEC 60870-5-104 (with the redundancy groups of edition 2), IEC 62351-3 TLS, IEC 60870-5-7 secure authentication recognised | Type identifications, causes of transmission, common and originator addresses, information object ranges, select-before-operate that survives a failover, which connection of a redundancy group may carry data, setpoint value and step bounds, schedules; the information element too -- the quality descriptor a station attached to a reading, the value it reported, and the timestamp on a time-tagged command, which is this protocol's own replay check |
 | `snmp` | `xrelay`, `xot` | SNMP v1, v2c and v3 (USM and TSM), UDP and TCP, RFC 6353 TLS and DTLS | Versions, community strings and USM users, security levels, operations, object subtrees, the amplification bounds; with the user's pass phrases, v3 digests verified and payloads decrypted so the rules apply to v3 too; USM **terminated and re-originated**, so a v1 poller reaches a v3-only agent; and, under RFC 6353, the **certificate** as the identity — mapped to a security name a rule names, with the transport itself a rule field |
 | `ldap` | `xrelay` | LDAP v3, LDAPS, StartTLS | Bind methods, the bound identity, operations, naming contexts and subtrees, scopes, attributes in both directions, filter and entry bounds |
+| `radius` | `xrelay`, `xot` | RADIUS on UDP 1812, 1813 and 3799, with EAP, the extended attributes and the dynamic authorization codes | Whether the packet is **authentic** before anything else is read -- RFC 3579's keyed digest required by default, which is the published mitigation for CVE-2024-3596, where a chosen-prefix MD5 collision turns an Access-Reject into an Access-Accept on the wire; which codes cross at all, with Disconnect and CoA absent by default because each ends or re-authorises a live session from one datagram; which credential shapes and EAP methods, checked on the method *and* on the ones a Nak offers instead, so a supplicant cannot Nak its way down to EAP-MD5; which user names and realms, split the way a server splits them because a realm is routing; and what a **reply** may grant, which is where the privilege is: a Cisco av-pair's `priv-lvl` and `Service-Type = Administrative-User`, bounded so one compromised server cannot hand out enable across an estate |
+| `tacacs` | `xrelay`, `xot` | TACACS+ on TCP 49, with single-connect multiplexing, and over TLS | Which **commands** may run, matched against the command line reassembled from `cmd` and its arguments, with a deny list no rule overrides and a wildcard only at the end because a pattern with a hole in it is one its reader cannot trust; the privilege level, checked on the server's answer as well as the request's claim, since `priv-lvl` in a response is a mandatory argument the device must apply; whether the body arrived in the clear; whether a `FOLLOW` reply -- a server-chosen redirect carrying another host's address, port and key -- is carried at all, which it is not; the exchanges, the services, the authentication types and the users; and, because device administration is engineering activity, every configuration command reported as its own class of event and, with `require_grant`, refused without an approved work order |
+| `kkdcp` | `xproxy`, `xrelay` | Kerberos over HTTPS (MS-KKDCP), speaking TCP to the KDC | Which **realms** this proxy will carry, which is what stops it being an open relay -- required, and refused when the envelope and the message disagree; which encryption types, where refusing a request offering *nothing but* RC4 is the Kerberoasting control and "nothing but" rather than "any" is the whole of it; whether an AS-REP answering a request that brought no pre-authentication crosses, which is AS-REP roasting seen on the only leg where the question can be answered; whether S4U2Self and S4U2Proxy cross, both off by default; how many **different** service principals one client may ask for inside a window, which catches enumeration whatever encryption it asked in; and how many `KDC_ERR_PREAUTH_FAILED` replies one address may collect, which is password spraying bounded where the KDC's own lockout cannot help |
 | `dhcp` | `xrelay`, `xot` | DHCPv4 with RFC 2132 options, RFC 3046 relay agent information, RFC 3442 routes | The server a reply came from, the options and addresses a reply may carry, the boot file, the lease bounds, the hardware-address rate |
 | `dhcp6` | `xrelay`, `xot` | DHCPv6 (RFC 8415) with the nested relay chain, the DUID, the identity associations, prefix delegation | The server a reply came from, the options a reply may carry and the resolvers, domains and boot URLs they may name, what may be delegated and what a client may ask for, the lease bounds -- with a withdrawal never turned into a lease -- the relay chain's depth, and the starvation bound keyed on the **DUID** |
 | `postgres` | `xrelay` | PostgreSQL protocol v3, both query protocols, the cleartext TLS negotiation | Whether the connection may be unencrypted at all, which role and database may be claimed, which authentication methods may cross, which *shapes* of statement are allowed, replication, the fast-path call, cancel requests; and, with `deception`, answering a refused statement as a fabricated database so the reconnaissance behind a documented shell command is collected rather than deflected |
@@ -604,6 +610,90 @@ protocol so that a policy can be written in that protocol's own terms:
   terminated here** rather than forwarded, which makes it a secure upgrade
   for a client library nobody can reconfigure — and it discards the
   identity, as the standard requires
+
+- `kind: radius`: a **RADIUS relay that holds the shared secret**, which is
+  the whole of what separates it from a packet filter. Everything a policy
+  decides on is an attribute in the clear, and an attribute in a packet whose
+  digest nobody checked is whatever the last host on the path chose to put
+  there — so the integrity check comes first and is never shadowed, and
+  `require_message_authenticator` defaults on. That default is the published
+  mitigation for **CVE-2024-3596**: Access-Accept and Access-Reject differ by
+  one octet, the Response Authenticator is MD5 with the secret appended, and an
+  attacker on the path who can predict a request can compute a chosen-prefix
+  collision and turn a refusal into an acceptance. RFC 3579's attribute is a
+  keyed HMAC over the same octets, and the collision does not reach it. The
+  rest of the policy is what the protocol lets a relay say: which codes cross,
+  with RFC 5176's Disconnect and CoA absent by default because each ends or
+  re-authorises a live user's session from one unauthenticated datagram; which
+  credential shapes and **EAP methods**, checked on the method in the packet
+  *and* on the ones a Nak offers instead, so a supplicant cannot Nak its way
+  down to EAP-MD5 — a hash anybody cracks on a laptop from one observed
+  exchange; and which realms, split the way a server splits them, because a
+  realm is routing and a name carrying one asks this estate to forward the
+  credential somewhere else. The half most estates have no control over is the
+  **reply**: a client asks for access by logging in, and the server's answer is
+  what says this login gets the enable prompt. `max_privilege_level` bounds the
+  `priv-lvl` a Cisco av-pair carries and `deny_administrative_replies` refuses
+  `Service-Type = Administrative-User`, so one compromised or spoofed server
+  cannot hand out enable across an estate of routers. The password is read and
+  never recovered: the listener records that a request carried one and how long
+  it was, and the single exception — re-obfuscating under a second secret — is
+  documented where it is configured
+
+- `kind: tacacs`: a **TACACS+ relay**, and the kind in this project where a
+  policy is worth the most per line, because TACACS+ authorises each command
+  separately and **the command is in the packet**. RFC 8907 calls its MD5
+  construction "obfuscation" and §10.3 says it is not cryptographically sound;
+  this listener uses that rather than apologising for it. With the key it reads
+  the user, the command and the privilege level; without one it reads a
+  twelve-octet header and says so in a counter, and naming `commands` with no
+  key is a load error rather than a setting that silently matches nothing. The
+  command patterns are words with an optional trailing `...`, matched against
+  the line reassembled from `cmd` and one `cmd-arg` per word — so a rule is
+  written the way the command is typed — and a wildcard in the middle is
+  refused at load, because a pattern whose author and whose reader disagree
+  about what it covers is worse than no pattern here. `deny_commands` is
+  checked first and no rule overrides it, which is how "allow `show ...`, deny
+  `show running-config`" is written. Three refusals are about what the
+  *server* sent, and they stand in shadow mode too: a **`FOLLOW`** reply, which
+  redirects the client to a host whose address, port and *key* are in the data
+  field and which the standard deprecates; a `priv-lvl` grant above the bound,
+  which matters because that argument is mandatory and a device must apply it;
+  and a body that arrived in the clear. And because a `configure terminal` on a
+  core router is the same kind of change as a PLC download, every configuration
+  command is reported as **engineering activity**, matched against the work
+  orders on file, and with `require_grant` refused when none is open — while a
+  `show` is not, because a class that included those is a class nobody reads
+
+- `kind: kkdcp`: a **Kerberos KDC proxy** — HTTPS in, TCP to the KDC, the
+  answer wrapped back — and the only listener here that translates one protocol
+  into another. MS-KKDCP exists because Kerberos is UDP and TCP on port 88 and
+  the places people work from are not on the network the KDC is on; what it
+  gives this project is the one place an estate's Kerberos traffic is
+  *readable*, because every field a KDC decides on is in the clear by
+  construction. The first thing it decides is **which realms it will carry**,
+  which is required: a KDC proxy without that is an open relay, and a request
+  whose envelope and inner message name different realms is refused rather than
+  resolved, because the outer one is what the proxy routes by and the inner one
+  is what the KDC decides on. Then the three attacks the plaintext fields show.
+  A TGS request offering **nothing but RC4** is Kerberoasting — "nothing but"
+  rather than "any", because a Windows client lists aes256, aes128 and rc4 and
+  the KDC takes the first it can, so refusing a mention of RC4 would refuse the
+  estate. An **AS-REP answering a request that brought no pre-authentication**
+  means the account is exempt and the reply is an offline cracking target: that
+  is AS-REP roasting, and the check is on the reply because it cannot be
+  answered on the request — a bare AS-REQ is the first message of every normal
+  exchange. And a request carrying `PA-FOR-USER`, or the constrained-delegation
+  option *with* an additional ticket, is **S4U2Self** or **S4U2Proxy**, both off
+  by default and both requiring their whole shape before they are called one.
+  Two bounds are behavioural rather than structural: how many *different*
+  service principals one address may ask for inside a window, which catches
+  enumeration whatever encryption it asked in, and how many
+  `KDC_ERR_PREAUTH_FAILED` replies it may collect, which is password spraying
+  bounded per address — because the per-account bound is the KDC's own lockout,
+  and locking the account is what the sprayer wanted. It holds no keys and
+  decrypts nothing; a request inside RFC 6113's FAST armour shows it the armour,
+  and the page says so
 
 - `kind: dhcp`: a **DHCP relay agent that reads what it relays** — the one
   protocol where *answering* is the attack. A client broadcasts "who will

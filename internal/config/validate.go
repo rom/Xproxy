@@ -15,6 +15,7 @@ import (
 	"github.com/rom/xproxy/internal/fipsmode"
 	"github.com/rom/xproxy/internal/ftp"
 	"github.com/rom/xproxy/internal/iec104"
+	kerberoswire "github.com/rom/xproxy/internal/kerberos"
 	"github.com/rom/xproxy/internal/keysource"
 	ldapwire "github.com/rom/xproxy/internal/ldap"
 	"github.com/rom/xproxy/internal/listener"
@@ -27,6 +28,7 @@ import (
 	opcuawire "github.com/rom/xproxy/internal/opcua"
 	"github.com/rom/xproxy/internal/packs"
 	pgwire "github.com/rom/xproxy/internal/pgwire"
+	radiuswire "github.com/rom/xproxy/internal/radius"
 	"github.com/rom/xproxy/internal/rdp"
 	"github.com/rom/xproxy/internal/recenc"
 	respwire "github.com/rom/xproxy/internal/respwire"
@@ -34,6 +36,7 @@ import (
 	s7wire "github.com/rom/xproxy/internal/s7"
 	snmpwire "github.com/rom/xproxy/internal/snmp"
 	"github.com/rom/xproxy/internal/syslog"
+	tacacswire "github.com/rom/xproxy/internal/tacacs"
 	tdswire "github.com/rom/xproxy/internal/tdswire"
 	"github.com/rom/xproxy/internal/telnet"
 	tftpwire "github.com/rom/xproxy/internal/tftp"
@@ -980,6 +983,41 @@ func (v *validator) server(s *Server) {
 				v.errf("%s.mms: required for kind mms", p)
 			} else {
 				v.mmsListener(p+".mms", ln.MMS, ln.Address)
+			}
+		case "radius":
+			// No tls section: RADIUS is UDP and has no transport security of
+			// any kind. RadSec (RFC 6614) puts it inside TLS on TCP 2083,
+			// which is a different transport and not this listener.
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C || ln.TLS != nil {
+				v.errf("%s: a radius listener takes only address and radius: the protocol is UDP and has no TLS", p)
+			}
+			if ln.RADIUS == nil {
+				v.errf("%s.radius: required for kind radius", p)
+			} else {
+				v.radiusListener(p+".radius", ln.RADIUS)
+			}
+		case "tacacs":
+			// A tls section is allowed and means TACACS+ over TLS, which is
+			// the fix for everything RFC 8907 s10.3 admits about the
+			// obfuscation. Most equipment cannot speak it yet.
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
+				v.errf("%s: a tacacs listener takes only address, tacacs and tls", p)
+			}
+			if ln.TACACS == nil {
+				v.errf("%s.tacacs: required for kind tacacs", p)
+			} else {
+				v.tacacsListener(p+".tacacs", ln.TACACS, ln.TLS != nil)
+			}
+		case "kkdcp":
+			// A tls section is required rather than optional, which the
+			// kind's own validator says and says why.
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
+				v.errf("%s: a kkdcp listener takes only address, kkdcp and tls", p)
+			}
+			if ln.KKDCP == nil {
+				v.errf("%s.kkdcp: required for kind kkdcp", p)
+			} else {
+				v.kkdcpListener(p+".kkdcp", ln.KKDCP, ln.TLS != nil)
 			}
 		case "amqp":
 			if ln.AMQP == nil {
@@ -2816,6 +2854,10 @@ var denyReasons = map[string]bool{
 	"modbus_denied": true, "iec104_denied": true, "ntp_denied": true, "ntske_denied": true,
 	"snmp_denied": true, "ldap_denied": true, "tftp_denied": true, "dhcp_denied": true, "dhcp6_denied": true, "coap_denied": true, "opcua_denied": true, "mms_denied": true, "postgres_denied": true, "mysql_denied": true, "tds_denied": true, "redis_denied": true,
 	"bacnet_denied": true, "amqp_denied": true, "s7_denied": true,
+	// The three authentication protocols. Each is a kind whose refusals are
+	// worth banning on for the same reason: a client that keeps being refused
+	// here is a switch with the wrong secret, or something looking for one.
+	"radius_denied": true, "tacacs_denied": true, "kkdcp_denied": true,
 }
 
 // securityTxtFieldRE bounds an extra field name to the token RFC 9116
@@ -14718,6 +14760,10 @@ func (v *validator) access(c *Config) {
 			{"coap engineering", l.CoAP != nil && grantRequired(l.CoAP.Engineering)},
 			{"snmp engineering", l.SNMP != nil && grantRequired(l.SNMP.Engineering)},
 			{"tftp engineering", l.TFTP != nil && grantRequired(l.TFTP.Engineering)},
+			// Device administration is engineering activity too: a
+			// `configure terminal` on a core router is the same kind of
+			// change as a PLC download, and the same mistake applies.
+			{"tacacs engineering", l.TACACS != nil && grantRequired(l.TACACS.Engineering)},
 		} {
 			if g.on {
 				need = append(need, l.Name+" ("+g.kind+")")
@@ -15533,3 +15579,520 @@ func coapAsksForAKey(tc *TLS) bool {
 func pinsKeys(ln *Listener) bool {
 	return ln != nil && ln.Kind == "coap" && ln.CoAP != nil && len(ln.CoAP.PublicKeys) > 0
 }
+
+// The three authentication protocols: RADIUS, TACACS+ and the Kerberos
+// KDC proxy.
+//
+// What these validators have in common is that each of the three has one
+// setting the listener is nearly useless without, and in each case it is
+// the shared secret or the realm list. So each of them errors or warns
+// loudly about that one thing, and is ordinary about the rest: a
+// configuration that passes with a warning here is a configuration that
+// will load and run and read less traffic than its author believes.
+
+// radiusSecret checks a shared secret file: an absolute path to a file
+// nobody but its owner can read.
+//
+// The permission check is an error rather than a warning because of what
+// the secret is. On RADIUS it is the whole of the cryptography -- every
+// packet's integrity, and the obfuscation over every password -- and it is
+// the same secret for every exchange on the link. A group-readable file
+// holding it is a group that can forge an Access-Accept.
+func (v *validator) radiusSecret(p, path string) {
+	v.file(p, path)
+	if !v.fileCheck || !strings.HasPrefix(path, "/") {
+		return
+	}
+	st, err := os.Stat(path)
+	if err != nil || st.IsDir() {
+		return // already reported by file
+	}
+	if st.Mode().Perm()&0o077 != 0 {
+		v.errf("%s: %s is readable by more than its owner (mode %04o); this secret is the whole of this "+
+			"protocol's cryptography, and anybody who can read it can forge an answer", p, path, st.Mode().Perm())
+	}
+}
+
+func (v *validator) radiusListener(p string, m *RADIUSListener) {
+	v.anomaly(p+".anomaly", m.Anomaly)
+	if m.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	if m.SecretFile == "" {
+		// Not an error: a listener with no secret still bounds, rate
+		// limits, refuses by address and reads every attribute, which is
+		// worth having. It cannot verify a digest, which is most of why
+		// this kind exists.
+		v.warnf("%s.secret_file: empty, so nothing can be verified: this listener will carry packets whose "+
+			"Message-Authenticator and Response Authenticator it cannot check, and require_message_authenticator "+
+			"has nothing to check with", p)
+	} else {
+		v.radiusSecret(p+".secret_file", m.SecretFile)
+	}
+	if m.UpstreamSecretFile != "" {
+		v.radiusSecret(p+".upstream_secret_file", m.UpstreamSecretFile)
+		if m.SecretFile == "" {
+			v.errf("%s.upstream_secret_file: set without secret_file, so this listener would re-sign packets "+
+				"it could not verify", p)
+		}
+	}
+	v.modbusCIDRs(p+".allow_clients", m.AllowClients)
+	v.modbusCIDRs(p+".deny_clients", m.DenyClients)
+	if len(m.AllowClients) == 0 {
+		v.warnf("%s.allow_clients: empty, so any address may send: on this protocol the client is a switch or a "+
+			"concentrator at a fixed address, and this list is the cheapest control in the section", p)
+	}
+	v.radiusCodes(p+".codes", m.Codes)
+	v.radiusCodes(p+".deny_codes", m.DenyCodes)
+	v.radiusAuthTypes(p+".auth_types", m.AuthTypes)
+	v.radiusEAPTypes(p+".eap_types", m.EAPTypes)
+	v.radiusEAPTypes(p+".deny_eap_types", m.DenyEAPTypes)
+	v.radiusAttrs(p+".deny_attributes", m.DenyAttributes)
+	v.radiusAttrs(p+".deny_reply_attributes", m.DenyReplyAttributes)
+	v.radiusPrivilege(p+".max_privilege_level", m.MaxPrivilegeLevel)
+	if m.MaxAttributes < 0 {
+		v.errf("%s.max_attributes: must not be negative", p)
+	}
+	if m.MaxMessageBytes < 0 || m.MaxMessageBytes > radiuswire.MaxMessage {
+		v.errf("%s.max_message_bytes: must be between 1 and %d, which is RFC 2865's own maximum",
+			p, radiuswire.MaxMessage)
+	}
+	if m.MaxPending < 0 || m.MaxPending > 256 {
+		// There are 256 identifiers per client, and the relay allocates one
+		// per outstanding request. A larger table cannot hold more, and
+		// asking for one says the configuration expects something the
+		// protocol cannot do.
+		v.errf("%s.max_pending: must be between 1 and 256, which is how many identifiers the protocol has", p)
+	}
+	if m.RateBurst > 0 && m.RateLimit == 0 {
+		v.warnf("%s.rate_burst: set with no rate_limit, so nothing is limited", p)
+	}
+	switch m.DenyResponse {
+	case "", "reject", "drop":
+	default:
+		v.errf("%s.deny_response: must be reject or drop", p)
+	}
+	switch m.DefaultAction {
+	case "", "deny", "allow":
+	default:
+		v.errf("%s.default_action: must be deny or allow", p)
+	}
+	if m.DefaultAction == "allow" && len(m.Rules) == 0 {
+		v.warnf("%s.default_action: allow with no rules carries every request this listener's own lists admit, "+
+			"which is a relay that verifies and bounds but decides nothing", p)
+	}
+	if m.RequireMessageAuthenticator != nil && !*m.RequireMessageAuthenticator {
+		// This is the CVE-2024-3596 mitigation, so turning it off is worth a
+		// line in the operator's own output rather than only in the
+		// documentation.
+		v.warnf("%s.require_message_authenticator: off, so a reply's only integrity check is the Response "+
+			"Authenticator -- which is MD5 with the secret appended, and which a chosen-prefix collision forges "+
+			"(CVE-2024-3596): name the equipment that cannot send one in a rule instead", p)
+	}
+	if m.AllowDynamicAuthorization != nil && *m.AllowDynamicAuthorization {
+		v.warnf("%s.allow_dynamic_authorization: on, so this listener carries Disconnect-Request and CoA-Request: "+
+			"each one ends or re-authorises a live user's session from a single datagram, and they run from the "+
+			"server towards the equipment rather than the other way", p)
+	}
+	if m.RefuseWeakEAP != nil && !*m.RefuseWeakEAP {
+		v.warnf("%s.refuse_weak_eap: off, so EAP-MD5 and LEAP may cross this listener: both are crackable "+
+			"offline from one observed exchange", p)
+	}
+	if m.RequireRealm != nil && *m.RequireRealm && len(m.Realms) == 0 {
+		v.warnf("%s.require_realm: on with no realms list, so a name must carry a realm and any realm will do", p)
+	}
+	names := map[string]bool{}
+	for i := range m.Rules {
+		r := &m.Rules[i]
+		rp := fmt.Sprintf("%s.rules[%d]", p, i)
+		if r.Name == "" {
+			v.errf("%s.name: required", rp)
+		} else if names[r.Name] {
+			v.errf("%s.name: %q is used twice", rp, r.Name)
+		}
+		names[r.Name] = true
+		switch r.Action {
+		case "allow", "deny", "observe":
+		default:
+			v.errf("%s.action: must be allow, deny or observe", rp)
+		}
+		v.modbusCIDRs(rp+".clients", r.Clients)
+		v.radiusCodes(rp+".codes", r.Codes)
+		v.radiusAuthTypes(rp+".auth_types", r.AuthTypes)
+		v.radiusEAPTypes(rp+".eap_types", r.EAPTypes)
+		v.radiusPrivilege(rp+".max_privilege_level", r.MaxPrivilegeLevel)
+		v.modbusSchedule(rp+".schedule", r.Schedule)
+		if r.RequireMessageAuthenticator != nil && !*r.RequireMessageAuthenticator && len(r.Clients) == 0 {
+			v.warnf("%s.require_message_authenticator: off on a rule that names no clients, which turns the "+
+				"CVE-2024-3596 mitigation off for everything the rule matches", rp)
+		}
+	}
+}
+
+func (v *validator) radiusCodes(p string, names []string) {
+	for i, n := range names {
+		if _, ok := radiuswire.CodeOf(n); !ok {
+			v.errf("%s[%d]: %q is not a RADIUS code (%s, or a number 0-255)",
+				p, i, n, strings.Join(radiuswire.CodeNames(), ", "))
+		}
+	}
+}
+
+func (v *validator) radiusAuthTypes(p string, names []string) {
+	for i, n := range names {
+		if _, ok := radiuswire.AuthTypeOf(n); !ok {
+			v.errf("%s[%d]: %q is not an authentication method (%s)",
+				p, i, n, strings.Join(radiuswire.AuthTypeNames(), ", "))
+		}
+	}
+}
+
+func (v *validator) radiusEAPTypes(p string, names []string) {
+	for i, n := range names {
+		if _, ok := radiuswire.EAPTypeOf(n); !ok {
+			v.errf("%s[%d]: %q is not an EAP method (%s, or a number 1-255)",
+				p, i, n, strings.Join(radiuswire.EAPTypeNames(), ", "))
+		}
+	}
+}
+
+func (v *validator) radiusAttrs(p string, names []string) {
+	for i, n := range names {
+		if _, ok := radiuswire.AttrOf(n); !ok {
+			v.errf("%s[%d]: %q is not an attribute (%s, or a number 1-255)",
+				p, i, n, strings.Join(radiuswire.AttrNames(), ", "))
+		}
+	}
+}
+
+func (v *validator) radiusPrivilege(p string, n *int) {
+	if n != nil && (*n < 0 || *n > 15) {
+		v.errf("%s: must be between 0 and 15", p)
+	}
+}
+
+func (v *validator) tacacsListener(p string, m *TACACSListener, hasTLS bool) {
+	v.anomaly(p+".anomaly", m.Anomaly)
+	v.engineering(p+".engineering", m.Engineering)
+	if m.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	if m.SecretFile == "" {
+		// The warning is strong because of what is lost: without the key
+		// this listener reads a twelve-octet header and forwards the body,
+		// so every command setting below it decides nothing.
+		v.warnf("%s.secret_file: empty, so this listener reads headers only: the user, the command and the "+
+			"privilege level are all inside the obfuscated body, and commands, users and max_privilege_level "+
+			"cannot be applied without the key", p)
+		if len(m.Commands) > 0 || len(m.DenyCommands) > 0 {
+			v.errf("%s.commands: set with no secret_file, so the command line cannot be read and these "+
+				"patterns would match nothing", p)
+		}
+		if len(m.Users) > 0 || len(m.DenyUsers) > 0 {
+			v.errf("%s.users: set with no secret_file, so the user name cannot be read and these lists would "+
+				"match nothing", p)
+		}
+	} else {
+		v.radiusSecret(p+".secret_file", m.SecretFile)
+	}
+	if m.UpstreamSecretFile != "" {
+		v.radiusSecret(p+".upstream_secret_file", m.UpstreamSecretFile)
+		if m.SecretFile == "" {
+			v.errf("%s.upstream_secret_file: set without secret_file, so this listener would re-obfuscate "+
+				"bodies it never read", p)
+		}
+	}
+	v.modbusCIDRs(p+".allow_clients", m.AllowClients)
+	v.modbusCIDRs(p+".deny_clients", m.DenyClients)
+	if len(m.AllowClients) == 0 {
+		v.warnf("%s.allow_clients: empty, so any address may connect: the clients here are the estate's own "+
+			"network equipment at fixed addresses", p)
+	}
+	v.tacacsExchanges(p+".exchanges", m.Exchanges)
+	v.tacacsAuthenTypes(p+".authen_types", m.AuthenTypes)
+	v.tacacsServices(p+".authen_services", m.AuthenServices)
+	v.tacacsCommands(p+".commands", m.Commands)
+	v.tacacsCommands(p+".deny_commands", m.DenyCommands)
+	v.radiusPrivilege(p+".max_privilege_level", m.MaxPrivilegeLevel)
+	if m.MaxArgs < 0 || m.MaxArgs > 255 {
+		v.errf("%s.max_args: must be between 1 and 255, which is the protocol's own bound", p)
+	}
+	if m.MaxBodyBytes < 0 || m.MaxBodyBytes > tacacswire.MaxBody {
+		v.errf("%s.max_body_bytes: must be between 1 and %d", p, tacacswire.MaxBody)
+	}
+	if m.MaxSessions < 0 || m.MaxSessionsPerClient < 0 || m.MaxSessionsPerConnection < 0 {
+		v.errf("%s: the session bounds must not be negative", p)
+	}
+	if m.RateBurst > 0 && m.RateLimit == 0 {
+		v.warnf("%s.rate_burst: set with no rate_limit, so nothing is limited", p)
+	}
+	switch m.DenyResponse {
+	case "", "fail", "drop":
+	default:
+		v.errf("%s.deny_response: must be fail or drop", p)
+	}
+	switch m.DefaultAction {
+	case "", "deny", "allow":
+	default:
+		v.errf("%s.default_action: must be deny or allow", p)
+	}
+	switch m.UpstreamTLSMode {
+	case "", "disable", "prefer", "require":
+	default:
+		v.errf("%s.upstream_tls_mode: must be disable, prefer or require", p)
+	}
+	if m.UpstreamTLS != nil {
+		v.upstreamTLS(p+".upstream_tls", m.UpstreamTLS)
+	}
+	if m.UpstreamTLS != nil && (m.UpstreamTLSMode == "" || m.UpstreamTLSMode == "disable") {
+		v.errf("%s.upstream_tls: set with upstream_tls_mode disable, which never uses it", p)
+	}
+	if m.RequireTLS != nil && *m.RequireTLS && !hasTLS {
+		v.errf("%s.require_tls: set, but the listener has no tls section to terminate it with", p)
+	}
+	if m.RefuseUnencrypted != nil && !*m.RefuseUnencrypted && !hasTLS {
+		v.warnf("%s.refuse_unencrypted: off on a listener with no tls, so a body may arrive in the clear: "+
+			"RFC 8907 allows the flag only on a secured transport", p)
+	}
+	if m.AllowFollow != nil && *m.AllowFollow {
+		v.warnf("%s.allow_follow: on, so a server may redirect a client to another host whose address, port and "+
+			"key are in the reply's data field -- RFC 8907 deprecates it and says a client should treat it as a "+
+			"failure", p)
+	}
+	if m.AllowUnauthenticatedAuthorization != nil && *m.AllowUnauthenticatedAuthorization {
+		v.warnf("%s.allow_unauthenticated_authorization: on, so a device may ask whether an unnamed user may run "+
+			"a command, and be told yes", p)
+	}
+	if m.DefaultAction == "allow" && len(m.Commands) == 0 && len(m.DenyCommands) == 0 && len(m.Rules) == 0 {
+		v.warnf("%s.default_action: allow with no command lists and no rules carries every command: on the "+
+			"protocol that authorises each one separately, that is the setting worth a second look", p)
+	}
+	names := map[string]bool{}
+	for i := range m.Rules {
+		r := &m.Rules[i]
+		rp := fmt.Sprintf("%s.rules[%d]", p, i)
+		if r.Name == "" {
+			v.errf("%s.name: required", rp)
+		} else if names[r.Name] {
+			v.errf("%s.name: %q is used twice", rp, r.Name)
+		}
+		names[r.Name] = true
+		switch r.Action {
+		case "allow", "deny", "observe":
+		default:
+			v.errf("%s.action: must be allow, deny or observe", rp)
+		}
+		v.modbusCIDRs(rp+".clients", r.Clients)
+		v.tacacsExchanges(rp+".exchanges", r.Exchanges)
+		v.tacacsAuthenTypes(rp+".authen_types", r.AuthenTypes)
+		v.tacacsServices(rp+".authen_services", r.AuthenServices)
+		v.tacacsCommands(rp+".commands", r.Commands)
+		v.tacacsCommands(rp+".deny_commands", r.DenyCommands)
+		v.radiusPrivilege(rp+".max_privilege_level", r.MaxPrivilegeLevel)
+		v.modbusSchedule(rp+".schedule", r.Schedule)
+		if len(r.Commands) > 0 && m.SecretFile == "" {
+			v.errf("%s.commands: set with no secret_file on the listener, so the command line cannot be read", rp)
+		}
+	}
+}
+
+func (v *validator) tacacsExchanges(p string, names []string) {
+	for i, n := range names {
+		if _, ok := tacacswire.TypeOf(n); !ok {
+			v.errf("%s[%d]: %q is not an exchange (%s)", p, i, n, strings.Join(tacacswire.TypeNames(), ", "))
+		}
+	}
+}
+
+func (v *validator) tacacsAuthenTypes(p string, names []string) {
+	for i, n := range names {
+		if _, ok := tacacswire.AuthenTypeOf(n); !ok {
+			v.errf("%s[%d]: %q is not an authentication type (%s)",
+				p, i, n, strings.Join(tacacswire.AuthenTypeNames(), ", "))
+		}
+	}
+}
+
+func (v *validator) tacacsServices(p string, names []string) {
+	for i, n := range names {
+		if _, ok := tacacswire.ServiceOf(n); !ok {
+			v.errf("%s[%d]: %q is not a service (%s)", p, i, n, strings.Join(tacacswire.ServiceNames(), ", "))
+		}
+	}
+}
+
+// tacacsCommands checks a command pattern.
+//
+// The grammar is deliberately tiny: words, with an optional trailing
+// `...`. A wildcard in the middle is refused rather than supported,
+// because a pattern with a hole in it is a pattern whose author and whose
+// reader disagree about what it covers -- and what it covers here is
+// whether somebody can reconfigure a core router.
+func (v *validator) tacacsCommands(p string, pats []string) {
+	for i, pat := range pats {
+		s := strings.TrimSpace(pat)
+		if s == "" {
+			v.errf("%s[%d]: empty", p, i)
+			continue
+		}
+		if len(s) > 256 {
+			v.errf("%s[%d]: at most 256 characters", p, i)
+			continue
+		}
+		words := strings.Fields(s)
+		for j, w := range words {
+			if w != "..." {
+				if strings.Contains(w, "*") || strings.Contains(w, "...") {
+					v.errf("%s[%d]: %q may only wildcard with a trailing \"...\"; a pattern with a hole in the "+
+						"middle is one whose reader cannot tell what it covers", p, i, pat)
+					break
+				}
+				continue
+			}
+			if j != len(words)-1 {
+				v.errf("%s[%d]: \"...\" must be the last word", p, i)
+				break
+			}
+		}
+	}
+}
+
+func (v *validator) kkdcpListener(p string, m *KKDCPListener, hasTLS bool) {
+	v.anomaly(p+".anomaly", m.Anomaly)
+	if m.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	if !hasTLS {
+		// MS-KKDCP is HTTPS, and the reason is not ceremonial: the inner
+		// message carries a pre-authentication blob derived from the user's
+		// password. An error rather than a warning, because a plaintext KDC
+		// proxy is not a weaker deployment of this kind -- it is a different
+		// and worse thing wearing its name.
+		v.errf("%s: a kkdcp listener requires a tls section: the protocol is HTTPS, and the message it carries "+
+			"holds a value derived from the user's password", p)
+	}
+	if len(m.Realms) == 0 {
+		v.errf("%s.realms: required: a KDC proxy with no realm policy relays Kerberos for any realm a client "+
+			"names, to whatever its upstream resolves to, from this estate's address", p)
+	}
+	for i, r := range m.Realms {
+		if strings.TrimSpace(r) == "" {
+			v.errf("%s.realms[%d]: empty", p, i)
+		}
+	}
+	if m.Path != "" && !strings.HasPrefix(m.Path, "/") {
+		v.errf("%s.path: must begin with /", p)
+	}
+	v.kkdcpMessageTypes(p+".message_types", m.MessageTypes)
+	v.kkdcpETypes(p+".etypes", m.ETypes)
+	v.kkdcpETypes(p+".deny_etypes", m.DenyETypes)
+	for i := range m.Rules {
+		v.kkdcpETypes(fmt.Sprintf("%s.rules[%d].etypes", p, i), m.Rules[i].ETypes)
+	}
+	v.kkdcpOptions(p+".deny_options", m.DenyOptions)
+	if m.MaxMessageBytes < 0 {
+		v.errf("%s.max_message_bytes: must not be negative", p)
+	}
+	if m.MaxMessageBytes > 0 && m.MaxMessageBytes < 4096 {
+		v.errf("%s.max_message_bytes: %d is below what real traffic needs: a Windows reply carries a PAC of "+
+			"tens of kilobytes, and a bound this low refuses exactly the users whose group membership matters",
+			p, m.MaxMessageBytes)
+	}
+	if m.MaxRequestsPerConnection < 0 || m.MaxDistinctServices < 0 || m.MaxPreauthFailures < 0 {
+		v.errf("%s: the bounds must not be negative", p)
+	}
+	if m.MaxSessions < 0 || m.MaxSessionsPerClient < 0 {
+		v.errf("%s: the session bounds must not be negative", p)
+	}
+	if m.RateBurst > 0 && m.RateLimit == 0 {
+		v.warnf("%s.rate_burst: set with no rate_limit, so nothing is limited", p)
+	}
+	switch m.DenyResponse {
+	case "", "error", "status":
+	default:
+		v.errf("%s.deny_response: must be error or status", p)
+	}
+	switch m.DefaultAction {
+	case "", "deny", "allow":
+	default:
+		v.errf("%s.default_action: must be deny or allow", p)
+	}
+	if boolOrFalse(m.AllowPasswordChange) && m.PasswordUpstream == "" {
+		v.errf("%s.password_upstream: required when allow_password_change is set: kpasswd is a different "+
+			"service on a different port, and sending an AP-REQ to the KDC's own would reach nothing", p)
+	}
+	if !boolOrFalse(m.AllowPasswordChange) && m.PasswordUpstream != "" {
+		v.warnf("%s.password_upstream: set with allow_password_change off, so nothing reaches it", p)
+	}
+	if m.RefusePreauthExempt != nil && !*m.RefusePreauthExempt {
+		v.warnf("%s.refuse_preauth_exempt: off, so this proxy will carry an AS-REP for a request that brought "+
+			"no pre-authentication -- a reply whose encrypted part is an offline password-cracking target "+
+			"(AS-REP roasting)", p)
+	}
+	if m.RefuseWeakETypes != nil && !*m.RefuseWeakETypes {
+		v.warnf("%s.refuse_weak_etypes: off, so a request offering nothing but %s may cross this listener, "+
+			"which on a TGS-REQ for a service principal is Kerberoasting", p,
+			strings.Join(kerberoswire.WeakETypes(), ", "))
+	}
+	if boolOrFalse(m.AllowS4U2Proxy) && !boolOrFalse(m.AllowS4U2Self) {
+		// Not an error: the two halves are separate requests and an estate
+		// may genuinely carry one. It is nearly always a mistake, because
+		// the usual S4U chain is self then proxy.
+		v.warnf("%s.allow_s4u2proxy: on with allow_s4u2self off, which carries the second half of a delegation "+
+			"chain and not the first", p)
+	}
+	if m.MaxDistinctServices > 0 && m.ServiceWindow.D() > time.Hour {
+		v.warnf("%s.service_window: longer than an hour, so one slow enumeration spread over a working morning "+
+			"counts against the same bound as a burst", p)
+	}
+	names := map[string]bool{}
+	for i := range m.Rules {
+		r := &m.Rules[i]
+		rp := fmt.Sprintf("%s.rules[%d]", p, i)
+		if r.Name == "" {
+			v.errf("%s.name: required", rp)
+		} else if names[r.Name] {
+			v.errf("%s.name: %q is used twice", rp, r.Name)
+		}
+		names[r.Name] = true
+		switch r.Action {
+		case "allow", "deny", "observe":
+		default:
+			v.errf("%s.action: must be allow, deny or observe", rp)
+		}
+		v.modbusCIDRs(rp+".clients", r.Clients)
+		v.kkdcpMessageTypes(rp+".message_types", r.MessageTypes)
+		v.modbusSchedule(rp+".schedule", r.Schedule)
+	}
+}
+
+func (v *validator) kkdcpMessageTypes(p string, names []string) {
+	for i, n := range names {
+		if _, ok := kerberoswire.MsgTypeOf(n); !ok {
+			v.errf("%s[%d]: %q is not a request type (%s)", p, i, n,
+				strings.Join(kerberoswire.MsgTypeNames(), ", "))
+		}
+	}
+}
+
+func (v *validator) kkdcpETypes(p string, names []string) {
+	for i, n := range names {
+		if _, ok := kerberoswire.ETypeOf(n); !ok {
+			v.errf("%s[%d]: %q is not an encryption type (%s, or a number)", p, i, n,
+				strings.Join(kerberoswire.ETypeNames(), ", "))
+		}
+	}
+}
+
+func (v *validator) kkdcpOptions(p string, names []string) {
+	for i, n := range names {
+		if _, ok := kerberoswire.OptionOf(n); !ok {
+			v.errf("%s[%d]: %q is not a KDC option (%s)", p, i, n,
+				strings.Join(kerberoswire.OptionNames(), ", "))
+		}
+	}
+}
+
+// boolOrFalse reads an optional boolean that defaults to off, so a warning
+// about a setting says what the listener will actually do with it.
+func boolOrFalse(p *bool) bool { return p != nil && *p }
