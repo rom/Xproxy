@@ -87,6 +87,41 @@ right place for a counter meaning "requests this listener forwarded" -- and the
 reply arrives on another goroutine, so under load the answer is back before the
 counter moves.
 
+**Three more packages that were carried by their end-to-end tests.** On smtp,
+the two decisions taken before anything is dialled: the client allow list, which
+answers for an address the parser could not even read -- an empty list admits
+everything, including an invalid address, so the asymmetry is asserted rather
+than assumed -- and the declared size, read the way RFC 1870 writes it, which is
+`SIZE=` anywhere in the `MAIL FROM` line in any case, where a line carrying no
+declaration must come back as "no size" rather than as a size of zero, because
+zero is a declaration a client can make. Then the AUTH exchange, which the fake
+MTA could not previously carry at all: it now answers challenge by challenge, so
+a multi-round SASL mechanism is relayed a challenge at a time, one that never
+ends is ended by the relay rather than by the client, a credential is refused
+before it travels when the policy says so, and `XCLIENT` tells the upstream
+which client the session is for. All of them upgrade with STARTTLS first,
+because `require_tls` is forced on wherever a TLS section exists -- which is the
+behaviour, and now has a test that depends on it. On syslog, the message filter:
+the facility lists with deny winning, the severity floor read from both ends,
+the text patterns, and which of those wins when two disagree. And the Kerberos
+DER reader, where the refusals are the product: a `KerberosString` is read under
+every string tag the installed base actually sends and under nothing else, an
+explicit tag or a SEQUENCE has to be constructed, an INTEGER has one spelling
+because a non-minimal encoding is a second message with the same value, and the
+options bit string has to be a whole number of octets with its unused-bit count
+zero.
+
+**Four protocols had no row in `docs/TESTS.md`.** coap, dhcp6, mms and opcua
+were tested as well as their siblings and documented nowhere, so the table now
+names every test in all eight packages along with what the protocol's own traps
+are: the CoAP option number that carries its handling rules in its own low bits
+and the Block2 transfer that declares a size before it sends it; the DHCPv6
+lifetime of zero that is a withdrawal rather than a short lease and the prefix
+delegation that has to be inside the estate's prefix and not around it; the MMS
+functional constraint that decides whether a write reaches a breaker, a
+protection setting or a report control; and the four layers an OPC UA session
+is decided at, in the order that makes `read_only` mean what it says.
+
 ### Added (the event stream: a policy for text/event-stream)
 
 - **`sse_guard` on a route is a policy for Server-Sent Events**, which is the
