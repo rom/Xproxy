@@ -122,6 +122,20 @@ functional constraint that decides whether a write reaches a breaker, a
 protection setting or a report control; and the four layers an OPC UA session
 is decided at, in the order that makes `read_only` mean what it says.
 
+**The per-package table in `docs/TESTS.md` is regenerated from the passing
+gate.** The core packages together are at 86.0 % of 108466 statements, up from
+85.3 %, and the five kinds this release added are no longer the bottom of the
+table: radius 66 % to 80 %, kkdcp 69 % to 82 %, pop3 67 % to 75 %, imap 74 % to
+78 %, tacacs 74 % to 84 %. Alongside them smtp 67 % to 74 %, the MMS wire reader
+67 % to 74 %, the two OT kinds to 84 % each, and kerberos 79 % to 81 %. The
+lowest core package is now `internal/daemon` at 70 %, which is the signal-handling
+and rollback path of a whole daemon. One figure went the other way: the
+`cmd/xproxyctl` row claimed 82 % from its own tests and a measurement now gives
+68 %, so the row was stale -- the package sits outside the gate, which is exactly
+how a figure in a document drifts from the code without anything failing. What the
+remainder is has not changed: the formatting of views whose subsystems need a
+live peer, authority, resolver or scanner behind them.
+
 ### Added (the event stream: a policy for text/event-stream)
 
 - **`sse_guard` on a route is a policy for Server-Sent Events**, which is the
