@@ -190,6 +190,9 @@ the mappings below are also the vocabulary a pack is written in.
 | [T1098](https://attack.mitre.org/techniques/T1098/) | Account Manipulation | persistence, privilege-escalation | A change to who may do what, rather than a use of what one may: a directory write, a broker's user and permission administration, a password-modify operation. |
 | [T1105](https://attack.mitre.org/techniques/T1105/) | Ingress Tool Transfer | command-and-control | A file moved into or out of a session that is meant to be interactive: an SFTP or FTP transfer the policy refuses, a transfer the content scanner stopped. |
 | [T1110](https://attack.mitre.org/techniques/T1110/) | Brute Force | credential-access | Credentials tried rather than known: a failed authentication, a bind the directory refused, an identity nobody enrolled, the same source failing faster than a person types. |
+| [T1071.003](https://attack.mitre.org/techniques/T1071/003/) | Application Layer Protocol: Mail Protocols | command-and-control | A mail protocol used as a channel rather than for mail: a mailbox written to and read from as a drop box, which looks like a client that appends and fetches and never sends. |
+| [T1114](https://attack.mitre.org/techniques/T1114/) | Email Collection | collection | A mailbox read for what is in it rather than to read mail: a request that names most of a folder, a search across every mailbox an account can open, messages copied somewhere easier to fetch from. |
+| [T1114.002](https://attack.mitre.org/techniques/T1114/002/) | Email Collection: Remote Email Collection | collection | The mail server itself queried with a credential rather than a client's own mailbox being read on its own machine, which is what an IMAP or POP3 relay sees all of: the volume is the signal, because the access is legitimate. |
 | [T1133](https://attack.mitre.org/techniques/T1133/) | External Remote Services | initial-access, persistence | The estate's own remote access reached from where the policy does not allow it, or without the just-in-time grant that makes a session legitimate. |
 | [T1190](https://attack.mitre.org/techniques/T1190/) | Exploit Public-Facing Application | initial-access | A request shaped to make the service in front do something its author did not mean: a WAF rule or virtual patch matching, a smuggled message, a statement before authentication, a command inlined into another protocol. |
 | [T1213](https://attack.mitre.org/techniques/T1213/) | Data from Information Repositories | collection | The estate's own stores read past what the policy grants: a database, a directory or a broker queried for data this client has no business holding. |
@@ -689,6 +692,103 @@ them, which is why an operations centre can filter on
 | `tls_required` | T1040 |  |
 | `user_not_allowed` | T1078 |  |
 | `weak_auth` | T1040 | an authentication method that puts the password on the wire, offered where a stronger one was available |
+
+#### imap
+
+| Reason | Technique | Why this one |
+|--------|-----------|--------------|
+| `anomaly_new_device` | T1114 | a mailbox this account has not opened before |
+| `anomaly_new_pair` | T1114 |  |
+| `anomaly_new_point` | T1078 |  |
+| `anomaly_new_symbol` | T1114.002 |  |
+| `anomaly_new_talker` | T1133 |  |
+| `anomaly_off_hours` | T1114.002 |  |
+| `anomaly_quiet` | T1114 |  |
+| `anomaly_rate` | T1114.002 | a fetch volume this account has not reached before |
+| `anomaly_sequence_unseen` | T1114 |  |
+| `anomaly_value_jump` | T1114.002 |  |
+| `anomaly_value_range` | T1114.002 |  |
+| `anomaly_write_rate` | T1071.003 |  |
+| `append_too_large` | T1071.003, T1565.001 | a message written into a mailbox, which is how a mailbox becomes a drop box |
+| `auth_failed` | T1110 | a credential the mail server refused |
+| `client_not_allowed` | T1133 |  |
+| `command_denied` | T1114 |  |
+| `command_not_allowed` | T1114 |  |
+| `compression_not_allowed` | T1562 | a deflated connection cannot be inspected |
+| `default_deny` | T1114, T1213 |  |
+| `fetch_too_large` | T1114, T1114.002 | a request named more of a mailbox than the policy allows |
+| `idle_not_allowed` | T1499 |  |
+| `idle_too_long` | T1499 |  |
+| `line_too_long` | T1499 |  |
+| `literal_too_large` | T1499 |  |
+| `mailbox_denied` | T1114 |  |
+| `mailbox_not_allowed` | T1114 |  |
+| `malformed_command` | T1190 |  |
+| `malformed_greeting` | T1190 |  |
+| `malformed_mailbox` | T1190 |  |
+| `malformed_response` | T1190 |  |
+| `malformed_sequence_set` | T1190 |  |
+| `max_connections` | T1499 |  |
+| `mechanism_not_allowed` | T1040 |  |
+| `not_done` | T1071.003 |  |
+| `open_sequence_set` | T1114, T1114.002 | a request named every message in the mailbox, so its size is the mailbox's |
+| `preauth_greeting` | T1556 | the server said the transport had authenticated somebody this relay never saw |
+| `rate_limited` | T1499 |  |
+| `read_only` | T1565.001 |  |
+| `response_too_long` | T1499 |  |
+| `rule_denied` | T1114, T1213 |  |
+| `session_timeout` | T1499 |  |
+| `starttls_injection` | T1557 | a command pipelined behind the upgrade, plaintext to one end and ciphertext to the other |
+| `starttls_not_offered` | T1040 |  |
+| `tls_required` | T1040 | a mailbox password on an unencrypted connection |
+| `too_many_commands` | T1499 |  |
+| `too_many_literals` | T1499 |  |
+| `too_many_pending` | T1499 |  |
+| `unknown_command` | T1071.003 | a command this relay cannot name, which it refuses rather than tunnel |
+| `user_not_allowed` | T1078 |  |
+| `wrong_state` | T1071.003 |  |
+
+#### pop3
+
+| Reason | Technique | Why this one |
+|--------|-----------|--------------|
+| `anomaly_new_device` | T1114 |  |
+| `anomaly_new_pair` | T1114 |  |
+| `anomaly_new_point` | T1078 |  |
+| `anomaly_new_symbol` | T1114.002 |  |
+| `anomaly_new_talker` | T1133 |  |
+| `anomaly_off_hours` | T1114.002 |  |
+| `anomaly_quiet` | T1114 |  |
+| `anomaly_rate` | T1114.002 |  |
+| `anomaly_sequence_unseen` | T1114 |  |
+| `anomaly_value_jump` | T1114.002 | a retrieval far larger than this account's own history |
+| `anomaly_value_range` | T1114.002 |  |
+| `anomaly_write_rate` | T1565.001 |  |
+| `auth_failed` | T1110 |  |
+| `client_not_allowed` | T1133 |  |
+| `command_denied` | T1114 |  |
+| `command_not_allowed` | T1114 |  |
+| `default_deny` | T1114, T1213 |  |
+| `line_too_long` | T1499 |  |
+| `malformed_command` | T1190 |  |
+| `malformed_greeting` | T1190 |  |
+| `malformed_line_count` | T1190 |  |
+| `malformed_message_number` | T1190 |  |
+| `malformed_reply` | T1190 |  |
+| `max_connections` | T1499 |  |
+| `mechanism_not_allowed` | T1040 |  |
+| `rate_limited` | T1499 |  |
+| `read_only` | T1565.001 | DELE and RSET, which decide what the mailbox holds after the update state |
+| `retrieval_too_large` | T1114, T1114.002 | the octets one connection retrieved, which on this protocol is the only copying bound there is |
+| `rule_denied` | T1114, T1213 |  |
+| `session_timeout` | T1499 |  |
+| `stls_injection` | T1557 |  |
+| `stls_not_offered` | T1040 |  |
+| `tls_required` | T1040 | USER and PASS put the password on the wire one line apart |
+| `too_many_messages` | T1114, T1114.002 |  |
+| `unknown_command` | T1071.003 |  |
+| `user_not_allowed` | T1078 |  |
+| `wrong_state` | T1071.003 |  |
 
 #### radius (shared: xrelay and xot)
 

@@ -112,7 +112,7 @@ estate — and binds only the kinds of its own role:
 |--------|-------|----------------|
 | `xproxy` | the open internet | `http`, `forward`, `tcp`, `udp`, `dns` |
 | `xgate` | people | `ssh`, `telnet`, `vnc`, `rdp` |
-| `xrelay` | services | `smtp`, `ftp`, `ldap`, `postgres`, `mysql`, `tds`, `redis`, `amqp` |
+| `xrelay` | services | `smtp`, `imap`, `pop3`, `ftp`, `ldap`, `postgres`, `mysql`, `tds`, `redis`, `amqp` |
 | `xot` | the plant | `modbus`, `iec104`, `s7`, `mms`, `bacnet`, `opcua`, `coap` |
 | `xrelay` **and** `xot` | what a plant and a data centre both run | `mqtt`, `syslog`, `snmp`, `tftp`, `dhcp`, `dhcp6`, `ntp`, `ntske` — linked into both, and the listener says which one binds it with `daemon: xot` (the default is `xrelay`) |
 | Devices | CoAP (RFC 7252) over UDP, with block-wise transfer (RFC 7959), Observe (RFC 7641), resource discovery (RFC 6690), the RFC 8132 methods and the option classes that tell a proxy what to do with an option it cannot name; read as a relay: the method, the path, the content format, the declared transfer size, and the size of an answer relative to the question; and all three of RFC 7252 §9's security modes, so a **pre-shared key identity** or a **pinned public key** is what the policy names rather than an address | `coap` |
@@ -183,6 +183,7 @@ its own for what is deliberately *not* implemented and why.
 | DNS | UDP, TCP, DoT (RFC 7858), DoH (RFC 8484) and DoQ (RFC 9250); DNSSEC validation with aggressive NSEC and NSEC3 caching (RFC 8198); response policy zones; DNS64 (RFC 6147); designated-resolver discovery (RFC 9462); SVCB and HTTPS records (RFC 9460); DNS cookies; EDNS client subnet policy | `dns` |
 | Forward and tunnelling | HTTP CONNECT, SOCKS5 (RFC 1928, 1929, 1961) with UDP associations, CONNECT-UDP (RFC 9298), CONNECT-IP (RFC 9484), and TLS interception inside a tunnel | `forward` |
 | Mail | SMTP (RFC 5321) and submission (RFC 6409), STARTTLS (RFC 3207), implicit TLS (RFC 8314), `SIZE`, `AUTH`, enhanced status codes, and Postfix's `XCLIENT` so the mail server still sees the real client | `smtp` |
+| Mailboxes | IMAP4rev2 (RFC 9051) and IMAP4rev1 (RFC 3501), which is what the installed base speaks: the four states and which commands belong to each, the tagged, untagged and continuation response forms, the synchronising literal and RFC 7888's LITERAL+, the sequence set a FETCH names, SASL-IR (RFC 4959), IDLE (RFC 2177), MOVE (RFC 6851) and the ACL and quota commands -- with mailbox names compared on the **decoded** name, because RFC 3501 §5.1.3's modified UTF-7 spells one mailbox two ways and a policy that compares the spelling compares nothing. POP3 (RFC 1939) with CAPA (RFC 2449), AUTH (RFC 5034) and §3's dot-stuffing, where whether a reply is one line or many depends on the command *and its argument* | `imap`, `pop3` |
 | Messaging | MQTT 3.1.1 (also ISO/IEC 20922) and MQTT 5.0 | `mqtt` |
 | File transfer | FTP and FTPS (`AUTH TLS`) with the data connection mediated at both ends; SFTP version 3 inside the SSH subsystem channel | `ftp`, `ssh` |
 | Logging | Syslog RFC 5424 and RFC 3164 over UDP, TCP (RFC 6587 framing) and TLS, re-emitted in one dialect | `syslog` |
@@ -229,6 +230,8 @@ protocol so that a policy can be written in that protocol's own terms:
 | `vnc` | `xgate` | RFB 3.3–3.8, VeNCrypt, vendor security types | Security type, whose credential opens the desktop, view-only, the picture's bounds; recording, MFA |
 | `rdp` | `xgate` | RDP over TLS, NLA, or the protocol's own encryption | Channels, devices, the connection sequence; recording, MFA |
 | `smtp` | `xrelay` | SMTP and submission | Commands, where a message ends, TLS and authentication, bounds |
+| `imap` | `xrelay` | IMAP4rev1 and IMAP4rev2 on 143 with STARTTLS or 993 with implicit TLS | Whether the command is one this relay knows and legal in the **state** the connection is in, both answered here so the mailbox never sees a `FETCH` that arrived before a `SELECT`; whether a credential is about to cross a transport that cannot carry it, which is not shadowable because by the time a policy could be consulted the password has travelled; which mechanisms, identities, commands and **mailboxes** -- the mailbox compared on its decoded name, with `*` crossing the hierarchy and `%` stopping inside one level, exactly as IMAP's own `LIST` does; and then the bound that is the point of the kind: how many messages a sequence set may **name**, refused before the server reads anything, with an open-ended `1:*` refused outright because the size of that request is the mailbox's rather than the client's. `max_append_bytes` is checked against a literal's **declared** size, because LITERAL+ sends the octets without waiting for anybody to agree. Two of the server's own answers are changed: the capability list is narrowed -- a mechanism the policy will refuse is removed and `LOGINDISABLED` added, so a client asks for something it can use instead of sending a password into a refusal, and `COMPRESS=DEFLATE` goes because a deflated connection cannot be inspected -- and a **PREAUTH greeting** is refused, since it claims the connection is authenticated before anybody named an identity |
+| `pop3` | `xrelay` | POP3 on 110 with STLS or 995 with implicit TLS | The same five questions in the shape a protocol with one mailbox and no sequence set allows: the mechanisms (`USER`/`PASS`, APOP's digest over the server's own greeting timestamp, and SASL), the identities, the commands -- `DELE` and `RSET` being the writes a `read_only` listener refuses -- and a copying bound that is a **running total**, counted as the octets pass and enforced *mid-transfer*, because a bound that only applied to the next command is one a client walks past one message at a time and a single `RETR` of a very large message is a mailbox copy by itself |
 | `mqtt` | `xrelay`, `xot` | MQTT 3.1.1 and 5.0 | Topics and filters, client identifiers, retained messages, wills |
 | `coap` | `xot` | CoAP (RFC 7252) over UDP, block-wise transfer, Observe, resource discovery | The methods, the **paths** -- which are the device's object model, so the policy is positive and the default is deny -- the queries, the content formats in both directions, `Proxy-Uri` and `Proxy-Scheme` refused by default, an option the relay cannot name answered the way the standard says, a path whose segments would not mean what the joined path looks like, the payload, one block, the whole declared transfer, the outstanding Observe registrations, the size of an answer as a **multiple of the question**, and the **security name** the DTLS session proved — a pre-shared key identity (RFC 7252 §9.1.3.1) or a pinned public key (§9.1.3.2), which on a shared segment is the only thing telling one sensor from another |
 | `mms` | `xot` | IEC 61850 MMS on TCP 102: TPKT, COTP, ISO session and presentation, ACSE and the MMS service layer, with a learning mode that proposes the object rules | The client networks; the ACSE **AP-title** and AE-qualifier, which is the only identity this protocol has and is not a credential; whether the ACSE authentication value is a **cleartext password** (counted and reported by default, refused on request); the service and its class; the logical device; the object; and the **functional constraint** — `$CO$` operates a breaker, `$SG$` and `$SE$` change a protection relay's trip characteristic, `$BR$` and `$RP$` decide whether the control centre hears about either; then whether an operate was **selected** first, which is the one check here a relay can make that the device may not |
@@ -302,6 +305,40 @@ protocol so that a policy can be written in that protocol's own terms:
   is refused or repaired, and anything pipelined behind `STARTTLS` ends
   the session. Requires TLS and authentication before `MAIL` where you
   say so; bounds recipients, messages, line length and refused commands
+- `kind: imap` and `kind: pop3`: the **mailbox** protocols, which are a
+  different problem from the submission relay above. A submission proxy
+  sees one message on its way out and can decide about it; a mailbox
+  proxy sees a client that already has a credential asking for
+  everything that ever arrived. The interesting request is not
+  malformed, oversized or strange — it is `UID FETCH 1:* (BODY[])`,
+  which is what a mail client's first synchronisation and an emptied
+  account look like character for character. So the bound is on how much
+  one request may **name**: `max_fetch_messages` counts the messages in a
+  sequence set and refuses before the server reads anything, an
+  open-ended set is refused outright because its size is the mailbox's
+  rather than the client's, and the one account that really does
+  synchronise everything is written down as a rule instead of the bound
+  being turned off. On POP3 the same bound is a running total —
+  `max_retr_bytes` and `max_messages` counted as the octets pass and
+  enforced *mid-transfer*, since one `RETR` of a very large message is a
+  mailbox copy by itself. Both refuse a credential on a transport that
+  cannot carry it and neither refusal is shadowable, because by the time
+  a policy could be consulted the password has travelled; both terminate
+  the RFC 2595 upgrade on the plaintext port rather than forwarding it,
+  which is how the devices nobody can reconfigure get TLS anyway; and
+  both **narrow what the server says it can do**, so a mechanism the
+  policy will refuse is gone from the capability list and a client asks
+  for something it can use instead. IMAP is the larger of the two by a
+  wide margin, and three details are where the care went: the command
+  set is checked against RFC 9051's **state table**, so a `FETCH` before
+  a `SELECT` is answered here; a mailbox name is compared **decoded**,
+  because RFC 3501 §5.1.3's modified UTF-7 spells `台北` two ways and a
+  policy that compares the spelling compares nothing; and a bound on an
+  `APPEND` is checked against the literal's **declared** size, because
+  RFC 7888's LITERAL+ sends the octets without waiting for anybody to
+  agree. `COMPRESS=DEFLATE` is refused on both — a deflated connection
+  cannot be inspected — and so is a **PREAUTH greeting**, which claims
+  the connection is authenticated before anybody named an identity
 - `kind: mqtt`: MQTT 3.1.1 and 5.0 with a topic policy. A subscription
   is a filter, not a topic, so an allow list is checked by subsumption
   and a deny list by overlap — which is what stops a device asking for
