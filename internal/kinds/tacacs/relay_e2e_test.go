@@ -579,3 +579,243 @@ upstreams:
 		t.Fatal("a command was counted on a listener that cannot read one")
 	}
 }
+
+// The behavioural models get a user, a device and a command, which is more
+// than any other kind in this project gives them. With settle at zero and the
+// symbols model on, the first command a user runs is novel by construction --
+// which is what makes this testable without a day of history behind it.
+func TestTheBehaviouralModelsSeeTheUserAndTheCommand(t *testing.T) {
+	t.Parallel()
+	srv := startServer(t, &fakeServer{})
+	section := "        allow_clients: [127.0.0.1/32]\n" +
+		"        default_action: allow\n" +
+		"        anomaly:\n          enabled: true\n          action: alert\n" +
+		"          settle: 0s\n          novelty: {symbols: true}\n"
+	s, addr := relay(t, section, "", srv.addr())
+	d := connect(t, addr)
+
+	// A look, then a change. `show` is one of the four verbs every platform
+	// spells the same way, so the first is a read and the second is not --
+	// which is what the write-rate model is counting.
+	if r, ok := d.authorize(1, "alice", 1, "service=shell", "cmd=show", "cmd-arg=version"); !ok || !r.Status.Pass() {
+		t.Fatalf("`show version` with the models on: %+v ok=%v", r, ok)
+	}
+	if r, ok := d.authorize(2, "alice", 15, "service=shell", "cmd=configure", "cmd-arg=terminal"); !ok || !r.Status.Pass() {
+		t.Fatalf("`configure terminal` with action: alert: %+v ok=%v", r, ok)
+	}
+
+	// action: alert carries the command and reports it. The finding counts as
+	// a refusal reason because that is where every kind's findings land; what
+	// it does *not* do on this kind is reach the ban ladder.
+	if counts := s.Counters().RefusalCounts()["tacacs"]; len(counts) == 0 {
+		t.Errorf("the models reported nothing with settle: 0s and novelty on: %+v", s.Stats().Refusals)
+	}
+	if got := srv.seen(&srv.commands); len(got) != 2 {
+		t.Errorf("the server saw %q, want both commands carried", got)
+	}
+}
+
+// A `configure terminal` on a core router is the same kind of change as a
+// download to a PLC, so it is reported as engineering activity with a class of
+// its own -- and a `show` is not, because a class that included those is a
+// class nobody reads.
+func TestAConfigurationCommandIsEngineeringActivityAndAShowIsNot(t *testing.T) {
+	t.Parallel()
+	srv := startServer(t, &fakeServer{})
+	// The ledger is what makes "outside every approved window" a thing that
+	// can be counted: with no ledger there are no windows to be outside of,
+	// and the report is all there is.
+	yaml := fmt.Sprintf(`
+version: 1
+server:
+  listeners:
+    - name: admin
+      address: "127.0.0.1:0"
+      kind: tacacs
+      tacacs:
+        upstream: servers
+        secret_file: %q
+        allow_clients: [127.0.0.1/32]
+        default_action: allow
+        engineering:
+          enabled: true
+logging: {access: {enabled: false}}
+access:
+  ledger: %q
+  approvals: 1
+  max_duration: 2h
+upstreams:
+  - {name: servers, endpoints: [{address: %q}]}
+`, keyFile(t, theKey), filepath.Join(t.TempDir(), "access.jsonl"), srv.addr())
+	s := proxytest.Start(t, yaml)
+	addr := proxytest.Addr(t, s, "admin")
+	d := connect(t, addr)
+
+	if r, ok := d.authorize(1, "alice", 1, "service=shell", "cmd=show", "cmd-arg=version"); !ok || !r.Status.Pass() {
+		t.Fatalf("`show version`: %+v ok=%v", r, ok)
+	}
+	if got := s.Stats().EngineeringOps["tacacs/configuration"]; got != 0 {
+		t.Errorf("a `show` was reported as a configuration change (%d)", got)
+	}
+
+	// The change. It is carried -- require_grant is off here -- and it is
+	// reported, with the command as the detail and the user as the subject.
+	if r, ok := d.authorize(2, "alice", 15, "service=shell", "cmd=configure", "cmd-arg=terminal"); !ok || !r.Status.Pass() {
+		t.Fatalf("`configure terminal` on a listener that only reports: %+v ok=%v", r, ok)
+	}
+	sn := s.Stats()
+	if got := sn.EngineeringOps["tacacs/configuration"]; got != 1 {
+		t.Errorf("engineering_configuration = %d, want 1 (ops %+v)", got, sn.EngineeringOps)
+	}
+	// Nobody had a grant open, which on a listener that requires none is not a
+	// refusal -- it is the line an estate wants counted.
+	if len(sn.EngineeringOutside) == 0 {
+		t.Errorf("an unapproved change was not counted as outside: %+v", sn.EngineeringOutside)
+	}
+	if got := srv.seen(&srv.commands); len(got) != 2 {
+		t.Errorf("the server saw %q, want both commands carried", got)
+	}
+}
+
+// A restart and a firmware load are their own classes, because "somebody
+// reloaded the core router" and "somebody changed a VLAN description" are not
+// the same line in a report.
+func TestARestartAndAFirmwareLoadAreTheirOwnClasses(t *testing.T) {
+	t.Parallel()
+	srv := startServer(t, &fakeServer{})
+	section := "        allow_clients: [127.0.0.1/32]\n" +
+		"        default_action: allow\n" +
+		"        engineering:\n          enabled: true\n"
+	s, addr := relay(t, section, "", srv.addr())
+
+	for i, c := range [][]string{
+		{"cmd=reload"},
+		{"cmd=copy", "cmd-arg=running-config", "cmd-arg=tftp:"},
+		{"cmd=copy", "cmd-arg=tftp:", "cmd-arg=flash:"},
+	} {
+		d := connect(t, addr)
+		args := append([]string{"service=shell"}, c...)
+		if r, ok := d.authorize(uint32(i+1), "bob", 15, args...); !ok || !r.Status.Pass() {
+			t.Fatalf("%v: %+v ok=%v", c, r, ok)
+		}
+	}
+	sn := s.Stats()
+	for _, want := range []string{"tacacs/restart", "tacacs/file_transfer", "tacacs/firmware"} {
+		if sn.EngineeringOps[want] == 0 {
+			t.Errorf("%s was not reported: %+v", want, sn.EngineeringOps)
+		}
+	}
+}
+
+// A rule decides only the commands it names. Without that, a rule written to
+// allow `show ...` for the help desk would also be the rule that decided
+// `reload` for them -- and would allow it, which is the opposite of what its
+// author wrote.
+func TestARuleDecidesOnlyTheCommandsItNames(t *testing.T) {
+	t.Parallel()
+	srv := startServer(t, &fakeServer{})
+	section := "        allow_clients: [127.0.0.1/32]\n" +
+		"        default_action: deny\n" +
+		"        rules:\n" +
+		"          - {name: helpdesk, users: [dana], commands: [\"show ...\"], action: allow}\n" +
+		"          - {name: engineers, users: [erin], action: allow}\n"
+	s, addr := relay(t, section, "", srv.addr())
+
+	// The rule covers dana's `show`, so it decides it, and it allows.
+	if r, ok := connect(t, addr).authorize(1, "dana", 1, "service=shell", "cmd=show", "cmd-arg=version"); !ok || !r.Status.Pass() {
+		t.Fatalf("the helpdesk rule refused `show version`: %+v ok=%v", r, ok)
+	}
+
+	// `reload` is dana's too, but it is not a command that rule names, so the
+	// rule does not decide it and the default does. The default is deny.
+	if r, ok := connect(t, addr).authorize(2, "dana", 1, "service=shell", "cmd=reload"); ok && r.Status.Pass() {
+		t.Fatal("the `show ...` rule allowed `reload`")
+	}
+	if refusals(s, "no_rule_matched") == 0 {
+		t.Errorf("no refusal was counted: %+v", s.Stats().Refusals["tacacs"])
+	}
+
+	// A rule that names no commands covers all of them, which is how "these
+	// people may do anything" is written.
+	if r, ok := connect(t, addr).authorize(3, "erin", 15, "service=shell", "cmd=reload"); !ok || !r.Status.Pass() {
+		t.Fatalf("the engineers rule refused `reload`: %+v ok=%v", r, ok)
+	}
+
+	// And a user no rule names gets the default.
+	if r, ok := connect(t, addr).authorize(4, "frank", 1, "service=shell", "cmd=show", "cmd-arg=version"); ok && r.Status.Pass() {
+		t.Fatal("a user no rule names was allowed by default_action: deny")
+	}
+	if got := srv.seen(&srv.commands); len(got) != 2 {
+		t.Errorf("the server saw %q, want only the two allowed commands", got)
+	}
+}
+
+// The estate-wide identity rules apply to the user a TACACS+ exchange claims,
+// the same as they do to an SSH principal or an LDAP bind DN -- and they are
+// asked twice, which is the shape this protocol forces. The connection is asked
+// about first, when there is no name at all: TACACS+ begins with the device's
+// first packet and the user is inside a body this relay may not be able to
+// read. So an estate policy that named only users would refuse every device at
+// the point of connecting, and the rule that admits the devices has to be
+// there too. The action asked about is `connect` rather than `session` because
+// the authenticated session is the one thing this relay never sees: the server
+// proves the password and says only pass or fail.
+func TestTheEstateWideIdentityRulesApplyToTheClaimedUser(t *testing.T) {
+	t.Parallel()
+	srv := startServer(t, &fakeServer{})
+	section := "        allow_clients: [127.0.0.1/32]\n        default_action: allow\n"
+	policy := "authorization:\n  rules:\n" +
+		"    - {name: engineers, allow: true, users: [erin]}\n" +
+		"    - {name: devices, allow: true, networks: [127.0.0.1/32], not_users: [dana]}\n"
+	yaml := fmt.Sprintf(tacacsYAML, section, "", keyFile(t, theKey), srv.addr()) + policy
+	s := proxytest.Start(t, yaml)
+	addr := proxytest.Addr(t, s, "admin")
+
+	if r, ok := connect(t, addr).authorize(1, "erin", 15, "service=shell", "cmd=show", "cmd-arg=version"); !ok || !r.Status.Pass() {
+		t.Fatalf("a user the estate policy names was refused: %+v ok=%v refusals=%+v", r, ok, s.Stats().Refusals["tacacs"])
+	}
+	// dana's device connects -- the devices rule admits the connection, because
+	// at that point nobody has claimed to be dana -- and then the name is
+	// refused as soon as a packet carries it.
+	if r, ok := connect(t, addr).authorize(2, "dana", 1, "service=shell", "cmd=show", "cmd-arg=version"); ok && r.Status.Pass() {
+		t.Fatalf("a user the estate policy excludes reached the server: %+v refusals=%+v", r, s.Stats().Refusals["tacacs"])
+	}
+	if refusals(s, "authorization") == 0 {
+		t.Errorf("the authorization refusal was not counted: %+v", s.Stats().Refusals["tacacs"])
+	}
+	if got := srv.seen(&srv.commands); len(got) != 1 {
+		t.Errorf("the server saw %q, want only erin's command", got)
+	}
+}
+
+// The argument-count bound. An authorization body carries one argument per word
+// of the command, so a long command line is a long argument list -- and the
+// bound is what stops a device being made to allocate for one that is not a
+// command at all.
+func TestAnArgumentListLongerThanTheBoundIsRefused(t *testing.T) {
+	t.Parallel()
+	srv := startServer(t, &fakeServer{})
+	section := "        allow_clients: [127.0.0.1/32]\n" +
+		"        default_action: allow\n        max_args: 4\n"
+	s, addr := relay(t, section, "", srv.addr())
+
+	args := []string{"service=shell", "cmd=show"}
+	for i := 0; i < 8; i++ {
+		args = append(args, "cmd-arg=interface")
+	}
+	if r, ok := connect(t, addr).authorize(1, "alice", 1, args...); ok && r.Status.Pass() {
+		t.Fatal("an argument list past max_args was carried")
+	}
+	if refusals(s, "too_many_arguments") == 0 {
+		t.Errorf("too_many_arguments was not counted: %+v", s.Stats().Refusals["tacacs"])
+	}
+	if got := srv.seen(&srv.commands); len(got) != 0 {
+		t.Errorf("the server saw %q", got)
+	}
+
+	// And a list inside the bound still goes through, so the bound is a bound
+	// and not a refusal of every command.
+	if r, ok := connect(t, addr).authorize(2, "alice", 1, "service=shell", "cmd=show", "cmd-arg=version"); !ok || !r.Status.Pass() {
+		t.Fatalf("a short command was refused by max_args: %+v ok=%v", r, ok)
+	}
+}
