@@ -5389,6 +5389,185 @@ refuse them.
 | `max_ticket_lifetime` | duration | inherited | The rule's own bound |
 | `schedule` | object | none | Limit the rule to a time window |
 
+### server.listeners[].imap (kind: imap)
+
+IMAP on 143 and IMAPS on 993: the protocol a mail client reads a mailbox
+with, which makes this the relay in front of the most complete record of
+what an organisation has said and been told that exists anywhere.
+
+**The setting that matters most is a bound, not a list.** Every other
+control here is about access, and access is what the mail server already
+decides. `max_fetch_messages` is about *volume*: `UID FETCH 1:* (BODY[])`
+is three dozen characters and every message in the mailbox, and it is what
+both a mail client's first synchronisation and an emptied account look
+like. The bound counts what a sequence set *names*, before the server reads
+anything, and an open-ended set (`1:*`, `*`) is refused outright once it is
+set — because the size of that request is the mailbox's rather than the
+client's. `allow_open_sets` is the exemption for the estate whose clients
+legitimately synchronise everything.
+
+**A password in the clear is refused by default.** LOGIN on 143, and
+AUTHENTICATE with PLAIN or LOGIN, put a mailbox password on the wire.
+`require_tls` defaults on and is not shadowable: by the time a policy could
+be consulted the password has travelled. A listener with a certificate and
+`tls_mode: starttls` terminates RFC 2595's upgrade itself, which is how a
+client nobody can reconfigure gets TLS anyway.
+
+**The capability list is narrowed on the way out.** A mechanism `mechanisms`
+does not name is removed from what the client is shown, and `LOGINDISABLED`
+is added where LOGIN will be refused — RFC 3501 §6.2.3 makes that the way a
+server says so, and a client that reads it asks for something else instead
+of sending a password into a refusal. `COMPRESS=DEFLATE` is removed
+whenever `refuse_compression` is on, which is the default: a deflated
+connection cannot be inspected, so advertising it would be offering to
+stop.
+
+**A literal is decided on its declared size.** `APPEND INBOX {310}` says
+the next 310 octets are a message, and RFC 7888's `{310+}` sends them
+without waiting for anybody to agree — so `max_append_bytes` is checked on
+the command line, and a refused command's octets are read and dropped
+rather than left to desynchronise the connection.
+
+**A PREAUTH greeting is not carried.** RFC 9051 §7.1.4 lets a server decide
+from the transport that no credential is needed; a relay that carried that
+would make every later decision here about a name it never saw. The
+connection is closed and `imap_preauth_refused` counts it.
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `upstream` | string | — | The pool of IMAP servers. Required |
+| `tls_mode` | string | `implicit` with a `tls` section, else `none` | `implicit` (IMAPS from the first octet), `starttls` (RFC 2595's upgrade, terminated here) or `none` |
+| `require_tls` | bool | `true` | Refuse LOGIN, and AUTHENTICATE with a mechanism that carries the password, on an unencrypted connection. Not shadowable |
+| `upstream_tls_mode` | string | `disable` | `disable`, `implicit` or `starttls` towards the server |
+| `upstream_tls` | object | — | Verification for that leg. See `upstream_tls` |
+| `allow_clients`, `deny_clients` | list | `[]` | Networks a client may connect from; deny is evaluated first |
+| `mechanisms` | list | `[]` (any) | `login` for the LOGIN command plus a SASL name per AUTHENTICATE mechanism. Enforced twice: a mechanism not named is refused, and it is removed from the advertised capabilities |
+| `users` | list | `[]` (any) | The identities that may be claimed, folded for comparison. A claim rather than a proven identity: the server checks the password |
+| `commands`, `deny_commands` | list | `[]` | Allow and deny lists of IMAP command names; deny is evaluated first. A `UID` command is the command it qualifies |
+| `mailboxes`, `deny_mailboxes` | list | `[]` (any) | Allow and deny lists of mailbox names, compared on the **decoded** name so a rule written `Sent` matches the modified UTF-7 a client sent. A name may end in `*` (the rest of the name, hierarchy included) or `%` (within one level); a wildcard anywhere else is refused at load |
+| `read_only` | bool | `false` | Refuse every command that changes a mailbox: APPEND, CREATE, DELETE, RENAME, STORE, COPY, MOVE, EXPUNGE, the ACL and quota writes |
+| `max_fetch_messages` | int | `0` (unbounded) | How many messages one FETCH, SEARCH, COPY or MOVE may name. The mailbox-copying bound; validation advises setting it |
+| `allow_open_sets` | bool | `false` | Carry an open-ended sequence set even with `max_fetch_messages` set |
+| `max_append_bytes` | int | `33554432` | The literal of an APPEND: a message written into a mailbox |
+| `max_literal_bytes` | int | `65536` | Any other literal: a mailbox name, a search string, a credential |
+| `max_literals` | int | `8` | The literals one command may chain, because a command continues after each one |
+| `max_line_bytes` | int | `8192` | One command line. RFC 9051 bounds a line not at all |
+| `max_response_bytes` | int | `65536` | One response line; servers send longer ones than clients |
+| `max_commands` | int | `0` (unbounded) | The commands one connection may send |
+| `refuse_compression` | bool | `true` | Remove `COMPRESS=DEFLATE` from the capabilities and refuse the command |
+| `refuse_preauth` | bool | `true` | Refuse a PREAUTH greeting |
+| `allow_idle` | bool | `true` | Carry RFC 2177's IDLE. Every mail client uses it |
+| `max_idle_duration` | duration | `30m` | How long one IDLE may hold a connection silent |
+| `max_connections` | int | `512` | Connections served at once |
+| `max_sessions`, `max_sessions_per_client` | int | `0` | Sessions in flight in total and per client address |
+| `rate_limit`, `rate_burst` | int | `0` | Connections per second per client address |
+| `idle_timeout`, `session_timeout` | duration | `30m`, `24h` | Silence outside an IDLE, and the life of a connection |
+| `rules` | list | `[]` | Per-user, per-client and per-mailbox rules, first match wins |
+| `default_action` | string | `allow` | `allow` or `deny`. It defaults to allow because IMAP has sixty commands a client needs, and the controls that matter here are the bounds and the mailbox list |
+| `deny_response` | string | `no` | `no` (a tagged NO, which every client displays), `bad`, `drop` or `close` |
+| `log_commands` | bool | `true` | An access line per command |
+| `log_fetches` | bool | `true` | A line per FETCH, SEARCH, COPY and MOVE with the number of messages it named: the record of how much left |
+| `alert_on_deny` | bool | `true` | A security event per refusal |
+| `monitor_only` | bool | `false` | Evaluate and enforce nothing; the bounds and the malformed-command refusals still apply |
+| `anomaly` | object | — | Behavioural detection. See `anomaly` |
+
+Counters: `imap_connections`, `imap_commands`, `imap_auth_failures`,
+`imap_fetched_messages`, `imap_append_bytes`, `imap_plaintext_logins`,
+`imap_capabilities_stripped` and `imap_preauth_refused`.
+`imap_fetched_messages` is the one to graph — it is how much of the
+estate's mail crossed this relay — and `imap_auth_failures` the one to
+alert on.
+
+Ban reasons: `imap_denied` for a policy refusal, `imap_auth_failed` for a
+credential the server rejected, and `imap_anomaly` for a behavioural
+finding.
+
+#### server.listeners[].imap.rules[]
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `name` | string | — | Appears in the logs and the shadow report |
+| `users`, `clients`, `mailboxes` | list | `[]` (any) | Which commands this rule decides about. Every mailbox a command names has to match, because a COPY names two |
+| `commands`, `deny_commands` | list | `[]` | This rule's own command lists |
+| `read_only` | bool | `false` | Refuse the commands that change a mailbox, for this rule's clients and users |
+| `max_fetch_messages`, `max_append_bytes` | int | `0` (inherit) | This rule's own bounds: how the one account that really does synchronise a whole mailbox is written down |
+| `action` | string | `allow` | `allow` or `deny` |
+| `schedule` | object | — | Limit the rule to a time window. See `schedule` |
+
+### server.listeners[].pop3 (kind: pop3)
+
+POP3 on 110 and POP3S on 995: the older mailbox protocol, and the one still
+configured on the scripts, appliances and phones nobody has revisited.
+
+**The credential is least protected here of anywhere in this
+configuration.** `USER` names an identity and `PASS` sends the password in
+the clear on the next line, with no negotiation in between and nothing to
+inspect. Either the transport protects it or it is published, so
+`require_tls` defaults on and is not shadowable. `tls_mode: starttls`
+terminates RFC 2595's STLS, and the upgrade is answered here rather than
+forwarded — anything the client pipelined behind it would be plaintext to
+one end and ciphertext to the other, which is the injection SMTP's STARTTLS
+has.
+
+**The copying bound is a running total.** This protocol has no sequence set
+to measure: a client asks for one message at a time, so the only honest
+bound is the octets and the messages counted as they pass.
+`max_retr_bytes` and `max_messages` are that, and they are enforced
+*mid-transfer* as well as before a command — a bound that only applied to
+the next command is one a client walks past one message at a time.
+
+**APOP works because the greeting is not rewritten.** The `<...>` in a POP3
+greeting is the challenge an APOP digest is computed over, so a relay that
+invented its own greeting would have to refuse APOP outright. This one
+carries the server's unchanged, which means a digest the client computes
+verifies at the server that issued the challenge.
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `upstream` | string | — | The pool of POP3 servers. Required |
+| `tls_mode` | string | `implicit` with a `tls` section, else `none` | `implicit` (POP3S), `starttls` (STLS, terminated here) or `none` |
+| `require_tls` | bool | `true` | Refuse USER, PASS, APOP and a plaintext SASL mechanism on an unencrypted connection. Not shadowable |
+| `upstream_tls_mode` | string | `disable` | `disable`, `implicit` or `starttls` towards the server |
+| `upstream_tls` | object | — | Verification for that leg. See `upstream_tls` |
+| `allow_clients`, `deny_clients` | list | `[]` | Networks a client may connect from; deny is evaluated first |
+| `mechanisms` | list | `[]` (any) | `user` for the USER and PASS pair, `apop` for the digest, and a SASL name per AUTH mechanism. A mechanism not named is refused *and* removed from the CAPA list |
+| `users` | list | `[]` (any) | The identities that may be claimed, folded for comparison |
+| `commands`, `deny_commands` | list | `[]` | Allow and deny lists of POP3 command names; deny is evaluated first |
+| `read_only` | bool | `false` | Refuse DELE and RSET, the two commands that change what the mailbox holds after the update state |
+| `max_messages` | int | `0` (unbounded) | Messages one connection may retrieve |
+| `max_retr_bytes` | int | `0` (unbounded) | Octets one connection may retrieve across every RETR and TOP. The mailbox-copying bound; validation advises setting one of the two |
+| `max_line_bytes`, `max_response_bytes` | int | `512`, `4096` | One command line and one reply line |
+| `max_connections` | int | `256` | Connections served at once |
+| `max_sessions`, `max_sessions_per_client` | int | `0` | Sessions in flight in total and per client address |
+| `rate_limit`, `rate_burst` | int | `0` | Connections per second per client address |
+| `idle_timeout`, `session_timeout` | duration | `10m`, `1h` | Silence, and the life of a connection: a POP3 client connects, takes its mail and goes |
+| `rules` | list | `[]` | Per-user and per-client rules, first match wins |
+| `default_action` | string | `allow` | `allow` or `deny` |
+| `deny_response` | string | `err` | `err` (`-ERR` with the reason), `drop` or `close` |
+| `log_commands` | bool | `true` | An access line per command |
+| `log_retrievals` | bool | `true` | A line per RETR and TOP with the octets it carried |
+| `alert_on_deny` | bool | `true` | A security event per refusal |
+| `monitor_only` | bool | `false` | Evaluate and enforce nothing |
+| `anomaly` | object | — | Behavioural detection. See `anomaly` |
+
+Counters: `pop3_connections`, `pop3_commands`, `pop3_auth_failures`,
+`pop3_retrieved_bytes`, `pop3_deletes`, `pop3_plaintext_logins` and
+`pop3_capabilities_stripped`. `pop3_retrieved_bytes` is the one to graph.
+
+Ban reasons: `pop3_denied`, `pop3_auth_failed` and `pop3_anomaly`.
+
+#### server.listeners[].pop3.rules[]
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `name` | string | — | Appears in the logs and the shadow report |
+| `users`, `clients` | list | `[]` (any) | Which commands this rule decides about |
+| `commands`, `deny_commands` | list | `[]` | This rule's own command lists |
+| `read_only` | bool | `false` | Refuse DELE and RSET for this rule's clients and users |
+| `max_messages`, `max_retr_bytes` | int | `0` (inherit) | This rule's own bounds |
+| `action` | string | `allow` | `allow` or `deny` |
+| `schedule` | object | — | Limit the rule to a time window. See `schedule` |
+
 ### server.listeners[].tftp (kind: tftp)
 
 TFTP is the protocol under provisioning. A switch pulls its firmware over it, a
@@ -9601,7 +9780,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `flow`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `forward_host_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `tcp_denied`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `dhcp6_denied`, `coap_denied`, `opcua_denied`, `mms_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `bacnet_denied`, `amqp_denied`, `s7_denied`, `radius_denied`, `tacacs_denied`, `kkdcp_denied`, `ntp_denied`, `ntske_denied`, `dns_denied`, `dns_threat_intel`, `dns_deceived`, `dns_tripwire`, `telnet_tripwire`, `ssh_tripwire`, `modbus_tripwire`, `iec104_tripwire`, `s7_tripwire`, `redis_tripwire`, `mysql_tripwire`, `postgres_tripwire`, `yara` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `flow`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `forward_host_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `tcp_denied`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `dhcp6_denied`, `coap_denied`, `opcua_denied`, `mms_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `bacnet_denied`, `amqp_denied`, `s7_denied`, `radius_denied`, `tacacs_denied`, `kkdcp_denied`, `imap_denied`, `imap_auth_failed`, `imap_anomaly`, `pop3_denied`, `pop3_auth_failed`, `pop3_anomaly`, `ntp_denied`, `ntske_denied`, `dns_denied`, `dns_threat_intel`, `dns_deceived`, `dns_tripwire`, `telnet_tripwire`, `ssh_tripwire`, `modbus_tripwire`, `iec104_tripwire`, `s7_tripwire`, `redis_tripwire`, `mysql_tripwire`, `postgres_tripwire`, `yara` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |

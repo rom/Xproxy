@@ -365,6 +365,10 @@ type Listener struct {
 	TACACS *TACACSListener `yaml:"tacacs"`
 	// KKDCP configures a kind: kkdcp listener.
 	KKDCP *KKDCPListener `yaml:"kkdcp"`
+	// IMAP configures a kind: imap listener.
+	IMAP *IMAPListener `yaml:"imap"`
+	// POP3 configures a kind: pop3 listener.
+	POP3 *POP3Listener `yaml:"pop3"`
 	// Policy is whether this listener enforces its policy or only
 	// evaluates it. It overrides the estate's own policy section.
 	Policy *ListenerPolicy `yaml:"policy"`
@@ -14533,6 +14537,354 @@ type KKDCPRule struct {
 	// MaxTicketLifetime overrides the listener's bound for this rule's
 	// traffic.
 	MaxTicketLifetime Duration `yaml:"max_ticket_lifetime"`
+	// Schedule limits the rule to a time window.
+	Schedule *ModbusSchedule `yaml:"schedule"`
+}
+
+// IMAPListener configures a kind: imap listener: a relay in front of a
+// mailbox server.
+//
+// This is the protocol that carries the mail somebody already received,
+// which makes it a different problem from SMTP. A submission proxy sees
+// one message at a time on its way out; an IMAP relay sees a client with
+// a credential asking for everything in a mailbox, and the interesting
+// request is not malformed -- it is `UID FETCH 1:* (BODY[])`, which is
+// what both a mail client's first sync and an account takeover look like.
+// So the two settings worth more than the rest are `max_fetch_messages`,
+// which bounds how much of a mailbox one request may name, and
+// `mailboxes`, which says which mailboxes exist as far as this listener
+// is concerned.
+type IMAPListener struct {
+	// Upstream is the pool of IMAP servers this listener relays to.
+	// Required.
+	Upstream string `yaml:"upstream"`
+	// TLSMode is implicit (IMAPS: TLS from the first octet, port 993),
+	// starttls (RFC 2595's STARTTLS on port 143, which this relay
+	// terminates itself) or none. Default implicit where the listener has
+	// a tls section.
+	TLSMode string `yaml:"tls_mode"`
+	// RequireTLS refuses a LOGIN, or an AUTHENTICATE with a mechanism
+	// that carries the password, on a connection that is not encrypted.
+	// Default true, and it is not shadowable: by the time a policy could
+	// be consulted the password has travelled.
+	RequireTLS *bool `yaml:"require_tls"`
+	// UpstreamTLSMode is how this listener reaches the servers: disable,
+	// implicit or starttls. Default implicit where the pool's port is 993
+	// and disable otherwise.
+	UpstreamTLSMode string `yaml:"upstream_tls_mode"`
+	// UpstreamTLS verifies the server on that leg.
+	UpstreamTLS *UpstreamTLS `yaml:"upstream_tls"`
+	// AllowClients and DenyClients are the networks a client may connect
+	// from. Deny is evaluated first.
+	AllowClients []string `yaml:"allow_clients"`
+	DenyClients  []string `yaml:"deny_clients"`
+	// Mechanisms is the allow list of authentication mechanisms: `login`
+	// for the LOGIN command, and a SASL name for each AUTHENTICATE
+	// mechanism (PLAIN, OAUTHBEARER, XOAUTH2, CRAM-MD5, GSSAPI,
+	// EXTERNAL). Empty allows any.
+	//
+	// It is enforced in two places, which is the point. A mechanism not
+	// named is refused when it is asked for, and it is also **removed
+	// from the capability list** the client is shown -- so a client
+	// configured for one this listener will not carry asks for something
+	// else instead of failing a login.
+	Mechanisms []string `yaml:"mechanisms"`
+	// Users is the allow list of identities that may be claimed, folded
+	// for comparison. Empty allows any.
+	//
+	// The name is a claim rather than a proven identity: this is the
+	// request on its way to the server that will check the password. A
+	// rule keyed on it is a filter on who may attempt a login, which is
+	// worth having and worth not overstating.
+	Users []string `yaml:"users"`
+	// Commands is the allow list of IMAP commands, by name. Empty allows
+	// every command this relay knows. DenyCommands is the narrower
+	// statement and is evaluated first.
+	//
+	// A UID command is the command it qualifies: a rule naming FETCH
+	// covers `UID FETCH`, because every client written this century uses
+	// UIDs and a policy that distinguished them would be a policy about
+	// nothing.
+	Commands     []string `yaml:"commands"`
+	DenyCommands []string `yaml:"deny_commands"`
+	// Mailboxes is the allow list of mailbox names, and DenyMailboxes the
+	// deny list, evaluated first. Empty allows any.
+	//
+	// A name may end in `*`, which matches the rest of the name including
+	// the hierarchy separator, or `%`, which matches within one level --
+	// the two wildcards IMAP's own LIST command has. The comparison is on
+	// the *decoded* name, so a rule written as `Sent` matches the
+	// modified UTF-7 the client sent and the UTF-8 a client with
+	// UTF8=ACCEPT sent.
+	Mailboxes     []string `yaml:"mailboxes"`
+	DenyMailboxes []string `yaml:"deny_mailboxes"`
+	// ReadOnly refuses every command that changes a mailbox -- APPEND,
+	// CREATE, DELETE, RENAME, STORE, COPY, MOVE, EXPUNGE, the ACL and
+	// quota writes -- for every client, before any rule is read.
+	ReadOnly bool `yaml:"read_only"`
+	// MaxFetchMessages bounds how many messages one FETCH, SEARCH, COPY
+	// or MOVE may name. Default 0, which is unbounded.
+	//
+	// This is the mailbox-copying bound and the one setting here that is
+	// about collection rather than access: `1:*` is three characters and
+	// every message there is. A set that names more is refused, and an
+	// open-ended one (`1:*`, `*`) is refused outright once this is set,
+	// because its size is the mailbox's rather than the client's.
+	MaxFetchMessages int `yaml:"max_fetch_messages"`
+	// AllowOpenSets carries an open-ended sequence set even where
+	// max_fetch_messages is set. Default false.
+	//
+	// It exists because a mail client's first synchronisation of a
+	// mailbox legitimately asks for everything, and an estate that wants
+	// the bound for FETCH may still need `SEARCH 1:*` to work. Naming the
+	// commands in a rule is the better answer where it is available.
+	AllowOpenSets *bool `yaml:"allow_open_sets"`
+	// MaxAppendBytes bounds the literal of an APPEND, which is a message
+	// being written *into* a mailbox. Default 33554432 (32 MiB).
+	//
+	// It is decided on the declared size before any octet arrives, which
+	// is the only place it can be decided: RFC 7888's LITERAL+ sends the
+	// octets without waiting for the server to agree to them.
+	MaxAppendBytes int `yaml:"max_append_bytes"`
+	// MaxLiteralBytes bounds any other literal, which is an argument
+	// rather than a message: a mailbox name, a search string, a
+	// credential. Default 65536.
+	MaxLiteralBytes int `yaml:"max_literal_bytes"`
+	// MaxLiterals bounds the literals one command may chain. Default 8.
+	//
+	// A command continues after a literal, and the continuation may end in
+	// another, so without a bound one command can be an unbounded
+	// conversation.
+	MaxLiterals int `yaml:"max_literals"`
+	// MaxLineBytes bounds one command line. Default 8192. RFC 9051 bounds
+	// a line not at all, which means the bound is whichever peer runs out
+	// of memory first.
+	MaxLineBytes int `yaml:"max_line_bytes"`
+	// MaxResponseBytes bounds one response line from the server. Default
+	// 65536: servers send longer lines than clients, and a FETCH of a
+	// header is one of them.
+	MaxResponseBytes int `yaml:"max_response_bytes"`
+	// MaxCommands bounds the commands one connection may send. Default 0,
+	// unbounded.
+	MaxCommands int `yaml:"max_commands"`
+	// RefuseCompression removes COMPRESS=DEFLATE (RFC 4978) from the
+	// capability list and refuses the COMPRESS command. Default true.
+	//
+	// A deflated connection cannot be inspected, so advertising it would
+	// be offering to stop -- the same decision this project makes about
+	// permessage-deflate on a WebSocket.
+	RefuseCompression *bool `yaml:"refuse_compression"`
+	// RefusePreauth refuses a PREAUTH greeting, which says the connection
+	// is authenticated before anybody claimed an identity. Default true.
+	//
+	// RFC 9051 §7.1.4 allows a server to decide from the transport that no
+	// credential is needed. A relay that carried it would make every later
+	// decision about a name it never saw, so the connection is closed and
+	// counted instead.
+	RefusePreauth *bool `yaml:"refuse_preauth"`
+	// AllowIdle carries the IDLE command of RFC 2177. Default true: every
+	// mail client uses it, and refusing it turns them all into pollers.
+	AllowIdle *bool `yaml:"allow_idle"`
+	// MaxIdleDuration bounds one IDLE. Default 30m, which is longer than
+	// RFC 2177's advice to the client and shorter than for ever.
+	MaxIdleDuration Duration `yaml:"max_idle_duration"`
+	// MaxConnections bounds the connections this listener serves at once.
+	// Default 512.
+	MaxConnections int `yaml:"max_connections"`
+	// MaxSessions and MaxSessionsPerClient bound the sessions in flight in
+	// total and per client address. Zero is unbounded.
+	MaxSessions          int `yaml:"max_sessions"`
+	MaxSessionsPerClient int `yaml:"max_sessions_per_client"`
+	// RateLimit and RateBurst bound connections per second per client
+	// address. Zero disables them.
+	RateLimit int `yaml:"rate_limit"`
+	RateBurst int `yaml:"rate_burst"`
+	// IdleTimeout and SessionTimeout bound how long a connection may sit
+	// silent outside an IDLE and how long it may live. Defaults 30m and
+	// 24h -- a mail client holds a connection open for days, which is what
+	// IDLE is for.
+	IdleTimeout    Duration `yaml:"idle_timeout"`
+	SessionTimeout Duration `yaml:"session_timeout"`
+	// Rules decide each command, in order, first match wins. A command
+	// that matches no rule takes DefaultAction.
+	Rules []IMAPRule `yaml:"rules"`
+	// DefaultAction is allow (the default) or deny.
+	//
+	// It defaults to allow, unlike the OT kinds, because a mailbox
+	// protocol has sixty commands a client needs and an estate that had to
+	// list them would list them wrong. The controls that matter here are
+	// the bounds and the mailbox list, not an enumeration of IMAP.
+	DefaultAction string `yaml:"default_action"`
+	// DenyResponse is how a refused command is answered: no (the default:
+	// a tagged NO, which every client displays), bad (a tagged BAD, which
+	// a client reads as its own mistake), drop (no answer) or close.
+	DenyResponse string `yaml:"deny_response"`
+	// LogCommands writes an access line per command. Default true.
+	LogCommands *bool `yaml:"log_commands"`
+	// LogFetches writes a line for each FETCH, SEARCH, COPY or MOVE with
+	// the number of messages it named. Default true.
+	//
+	// This is the record an estate is asked for after a mailbox
+	// compromise: not that somebody logged in, but how much they read.
+	LogFetches *bool `yaml:"log_fetches"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
+	// MonitorOnly evaluates the policy and enforces nothing, which is the
+	// same as policy: {mode: shadow}. The bounds, the session limits and
+	// the malformed-command refusals still apply.
+	MonitorOnly bool `yaml:"monitor_only"`
+	// Anomaly watches what each client and each account has been doing and
+	// reports when it stops: a mailbox this account has never opened, an
+	// hour it has never connected at, a volume of messages it has never
+	// fetched. See Anomaly.
+	Anomaly *Anomaly `yaml:"anomaly"`
+}
+
+// IMAPRule is one rule of an imap listener's policy.
+type IMAPRule struct {
+	// Name appears in the logs and the shadow report.
+	Name string `yaml:"name"`
+	// Users, Clients and Mailboxes narrow which commands this rule
+	// decides. Empty matches any.
+	Users     []string `yaml:"users"`
+	Clients   []string `yaml:"clients"`
+	Mailboxes []string `yaml:"mailboxes"`
+	// Commands and DenyCommands are this rule's own command lists.
+	Commands     []string `yaml:"commands"`
+	DenyCommands []string `yaml:"deny_commands"`
+	// ReadOnly refuses the commands that change a mailbox, for the clients
+	// and users this rule matches.
+	ReadOnly bool `yaml:"read_only"`
+	// MaxFetchMessages and MaxAppendBytes are this rule's own bounds,
+	// which is how the one account that really does synchronise a whole
+	// mailbox is written down.
+	MaxFetchMessages int `yaml:"max_fetch_messages"`
+	MaxAppendBytes   int `yaml:"max_append_bytes"`
+	// Action is allow (the default) or deny.
+	Action string `yaml:"action"`
+	// Schedule limits the rule to a time window.
+	Schedule *ModbusSchedule `yaml:"schedule"`
+}
+
+// POP3Listener configures a kind: pop3 listener: a relay in front of a
+// POP3 server.
+//
+// POP3 is the smaller of the two mailbox protocols and the one where the
+// credential is least protected: `USER` names an identity and `PASS`
+// sends the password in the clear on the next line, with no negotiation
+// in between. So `require_tls` is the setting that matters most, and
+// `max_retr_bytes` is the second -- RETR is how a mailbox is copied, one
+// whole message at a time.
+type POP3Listener struct {
+	// Upstream is the pool of POP3 servers this listener relays to.
+	// Required.
+	Upstream string `yaml:"upstream"`
+	// TLSMode is implicit (POP3S: TLS from the first octet, port 995),
+	// starttls (RFC 2595's STLS on port 110, terminated here) or none.
+	// Default implicit where the listener has a tls section.
+	TLSMode string `yaml:"tls_mode"`
+	// RequireTLS refuses USER, PASS, APOP and a plaintext SASL mechanism
+	// on a connection that is not encrypted. Default true, and not
+	// shadowable: the password has travelled by the time a policy could
+	// be consulted.
+	RequireTLS *bool `yaml:"require_tls"`
+	// UpstreamTLSMode is how this listener reaches the servers: disable,
+	// implicit or starttls.
+	UpstreamTLSMode string `yaml:"upstream_tls_mode"`
+	// UpstreamTLS verifies the server on that leg.
+	UpstreamTLS *UpstreamTLS `yaml:"upstream_tls"`
+	// AllowClients and DenyClients are the networks a client may connect
+	// from. Deny is evaluated first.
+	AllowClients []string `yaml:"allow_clients"`
+	DenyClients  []string `yaml:"deny_clients"`
+	// Mechanisms is the allow list of authentication mechanisms: `user`
+	// for the USER and PASS pair, `apop` for the digest of RFC 1939 §7,
+	// and a SASL name for each AUTH mechanism. Empty allows any.
+	//
+	// As on the imap listener it is enforced twice: a mechanism not named
+	// is refused, and it is removed from the CAPA list the client reads.
+	Mechanisms []string `yaml:"mechanisms"`
+	// Users is the allow list of identities that may be claimed, folded
+	// for comparison. Empty allows any.
+	Users []string `yaml:"users"`
+	// Commands is the allow list of POP3 commands and DenyCommands the
+	// deny list, evaluated first. Empty allows every command this relay
+	// knows.
+	Commands     []string `yaml:"commands"`
+	DenyCommands []string `yaml:"deny_commands"`
+	// ReadOnly refuses DELE and RSET, which are the two commands that
+	// change what the mailbox will hold after the update state.
+	ReadOnly bool `yaml:"read_only"`
+	// MaxMessages bounds how many messages one connection may retrieve.
+	// Default 0, unbounded.
+	MaxMessages int `yaml:"max_messages"`
+	// MaxRetrBytes bounds the octets one connection may retrieve across
+	// every RETR and TOP. Default 0, unbounded.
+	//
+	// This is the mailbox-copying bound on this protocol. POP3 has no
+	// sequence set to measure, so the only honest bound is the running
+	// total, counted as the message passes.
+	MaxRetrBytes int64 `yaml:"max_retr_bytes"`
+	// MaxLineBytes and MaxResponseBytes bound one command line and one
+	// reply line. Defaults 512 and 4096.
+	MaxLineBytes     int `yaml:"max_line_bytes"`
+	MaxResponseBytes int `yaml:"max_response_bytes"`
+	// MaxConnections bounds the connections this listener serves at once.
+	// Default 256.
+	MaxConnections int `yaml:"max_connections"`
+	// MaxSessions and MaxSessionsPerClient bound the sessions in flight in
+	// total and per client address. Zero is unbounded.
+	MaxSessions          int `yaml:"max_sessions"`
+	MaxSessionsPerClient int `yaml:"max_sessions_per_client"`
+	// RateLimit and RateBurst bound connections per second per client
+	// address. Zero disables them.
+	RateLimit int `yaml:"rate_limit"`
+	RateBurst int `yaml:"rate_burst"`
+	// IdleTimeout and SessionTimeout bound how long a connection may sit
+	// silent and how long it may live. Defaults 10m and 1h: a POP3 client
+	// connects, takes its mail and goes.
+	IdleTimeout    Duration `yaml:"idle_timeout"`
+	SessionTimeout Duration `yaml:"session_timeout"`
+	// Rules decide each command, in order, first match wins.
+	Rules []POP3Rule `yaml:"rules"`
+	// DefaultAction is allow (the default) or deny.
+	DefaultAction string `yaml:"default_action"`
+	// DenyResponse is how a refused command is answered: err (the
+	// default: -ERR with the reason), drop or close.
+	DenyResponse string `yaml:"deny_response"`
+	// LogCommands writes an access line per command. Default true.
+	LogCommands *bool `yaml:"log_commands"`
+	// LogRetrievals writes a line per RETR and TOP with the octets it
+	// carried. Default true: it is the record of how much of a mailbox
+	// left.
+	LogRetrievals *bool `yaml:"log_retrievals"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
+	// MonitorOnly evaluates the policy and enforces nothing.
+	MonitorOnly bool `yaml:"monitor_only"`
+	// Anomaly watches what each client and account has been doing and
+	// reports when it stops. See Anomaly.
+	Anomaly *Anomaly `yaml:"anomaly"`
+}
+
+// POP3Rule is one rule of a pop3 listener's policy.
+type POP3Rule struct {
+	// Name appears in the logs and the shadow report.
+	Name string `yaml:"name"`
+	// Users and Clients narrow which commands this rule decides.
+	Users   []string `yaml:"users"`
+	Clients []string `yaml:"clients"`
+	// Commands and DenyCommands are this rule's own command lists.
+	Commands     []string `yaml:"commands"`
+	DenyCommands []string `yaml:"deny_commands"`
+	// ReadOnly refuses DELE and RSET for the clients and users this rule
+	// matches.
+	ReadOnly bool `yaml:"read_only"`
+	// MaxMessages and MaxRetrBytes are this rule's own bounds.
+	MaxMessages  int   `yaml:"max_messages"`
+	MaxRetrBytes int64 `yaml:"max_retr_bytes"`
+	// Action is allow (the default) or deny.
+	Action string `yaml:"action"`
 	// Schedule limits the rule to a time window.
 	Schedule *ModbusSchedule `yaml:"schedule"`
 }

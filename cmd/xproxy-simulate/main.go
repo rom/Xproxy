@@ -50,6 +50,7 @@ import (
 	_ "github.com/rom/xproxy/internal/kinds/ftp"      // listener kind: ftp
 	_ "github.com/rom/xproxy/internal/kinds/http"     // listener kind: http, and the data plane behind it
 	_ "github.com/rom/xproxy/internal/kinds/iec104"   // listener kind: iec104
+	_ "github.com/rom/xproxy/internal/kinds/imap"     // listener kind: imap
 	_ "github.com/rom/xproxy/internal/kinds/kkdcp"    // listener kind: kkdcp
 	_ "github.com/rom/xproxy/internal/kinds/ldap"     // listener kind: ldap
 	_ "github.com/rom/xproxy/internal/kinds/mms"      // listener kind: mms
@@ -59,6 +60,7 @@ import (
 	_ "github.com/rom/xproxy/internal/kinds/ntp"      // listener kind: ntp
 	_ "github.com/rom/xproxy/internal/kinds/ntske"    // listener kind: ntske
 	_ "github.com/rom/xproxy/internal/kinds/opcua"    // listener kind: opcua
+	_ "github.com/rom/xproxy/internal/kinds/pop3"     // listener kind: pop3
 	_ "github.com/rom/xproxy/internal/kinds/postgres" // listener kind: postgres
 	_ "github.com/rom/xproxy/internal/kinds/radius"   // listener kind: radius
 	_ "github.com/rom/xproxy/internal/kinds/rdp"      // listener kind: rdp

@@ -49,6 +49,8 @@ server:
           radius: null
           tacacs: null
           kkdcp: null
+          imap: null
+          pop3: null
           policy: null
         - name: public
           address: :443
@@ -121,6 +123,8 @@ server:
           radius: null
           tacacs: null
           kkdcp: null
+          imap: null
+          pop3: null
           policy: null
     limits:
         max_header_bytes: 65536

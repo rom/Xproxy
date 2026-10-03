@@ -15,6 +15,7 @@ import (
 	"github.com/rom/xproxy/internal/fipsmode"
 	"github.com/rom/xproxy/internal/ftp"
 	"github.com/rom/xproxy/internal/iec104"
+	imapwire "github.com/rom/xproxy/internal/imap"
 	kerberoswire "github.com/rom/xproxy/internal/kerberos"
 	"github.com/rom/xproxy/internal/keysource"
 	ldapwire "github.com/rom/xproxy/internal/ldap"
@@ -28,6 +29,7 @@ import (
 	opcuawire "github.com/rom/xproxy/internal/opcua"
 	"github.com/rom/xproxy/internal/packs"
 	pgwire "github.com/rom/xproxy/internal/pgwire"
+	pop3wire "github.com/rom/xproxy/internal/pop3"
 	radiuswire "github.com/rom/xproxy/internal/radius"
 	"github.com/rom/xproxy/internal/rdp"
 	"github.com/rom/xproxy/internal/recenc"
@@ -1018,6 +1020,26 @@ func (v *validator) server(s *Server) {
 				v.errf("%s.kkdcp: required for kind kkdcp", p)
 			} else {
 				v.kkdcpListener(p+".kkdcp", ln.KKDCP, ln.TLS != nil)
+			}
+		case "imap":
+			// A tls section serves IMAPS, and tls_mode: starttls makes this
+			// listener terminate the upgrade on port 143.
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
+				v.errf("%s: an imap listener takes only address, imap and tls", p)
+			}
+			if ln.IMAP == nil {
+				v.errf("%s.imap: required for kind imap", p)
+			} else {
+				v.imapListener(p+".imap", ln.IMAP, ln.TLS != nil)
+			}
+		case "pop3":
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
+				v.errf("%s: a pop3 listener takes only address, pop3 and tls", p)
+			}
+			if ln.POP3 == nil {
+				v.errf("%s.pop3: required for kind pop3", p)
+			} else {
+				v.pop3Listener(p+".pop3", ln.POP3, ln.TLS != nil)
 			}
 		case "amqp":
 			if ln.AMQP == nil {
@@ -2858,6 +2880,12 @@ var denyReasons = map[string]bool{
 	// worth banning on for the same reason: a client that keeps being refused
 	// here is a switch with the wrong secret, or something looking for one.
 	"radius_denied": true, "tacacs_denied": true, "kkdcp_denied": true,
+	// The two mailbox protocols. The authentication failures are bannable
+	// separately from the policy refusals, because a mailbox password is the
+	// one credential on an estate worth guessing at scale and the mail
+	// server's own lockout protects the account rather than the estate.
+	"imap_denied": true, "imap_auth_failed": true, "imap_anomaly": true,
+	"pop3_denied": true, "pop3_auth_failed": true, "pop3_anomaly": true,
 }
 
 // securityTxtFieldRE bounds an extra field name to the token RFC 9116
@@ -16096,3 +16124,304 @@ func (v *validator) kkdcpOptions(p string, names []string) {
 // boolOrFalse reads an optional boolean that defaults to off, so a warning
 // about a setting says what the listener will actually do with it.
 func boolOrFalse(p *bool) bool { return p != nil && *p }
+
+// imapListener checks a kind: imap listener.
+//
+// Two of these checks are the ones worth having. A listener with
+// require_tls off and no certificate is a mailbox password in the clear, and
+// it is a warning rather than an error because an estate that terminates TLS
+// in front of this proxy has a legitimate reason for it. And a mailbox
+// pattern with a wildcard anywhere but the end is refused outright: it reads
+// as a pattern and is not one, so a rule written that way would be a rule
+// nobody wrote.
+func (v *validator) imapListener(p string, m *IMAPListener, hasTLS bool) {
+	v.anomaly(p+".anomaly", m.Anomaly)
+	if m.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	mode := strings.ToLower(strings.TrimSpace(m.TLSMode))
+	switch mode {
+	case "", "implicit", "starttls", "none":
+	default:
+		v.errf("%s.tls_mode: %q is not implicit, starttls or none", p, m.TLSMode)
+	}
+	if mode == "starttls" && !hasTLS {
+		v.errf("%s.tls_mode: starttls needs a tls section: this relay terminates the upgrade itself", p)
+	}
+	if mode == "implicit" && !hasTLS {
+		v.errf("%s.tls_mode: implicit needs a tls section", p)
+	}
+	requireTLS := m.RequireTLS == nil || *m.RequireTLS
+	if !requireTLS {
+		v.warnf("%s.require_tls: false, so a LOGIN on an unencrypted connection is carried: a mailbox "+
+			"password travels in the clear and the client that sent it will not say so", p)
+	}
+	if requireTLS && !hasTLS && mode != "starttls" {
+		v.warnf("%s: require_tls is set and this listener has no certificate, so every LOGIN will be "+
+			"refused: give it a tls section, or tls_mode: starttls, or terminate TLS in front of it", p)
+	}
+	v.imapTLSMode(p+".upstream_tls_mode", m.UpstreamTLSMode)
+	if m.UpstreamTLS != nil {
+		v.upstreamTLS(p+".upstream_tls", m.UpstreamTLS)
+		if lower := strings.ToLower(m.UpstreamTLSMode); lower == "" || lower == "disable" {
+			v.errf("%s.upstream_tls: set with upstream_tls_mode disable, which never uses it", p)
+		}
+	}
+	v.modbusCIDRs(p+".allow_clients", m.AllowClients)
+	v.modbusCIDRs(p+".deny_clients", m.DenyClients)
+	v.imapCommands(p+".commands", m.Commands)
+	v.imapCommands(p+".deny_commands", m.DenyCommands)
+	v.imapMailboxes(p+".mailboxes", m.Mailboxes)
+	v.imapMailboxes(p+".deny_mailboxes", m.DenyMailboxes)
+	v.imapMechanisms(p+".mechanisms", m.Mechanisms)
+	if m.MaxFetchMessages < 0 {
+		v.errf("%s.max_fetch_messages: negative", p)
+	}
+	if m.MaxFetchMessages == 0 {
+		v.warnf("%s.max_fetch_messages: unset, so one request may name every message in a mailbox: "+
+			"`UID FETCH 1:* (BODY[])` is what both a first synchronisation and an account takeover "+
+			"look like, and this is the setting that tells them apart", p)
+	}
+	for _, b := range []struct {
+		name string
+		val  int
+	}{
+		{"max_append_bytes", m.MaxAppendBytes},
+		{"max_literal_bytes", m.MaxLiteralBytes},
+		{"max_literals", m.MaxLiterals},
+		{"max_line_bytes", m.MaxLineBytes},
+		{"max_response_bytes", m.MaxResponseBytes},
+		{"max_commands", m.MaxCommands},
+		{"max_connections", m.MaxConnections},
+		{"max_sessions", m.MaxSessions},
+		{"max_sessions_per_client", m.MaxSessionsPerClient},
+		{"rate_limit", m.RateLimit},
+		{"rate_burst", m.RateBurst},
+	} {
+		if b.val < 0 {
+			v.errf("%s.%s: negative", p, b.name)
+		}
+	}
+	if m.MaxLineBytes > 0 && m.MaxLineBytes < 512 {
+		v.errf("%s.max_line_bytes: %d is below 512, which no client's longest command fits in",
+			p, m.MaxLineBytes)
+	}
+	switch strings.ToLower(m.DefaultAction) {
+	case "", "allow", "deny":
+	default:
+		v.errf("%s.default_action: %q is not allow or deny", p, m.DefaultAction)
+	}
+	switch strings.ToLower(m.DenyResponse) {
+	case "", "no", "bad", "drop", "close":
+	default:
+		v.errf("%s.deny_response: %q is not no, bad, drop or close", p, m.DenyResponse)
+	}
+	for i := range m.Rules {
+		r := &m.Rules[i]
+		q := fmt.Sprintf("%s.rules[%d]", p, i)
+		v.modbusCIDRs(q+".clients", r.Clients)
+		v.imapCommands(q+".commands", r.Commands)
+		v.imapCommands(q+".deny_commands", r.DenyCommands)
+		v.imapMailboxes(q+".mailboxes", r.Mailboxes)
+		switch strings.ToLower(r.Action) {
+		case "", "allow", "deny":
+		default:
+			v.errf("%s.action: %q is not allow or deny", q, r.Action)
+		}
+		if r.MaxFetchMessages < 0 || r.MaxAppendBytes < 0 {
+			v.errf("%s: a negative bound", q)
+		}
+		v.modbusSchedule(q+".schedule", r.Schedule)
+	}
+}
+
+// imapTLSMode checks an upstream_tls_mode value.
+func (v *validator) imapTLSMode(p, mode string) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "disable", "implicit", "starttls":
+	default:
+		v.errf("%s: %q is not disable, implicit or starttls", p, mode)
+	}
+}
+
+// imapCommands refuses a name that is not an IMAP command, because a rule
+// naming one would match nothing and an operator would believe otherwise.
+func (v *validator) imapCommands(p string, list []string) {
+	for _, s := range list {
+		name := strings.ToUpper(strings.TrimSpace(s))
+		if name == "" {
+			continue
+		}
+		if !imapwire.Known(name) {
+			v.errf("%s: %q is not an IMAP command; the commands are %s",
+				p, s, strings.Join(imapwire.Names(), ", "))
+		}
+	}
+}
+
+// imapMailboxes refuses a wildcard that is not the last character.
+func (v *validator) imapMailboxes(p string, list []string) {
+	for _, s := range list {
+		raw := strings.TrimSpace(s)
+		if raw == "" {
+			continue
+		}
+		body := raw
+		if strings.HasSuffix(body, "*") || strings.HasSuffix(body, "%") {
+			body = body[:len(body)-1]
+		}
+		if strings.ContainsAny(body, "*%") {
+			v.errf("%s: %q has a wildcard that is not the last character, which reads as a pattern "+
+				"and is not one", p, s)
+		}
+		if len(raw) > imapwire.MaxMailbox {
+			v.errf("%s: %q is longer than a mailbox name may be", p, s)
+		}
+	}
+}
+
+// imapMechanisms checks the mechanism names, which are `login` plus whatever
+// SASL names an estate's server offers -- so an unknown one is advice rather
+// than an error: this project cannot know every mechanism a server supports.
+func (v *validator) imapMechanisms(p string, list []string) {
+	for _, s := range list {
+		name := strings.ToLower(strings.TrimSpace(s))
+		if name == "" {
+			v.errf("%s: an empty mechanism name", p)
+			continue
+		}
+		switch name {
+		case "login", "plain", "oauthbearer", "xoauth2", "cram-md5", "digest-md5", "gssapi", "external", "scram-sha-1", "scram-sha-256":
+		default:
+			v.warnf("%s: %q is not a mechanism this project knows; it will be matched as written, so "+
+				"check the spelling against what the server advertises", p, s)
+		}
+	}
+}
+
+// pop3Listener checks a kind: pop3 listener.
+func (v *validator) pop3Listener(p string, m *POP3Listener, hasTLS bool) {
+	v.anomaly(p+".anomaly", m.Anomaly)
+	if m.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	mode := strings.ToLower(strings.TrimSpace(m.TLSMode))
+	switch mode {
+	case "", "implicit", "starttls", "none":
+	default:
+		v.errf("%s.tls_mode: %q is not implicit, starttls or none", p, m.TLSMode)
+	}
+	if mode == "starttls" && !hasTLS {
+		v.errf("%s.tls_mode: starttls needs a tls section: this relay terminates the upgrade itself", p)
+	}
+	if mode == "implicit" && !hasTLS {
+		v.errf("%s.tls_mode: implicit needs a tls section", p)
+	}
+	requireTLS := m.RequireTLS == nil || *m.RequireTLS
+	if !requireTLS {
+		v.warnf("%s.require_tls: false, so USER and PASS are carried on an unencrypted connection: "+
+			"this protocol sends the password on the line after the name, with nothing in between", p)
+	}
+	if requireTLS && !hasTLS && mode != "starttls" {
+		v.warnf("%s: require_tls is set and this listener has no certificate, so every login will be "+
+			"refused: give it a tls section, or tls_mode: starttls, or terminate TLS in front of it", p)
+	}
+	v.imapTLSMode(p+".upstream_tls_mode", m.UpstreamTLSMode)
+	if m.UpstreamTLS != nil {
+		v.upstreamTLS(p+".upstream_tls", m.UpstreamTLS)
+		if lower := strings.ToLower(m.UpstreamTLSMode); lower == "" || lower == "disable" {
+			v.errf("%s.upstream_tls: set with upstream_tls_mode disable, which never uses it", p)
+		}
+	}
+	v.modbusCIDRs(p+".allow_clients", m.AllowClients)
+	v.modbusCIDRs(p+".deny_clients", m.DenyClients)
+	v.pop3Commands(p+".commands", m.Commands)
+	v.pop3Commands(p+".deny_commands", m.DenyCommands)
+	v.pop3Mechanisms(p+".mechanisms", m.Mechanisms)
+	if m.MaxRetrBytes < 0 {
+		v.errf("%s.max_retr_bytes: negative", p)
+	}
+	if m.MaxMessages == 0 && m.MaxRetrBytes == 0 {
+		v.warnf("%s: neither max_messages nor max_retr_bytes is set, so one connection may take the "+
+			"whole mailbox: on this protocol the running total is the only bound there is, because "+
+			"a client asks for one message at a time", p)
+	}
+	for _, b := range []struct {
+		name string
+		val  int
+	}{
+		{"max_messages", m.MaxMessages},
+		{"max_line_bytes", m.MaxLineBytes},
+		{"max_response_bytes", m.MaxResponseBytes},
+		{"max_connections", m.MaxConnections},
+		{"max_sessions", m.MaxSessions},
+		{"max_sessions_per_client", m.MaxSessionsPerClient},
+		{"rate_limit", m.RateLimit},
+		{"rate_burst", m.RateBurst},
+	} {
+		if b.val < 0 {
+			v.errf("%s.%s: negative", p, b.name)
+		}
+	}
+	if m.MaxLineBytes > 0 && m.MaxLineBytes < 512 {
+		v.errf("%s.max_line_bytes: %d is below 512, which RFC 1939's own line limit is", p, m.MaxLineBytes)
+	}
+	switch strings.ToLower(m.DefaultAction) {
+	case "", "allow", "deny":
+	default:
+		v.errf("%s.default_action: %q is not allow or deny", p, m.DefaultAction)
+	}
+	switch strings.ToLower(m.DenyResponse) {
+	case "", "err", "drop", "close":
+	default:
+		v.errf("%s.deny_response: %q is not err, drop or close", p, m.DenyResponse)
+	}
+	for i := range m.Rules {
+		r := &m.Rules[i]
+		q := fmt.Sprintf("%s.rules[%d]", p, i)
+		v.modbusCIDRs(q+".clients", r.Clients)
+		v.pop3Commands(q+".commands", r.Commands)
+		v.pop3Commands(q+".deny_commands", r.DenyCommands)
+		switch strings.ToLower(r.Action) {
+		case "", "allow", "deny":
+		default:
+			v.errf("%s.action: %q is not allow or deny", q, r.Action)
+		}
+		if r.MaxMessages < 0 || r.MaxRetrBytes < 0 {
+			v.errf("%s: a negative bound", q)
+		}
+		v.modbusSchedule(q+".schedule", r.Schedule)
+	}
+}
+
+// pop3Commands refuses a name that is not a POP3 command.
+func (v *validator) pop3Commands(p string, list []string) {
+	for _, s := range list {
+		name := strings.ToUpper(strings.TrimSpace(s))
+		if name == "" {
+			continue
+		}
+		if !pop3wire.Known(name) {
+			v.errf("%s: %q is not a POP3 command; the commands are %s",
+				p, s, strings.Join(pop3wire.Names(), ", "))
+		}
+	}
+}
+
+// pop3Mechanisms checks the mechanism names: `user` for the USER and PASS
+// pair, `apop` for the digest, and a SASL name otherwise.
+func (v *validator) pop3Mechanisms(p string, list []string) {
+	for _, s := range list {
+		name := strings.ToLower(strings.TrimSpace(s))
+		if name == "" {
+			v.errf("%s: an empty mechanism name", p)
+			continue
+		}
+		switch name {
+		case "user", "apop", "plain", "login", "oauthbearer", "xoauth2", "cram-md5", "digest-md5", "gssapi", "external", "scram-sha-1", "scram-sha-256":
+		default:
+			v.warnf("%s: %q is not a mechanism this project knows; it will be matched as written, so "+
+				"check the spelling against what the server advertises", p, s)
+		}
+	}
+}

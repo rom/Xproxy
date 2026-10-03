@@ -90,6 +90,8 @@ var roster = map[string][]Role{
 
 	"smtp":     {RoleRelay},
 	"ftp":      {RoleRelay},
+	"imap":     {RoleRelay},
+	"pop3":     {RoleRelay},
 	"ldap":     {RoleRelay},
 	"postgres": {RoleRelay},
 	"mysql":    {RoleRelay},
@@ -156,6 +158,8 @@ var authorises = map[string]bool{
 	"vnc":      true,
 	"rdp":      true,
 	"ftp":      true,
+	"imap":     true,
+	"pop3":     true,
 	"forward":  true,
 	"postgres": true,
 	"mysql":    true,

@@ -45,6 +45,8 @@ var sections = map[string]string{
 	"opcua":    "opcua: {upstream: u}",
 	"mms":      "mms: {upstream: u}",
 	"radius":   "radius: {upstream: u}",
+	"imap":     "imap: {upstream: u, require_tls: false}",
+	"pop3":     "pop3: {upstream: u, require_tls: false}",
 	"tacacs":   "tacacs: {upstream: u}",
 	"bacnet":   "bacnet: {upstream: u}",
 	"amqp":     "amqp: {upstream: u, require_tls: false}",

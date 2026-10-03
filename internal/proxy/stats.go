@@ -559,6 +559,28 @@ type Stats struct {
 	KKDCPPreauthExempt   atomic.Uint64
 	KKDCPDelegations     atomic.Uint64
 	KKDCPRealmMismatch   atomic.Uint64
+	// The two mailbox protocols. The numbers that matter here are about
+	// volume rather than access: IMAPFetchedMessages is how many messages
+	// the requests this relay carried named, and POP3RetrievedBytes how
+	// many octets left through RETR and TOP. A mailbox compromise is
+	// visible in those two long before it is visible anywhere else, because
+	// the mail server's own log says a client read its mail and not how
+	// much of it.
+	IMAPConnections          atomic.Uint64
+	IMAPCommands             atomic.Uint64
+	IMAPAuthFailures         atomic.Uint64
+	IMAPFetchedMessages      atomic.Uint64
+	IMAPAppendBytes          atomic.Uint64
+	IMAPPlaintextLogins      atomic.Uint64
+	IMAPCapabilitiesStripped atomic.Uint64
+	IMAPPreauthRefused       atomic.Uint64
+	POP3Connections          atomic.Uint64
+	POP3Commands             atomic.Uint64
+	POP3AuthFailures         atomic.Uint64
+	POP3RetrievedBytes       atomic.Uint64
+	POP3Deletes              atomic.Uint64
+	POP3PlaintextLogins      atomic.Uint64
+	POP3CapabilitiesStripped atomic.Uint64
 	// The device inventory.
 	//
 	// AssetFindings is the one to alert on: an identity change, or a device
@@ -1239,6 +1261,21 @@ type Snapshot struct {
 	KKDCPPreauthExempt       uint64 `json:"kkdcp_preauth_exempt"`
 	KKDCPDelegations         uint64 `json:"kkdcp_delegations"`
 	KKDCPRealmMismatch       uint64 `json:"kkdcp_realm_mismatch"`
+	IMAPConnections          uint64 `json:"imap_connections"`
+	IMAPCommands             uint64 `json:"imap_commands"`
+	IMAPAuthFailures         uint64 `json:"imap_auth_failures"`
+	IMAPFetchedMessages      uint64 `json:"imap_fetched_messages"`
+	IMAPAppendBytes          uint64 `json:"imap_append_bytes"`
+	IMAPPlaintextLogins      uint64 `json:"imap_plaintext_logins"`
+	IMAPCapabilitiesStripped uint64 `json:"imap_capabilities_stripped"`
+	IMAPPreauthRefused       uint64 `json:"imap_preauth_refused"`
+	POP3Connections          uint64 `json:"pop3_connections"`
+	POP3Commands             uint64 `json:"pop3_commands"`
+	POP3AuthFailures         uint64 `json:"pop3_auth_failures"`
+	POP3RetrievedBytes       uint64 `json:"pop3_retrieved_bytes"`
+	POP3Deletes              uint64 `json:"pop3_deletes"`
+	POP3PlaintextLogins      uint64 `json:"pop3_plaintext_logins"`
+	POP3CapabilitiesStripped uint64 `json:"pop3_capabilities_stripped"`
 	AssetObservations        uint64 `json:"asset_observations"`
 	AssetFindings            uint64 `json:"asset_findings"`
 	AssetUnexpected          uint64 `json:"asset_unexpected_role"`
@@ -1841,6 +1878,21 @@ func (s *Stats) snapshot() Snapshot {
 		KKDCPPreauthExempt:       s.KKDCPPreauthExempt.Load(),
 		KKDCPDelegations:         s.KKDCPDelegations.Load(),
 		KKDCPRealmMismatch:       s.KKDCPRealmMismatch.Load(),
+		IMAPConnections:          s.IMAPConnections.Load(),
+		IMAPCommands:             s.IMAPCommands.Load(),
+		IMAPAuthFailures:         s.IMAPAuthFailures.Load(),
+		IMAPFetchedMessages:      s.IMAPFetchedMessages.Load(),
+		IMAPAppendBytes:          s.IMAPAppendBytes.Load(),
+		IMAPPlaintextLogins:      s.IMAPPlaintextLogins.Load(),
+		IMAPCapabilitiesStripped: s.IMAPCapabilitiesStripped.Load(),
+		IMAPPreauthRefused:       s.IMAPPreauthRefused.Load(),
+		POP3Connections:          s.POP3Connections.Load(),
+		POP3Commands:             s.POP3Commands.Load(),
+		POP3AuthFailures:         s.POP3AuthFailures.Load(),
+		POP3RetrievedBytes:       s.POP3RetrievedBytes.Load(),
+		POP3Deletes:              s.POP3Deletes.Load(),
+		POP3PlaintextLogins:      s.POP3PlaintextLogins.Load(),
+		POP3CapabilitiesStripped: s.POP3CapabilitiesStripped.Load(),
 		DHCPClients:              s.DHCPClients.Load(),
 		AssetObservations:        s.AssetObservations.Load(),
 		AssetFindings:            s.AssetFindings.Load(),
