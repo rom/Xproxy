@@ -44,6 +44,13 @@ type sess struct {
 	// rule is the rule that decided the session's first packet, so a
 	// per-rule privilege bound applies to the server's answer.
 	rule string
+	// asked is the name the estate's authorization policy has already been
+	// asked about on this session. It is a name rather than a flag because
+	// `user` is set while a packet is parsed, so a flag derived from it
+	// could not say whether the question had been put yet -- and because a
+	// session whose later packets claim a different name has to be asked
+	// again about that one.
+	asked string
 	// lastSeq is the sequence number last seen, so a packet that goes
 	// backwards or repeats is refused rather than decided twice.
 	lastSeq uint8

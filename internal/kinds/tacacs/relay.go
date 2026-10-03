@@ -236,8 +236,12 @@ func (t *server) oneRequest(c *conn, h wire.Header, body []byte) bool {
 	if !ok {
 		return false
 	}
-	if req.User != "" && s.user == "" {
-		s.user = req.User
+	// The estate's policy, asked as soon as a packet carries a name and again
+	// if a later one carries a different name. The comparison is against
+	// `asked` rather than against `user`, because read() above has already set
+	// `user` from the body it just parsed.
+	if req.User != "" && s.asked != req.User {
+		s.asked = req.User
 		if t.admitUser(c, req.User) != "" {
 			t.refuse(c, h, Decision{Reason: "authorization_denied"})
 			return false
