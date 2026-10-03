@@ -6,6 +6,87 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Tests (the policies that were only ever driven end to end)
+
+Coverage work across the components, written as the policies read rather than
+as numbers.
+
+**The five kinds added this release had no policy test at all.** radius,
+tacacs, kkdcp, imap and pop3 were driven only through sockets, which is the
+right way to prove a relay carries what it should and the wrong way to reach a
+compile-time refusal or the twentieth branch of a decision: a case costs a
+server, a client and a secret file, so the cases nobody wrote were the cheap
+ones. That is why those five sat at the bottom of the per-package table, and
+what they were missing was not obscure -- it was the validation that turns a
+mistyped code name into an error at load rather than at the first login it
+refuses. Each now has a `policy_test.go` that starts from the defaults, because
+the defaults are what an operator gets by naming an upstream and on these
+protocols they are the security; then a table of every name a configuration can
+misspell, asserting the error names the field and the rule's index; then the
+decisions, one case each, including the orders that matter. Alongside them the
+RADIUS pending table, which has two modes rather than two settings -- with a
+secret it allocates its own identifier so two switches using identifier 7
+cannot be confused, and without one a collision is refused rather than resolved
+-- and the KKDCP counting window, where the interesting behaviour is the
+bookkeeping: what falls out of the window, what a full table does to a new
+client, and the per-client ceiling.
+
+**The two OT policies, which are the largest in the project.** On mms: what a
+functional constraint means for the plant, the services that replace what is
+inside a protection relay rather than telling it what to do, `read_only` as a
+property of the service rather than its name, and select-before-operate -- the
+interlock the devices may not be trusted with, because `ctlModel` lives in
+`$CF$` and `$CF$` is writable. On opcua: the four layers, and at each the pairs
+that have to be decided together, of which the channel is the one that matters:
+a listener checking only the security policy would admit Basic256Sha256 with
+mode none, which is a strong cipher suite with nothing encrypted.
+
+Three readings turned out to be worth writing down, because the test written
+first asserted the opposite and the code was right: a rule's credential list is
+a selector as well as a policy (naming `chap` on a RADIUS rule exempts chap, it
+does not confine that address to chap); a TACACS+ rule whose command list does
+not cover a command does not decide it, so a command on the listener's allow
+list and outside the rule's falls through to the default action; and `OR` is
+"operate received", a status attribute, so a write to it does not reach the
+plant -- `CO` is the constraint that does.
+
+Both OT tests also turned up the same sharp edge, now asserted on both kinds:
+the object and node patterns are `path.Match`, where a `*` does not cross a
+`/`. So `objects: ["*"]` written to mean everything selects nothing, and
+`ns=4;s=Tank*` covers `Tank1` and not `Tank1/Level`. Worth knowing, because
+every list in both configurations is written in a form full of slashes.
+
+**And the smaller things that had no test.** The mms naming and classification
+tables, where every string is a counter name, a word in a security event or a
+spelling a configuration uses. The three DNS sections that answer rather than
+forward -- local records, per-client views, and the screen over what an upstream
+may point at -- where every refusal is a refusal at load and the alternative is
+a name quietly not resolving in production. The validation of the SSE event
+policy and of the two mailbox listeners, neither of which had one. The ATT&CK
+view over the refusal counters: a refusal is counted under its own reason and
+under every technique that reason maps to, and the identifiers come back
+sorted, because a list that reordered itself between reads would read as
+movement. The DNS prefetch claim, which is what keeps one popular name from
+being refreshed by every goroutine that notices it is about to expire -- the
+entries worth prefetching are by definition the ones being asked for
+constantly, so without it the moment an entry nears expiry is the moment every
+in-flight query for it goes upstream at once. The FTP passive port range, where
+every wrong reading is a listener that starts and then fails in the field. The
+VNC pixel-bound reasons, where the empty one is load-bearing: a stream that
+ended is not a refusal. And the forward proxy's `networks` and `not_networks`,
+which are how a rule is written about a floor or a build farm rather than about
+a user name.
+
+One existing test fixed in each direction. The IMAP auth-injection test waited
+three seconds for a counter, which is long enough on an idle machine and not
+under load; it now reads to the end of the connection, which is a signal rather
+than a timer. The RADIUS end-to-end test read `radius_requests` immediately
+after the answer reached the client, and the full run under `-race` caught it:
+the counter is incremented after the datagram has gone to the server -- the
+right place for a counter meaning "requests this listener forwarded" -- and the
+reply arrives on another goroutine, so under load the answer is back before the
+counter moves.
+
 ### Added (the event stream: a policy for text/event-stream)
 
 - **`sse_guard` on a route is a policy for Server-Sent Events**, which is the
