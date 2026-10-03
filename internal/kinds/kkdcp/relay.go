@@ -132,30 +132,30 @@ func (t *server) exchange(w http.ResponseWriter, ip netip.Addr, env wire.ProxyMe
 			t.host.Counters().KKDCPRealmMismatch.Add(1)
 		}
 		t.refused(req, d)
-		t.answerRefusal(w, req, d)
+		t.answerRefusal(w, req)
 		return
 	}
 	// A client past the pre-authentication failure bound is refused before
 	// the policy looks at this request: the burst is the finding, and the
 	// request in hand is the next attempt in it.
 	if t.sprayed(req) {
-		t.answerRefusal(w, req, Decision{Reason: "preauth_failure_burst"})
+		t.answerRefusal(w, req)
 		return
 	}
 	d := t.policy.Decide(req)
 	if !d.Allow {
 		t.refused(req, d)
 		if t.enforcing() || d.Hard {
-			t.answerRefusal(w, req, d)
+			t.answerRefusal(w, req)
 			return
 		}
 	}
-	if reason := t.enumeration(req); reason != "" {
-		t.answerRefusal(w, req, Decision{Reason: reason})
+	if t.enumeration(req) != "" {
+		t.answerRefusal(w, req)
 		return
 	}
-	if reason := t.decideAnomaly(req); reason != "" {
-		t.answerRefusal(w, req, Decision{Reason: reason})
+	if t.decideAnomaly(req) != "" {
+		t.answerRefusal(w, req)
 		return
 	}
 	t.host.Counters().KKDCPRequests.Add(1)
@@ -291,7 +291,7 @@ func (t *server) answer(w http.ResponseWriter, req Request, msg wire.Message, re
 	if d := t.policy.Answer(a); !d.Allow {
 		t.refusedAnswer(req, a, d)
 		if t.enforcing() || d.Hard {
-			t.answerRefusal(w, req, d)
+			t.answerRefusal(w, req)
 			return
 		}
 	}
@@ -395,7 +395,14 @@ func (t *server) write(w http.ResponseWriter, req Request, msg []byte) {
 // KDC_ERR_POLICY: the request was well formed and the policy refused it,
 // which is the truth, where KDC_ERR_C_PRINCIPAL_UNKNOWN would be a lie the
 // client's own logs would repeat.
-func (t *server) answerRefusal(w http.ResponseWriter, req Request, d Decision) {
+//
+// It takes no Decision, and that is the point rather than an omission: there
+// is nothing about *why* the refusal happened that belongs in an answer to
+// whoever sent the request. On this protocol the name of the control that
+// fired is usually the intelligence the control exists to deny, so the reason
+// goes to the security log and the counters, which the caller has already
+// done.
+func (t *server) answerRefusal(w http.ResponseWriter, req Request) {
 	if !t.errorReply {
 		http.Error(w, "", http.StatusForbidden)
 		return
