@@ -2482,6 +2482,7 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 	}
 	seen[r.Name] = true
 	v.websocketGuard(p, r)
+	v.sseGuard(p, r)
 	switch r.ClientCertHeaders {
 	case "", "none", "rfc9440", "xfcc":
 	default:
@@ -2885,6 +2886,10 @@ var denyReasons = map[string]bool{
 	// one credential on an estate worth guessing at scale and the mail
 	// server's own lockout protects the account rather than the estate.
 	"imap_denied": true, "imap_auth_failed": true, "imap_anomaly": true,
+	// An event stream ended by its guard. One category rather than one per
+	// reason, because a ban is about a client that keeps being refused
+	// rather than about which bound it crossed.
+	"sse_denied":  true,
 	"pop3_denied": true, "pop3_auth_failed": true, "pop3_anomaly": true,
 }
 
@@ -16424,4 +16429,192 @@ func (v *validator) pop3Mechanisms(p string, list []string) {
 				"check the spelling against what the server advertises", p, s)
 		}
 	}
+}
+
+// sseGuard checks the event policy of a route.
+//
+// The bounds are checked against each other as well as against their own
+// ranges, because the pairs that have to agree are the ones a reader of the
+// configuration would assume agree: an event bound under a line bound is a
+// bound that can never be reached, and a schema under an inspect bound is a
+// check that cannot run.
+func (v *validator) sseGuard(p string, r *Route) {
+	g := r.SSEGuard
+	if g == nil {
+		return
+	}
+	if g.MaxEventBytes == 0 {
+		g.MaxEventBytes = 1 << 20
+	}
+	if g.MaxEventBytes < 64 || g.MaxEventBytes > 64<<20 {
+		v.errf("%s.sse_guard.max_event_bytes: must be between 64 B and 64 MiB", p)
+	}
+	if g.MaxLineBytes == 0 {
+		g.MaxLineBytes = 64 << 10
+	}
+	if g.MaxLineBytes < 64 || g.MaxLineBytes > 1<<20 {
+		v.errf("%s.sse_guard.max_line_bytes: must be between 64 B and 1 MiB", p)
+	}
+	if g.MaxFields == 0 {
+		g.MaxFields = 256
+	}
+	if g.MaxFields < 1 || g.MaxFields > 4096 {
+		v.errf("%s.sse_guard.max_fields: must be between 1 and 4096", p)
+	}
+	if g.EventsPerSecond < 0 || g.EventsPerSecond > 1_000_000 {
+		v.errf("%s.sse_guard.events_per_second: must be between 0 and 1000000", p)
+	}
+	if g.MaxEvents < 0 {
+		v.errf("%s.sse_guard.max_events: must not be negative", p)
+	}
+	if g.MaxStreamBytes < 0 {
+		v.errf("%s.sse_guard.max_stream_bytes: must not be negative", p)
+	}
+	if d := g.MaxDuration.D(); d != 0 && (d < time.Second || d > 168*time.Hour) {
+		v.errf("%s.sse_guard.max_duration: must be 0 or between 1s and 168h", p)
+	}
+	if d := g.IdleTimeout.D(); d != 0 && (d < time.Second || d > 24*time.Hour) {
+		v.errf("%s.sse_guard.idle_timeout: must be 0 or between 1s and 24h", p)
+	}
+	if g.MaxIDBytes == 0 {
+		g.MaxIDBytes = 256
+	}
+	if g.MaxIDBytes < 1 || g.MaxIDBytes > 8192 {
+		v.errf("%s.sse_guard.max_id_bytes: must be between 1 and 8192", p)
+	}
+	if d := g.MinRetry.D(); d != 0 && (d < time.Millisecond || d > time.Hour) {
+		v.errf("%s.sse_guard.min_retry: must be 0 or between 1ms and 1h", p)
+	}
+	if g.MaxInspectBytes == 0 {
+		g.MaxInspectBytes = 64 << 10
+	}
+	if g.MaxInspectBytes < 64 || g.MaxInspectBytes > 16<<20 {
+		v.errf("%s.sse_guard.max_inspect_bytes: must be between 64 B and 16 MiB", p)
+	}
+	switch g.Inspect {
+	case "", "data":
+		g.Inspect = "data"
+	case "none", "all":
+	default:
+		v.errf("%s.sse_guard.inspect: must be none, data or all", p)
+	}
+	if g.Inspect == "none" && len(g.DenyPatterns) > 0 {
+		v.errf("%s.sse_guard: deny_patterns needs inspect: data or all; with none there is nothing to match against", p)
+	}
+	for i, pat := range g.DenyPatterns {
+		if _, err := regexp.Compile(pat); err != nil {
+			v.errf("%s.sse_guard.deny_patterns[%d]: %v", p, i, err)
+		}
+	}
+	if pat := g.LastEventIDPattern; pat != "" {
+		if _, err := regexp.Compile(pat); err != nil {
+			v.errf("%s.sse_guard.last_event_id_pattern: %v", p, err)
+		}
+		if !g.LastEventID() {
+			v.warnf("%s.sse_guard.last_event_id_pattern: allow_last_event_id is false, so no cursor reaches the application and the pattern decides nothing", p)
+		}
+	}
+	switch g.Compression {
+	case "", "strip":
+		g.Compression = "strip"
+	case "refuse", "inspect":
+	default:
+		v.errf("%s.sse_guard.compression: must be strip, refuse or inspect", p)
+	}
+	if g.MaxInflateRatio == 0 {
+		g.MaxInflateRatio = 100
+	}
+	if g.MaxInflateRatio < 2 || g.MaxInflateRatio > 10_000 {
+		v.errf("%s.sse_guard.max_inflate_ratio: must be between 2 and 10000", p)
+	}
+	if g.Compression != "inspect" && g.MaxInflateRatio != 100 {
+		v.warnf("%s.sse_guard.max_inflate_ratio: only read with compression: inspect; this route is %s", p, g.Compression)
+	}
+	switch g.Action {
+	case "", "close":
+		g.Action = "close"
+	case "log":
+	default:
+		// There is no third answer on this protocol: the response has begun,
+		// so an event cannot be refused on its own.
+		v.errf("%s.sse_guard.action: must be close or log", p)
+	}
+	switch g.UnknownEvents {
+	case "", "allow", "observe", "deny":
+	default:
+		v.errf("%s.sse_guard.unknown_events: must be allow, observe or deny", p)
+	}
+	if g.UnknownEvents == "deny" && len(g.AllowEvents) == 0 && len(g.Events) == 0 {
+		v.errf("%s.sse_guard.unknown_events: deny with no allow_events and no events refuses every event this route carries", p)
+	}
+	v.sseEvents(p, g)
+}
+
+// sseEvents checks the per-name policy.
+func (v *validator) sseEvents(p string, g *SSEGuard) {
+	seen := map[string]bool{}
+	for i := range g.Events {
+		e := &g.Events[i]
+		q := fmt.Sprintf("%s.sse_guard.events[%d]", p, i)
+		switch {
+		case e.Name == "":
+			v.errf("%s: name is required", q)
+		case strings.ContainsAny(e.Name, "\r\n:"):
+			// A name with a colon or a newline in it cannot be an `event:`
+			// field value, so a rule naming one would never match anything.
+			v.errf("%s: %q cannot be an event name: a CR, an LF or a colon cannot appear in one", q, e.Name)
+		case seen[e.Name]:
+			v.errf("%s: %q is named twice", q, e.Name)
+		}
+		seen[e.Name] = true
+		if e.MaxBytes < 0 || e.MaxBytes > g.MaxEventBytes {
+			v.errf("%s.max_bytes: must be between 0 and the route's max_event_bytes (%d)", q, g.MaxEventBytes)
+		}
+		if e.EventsPerSecond < 0 || e.EventsPerSecond > 1_000_000 {
+			v.errf("%s.events_per_second: must be between 0 and 1000000", q)
+		}
+		if e.SchemaFile != "" {
+			v.file(q+".schema_file", e.SchemaFile)
+			// A schema cannot run on an event the guard did not keep whole, so
+			// a bound above max_inspect_bytes is a check that stops applying
+			// at a size the sender chooses. Where that is certain rather than
+			// possible, say so.
+			bound := e.MaxBytes
+			if bound == 0 {
+				bound = g.MaxEventBytes
+			}
+			if bound > g.MaxInspectBytes {
+				v.warnf("%s: schema_file with a size bound of %d above max_inspect_bytes (%d): an event larger than the inspect bound is refused rather than validated", q, bound, g.MaxInspectBytes)
+			}
+		}
+		if g.UnknownEvents == "" && len(g.AllowEvents) == 0 {
+			continue
+		}
+		if len(g.AllowEvents) > 0 && !containsString(g.AllowEvents, e.Name) {
+			v.warnf("%s: %q has a policy but is not in allow_events, so unknown_events decides it", q, e.Name)
+		}
+	}
+	for i, n := range g.AllowEvents {
+		if strings.ContainsAny(n, "\r\n:") {
+			v.errf("%s.sse_guard.allow_events[%d]: %q cannot be an event name", p, i, n)
+		}
+	}
+	for i, n := range g.DenyEvents {
+		if strings.ContainsAny(n, "\r\n:") {
+			v.errf("%s.sse_guard.deny_events[%d]: %q cannot be an event name", p, i, n)
+		}
+		if containsString(g.AllowEvents, n) {
+			v.warnf("%s.sse_guard.deny_events[%d]: %q is in allow_events too; deny wins, which is the documented order but reads as a mistake", p, i, n)
+		}
+	}
+}
+
+// containsString reports whether a list names s.
+func containsString(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }

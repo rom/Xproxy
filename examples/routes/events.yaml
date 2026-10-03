@@ -1,0 +1,139 @@
+# Server-Sent Events: the other long-lived HTTP response.
+#
+# examples/routes/websocket.yaml is a connection a client opened on
+# purpose, inspected in both directions. This is the opposite case, and
+# two facts about it decide everything below.
+#
+# The direction is outward. A client sends a GET and then says nothing;
+# everything after that is the application talking. So a policy here is
+# a policy about answers -- the position the dhcp kind is in -- and
+# `deny_patterns` is a check on what is *leaving*. That matters because
+# an event stream is exactly the shape of a channel for moving data out
+# quietly: arbitrary text, chunked, flushed per event, on a port already
+# open, under a Content-Type a dashboard uses, and nothing about it
+# malformed. `max_events`, `max_stream_bytes` and `max_duration` are the
+# settings that make a stream finite, and a stream has none of them by
+# default because HTTP gives a response with no length no bound at all.
+#
+# And a single event cannot be refused: the status line has gone by the
+# time one is read, so `action` has two values rather than three. The
+# stream ends at that event -- the client sees a closed body, which is
+# what it sees when an application finishes, and reconnects. Right for a
+# dashboard, a dead end for a channel.
+#
+# Validate: xproxy -config examples/routes/events.yaml -validate
+version: 1
+server:
+  listeners:
+    - {name: main, address: "0.0.0.0:8080"}
+
+logging:
+  directory: /var/log/xproxy
+  access: {file: access.log}
+  security: {file: security.log}
+
+routes:
+  # A dashboard feed: a known set of event names, each with its own size
+  # and rate, and totals that make one browser tab's stream finite.
+  - name: dashboard
+    paths: ["/events"]
+    upstream: app
+    sse_guard:
+      # The event bound is generous for a report and nowhere near a
+      # dataset. The per-name bounds below are where the real numbers are.
+      max_event_bytes: 65536
+      events_per_second: 100
+      # Two hours and a hundred thousand events is a working day's
+      # dashboard. A stream past either is not one.
+      max_events: 100000
+      max_stream_bytes: 268435456
+      max_duration: 2h
+      # Comments count as traffic, because a keepalive is the application
+      # saying it is still there. This bounds a stream whose application
+      # has stopped without closing the socket.
+      idle_timeout: 90s
+      # The events this route carries. Naming any makes the rest deny, so
+      # an `admin-notice` on the price feed ends the stream.
+      allow_events: [price, volume, heartbeat, status]
+      events:
+        # One max_event_bytes for the stream is the bound of its largest
+        # event, which is the bound that lets every other event be that
+        # large too. This is where the keepalive and the report differ.
+        - {name: heartbeat, max_bytes: 128, events_per_second: 2}
+        - {name: price, max_bytes: 4096, events_per_second: 50}
+        - {name: volume, max_bytes: 4096, events_per_second: 20}
+        - {name: status, max_bytes: 8192, events_per_second: 1}
+      # The cursor. Our identifiers are integers, so a cursor that is not
+      # one is not ours -- and an application resuming from it would be
+      # replaying history for a client that was never issued it. A cursor
+      # that does not match is removed rather than refused, so the client
+      # gets the stream from the beginning.
+      last_event_id_pattern: "[0-9]{1,19}"
+      max_id_bytes: 32
+      # `retry: 0` from a misconfigured application is a fleet of browsers
+      # reconnecting as fast as they can. The floor rewrites the field
+      # rather than refusing the stream, because the stream is fine.
+      min_retry: 5s
+      # Reading what is leaving. These are the two shapes that should
+      # never appear in a market feed; an estate adds its own.
+      deny_patterns:
+        - "BEGIN [A-Z ]*PRIVATE KEY"
+        - "[0-9]{13,19}"
+      max_inspect_bytes: 65536
+
+  # A log tail for the operators. The event names are the application's
+  # and change with it, so there is no list -- what is bounded is how much
+  # one person may take and for how long, which is the control that
+  # matters when the payload is by definition the estate's own logs.
+  - name: log-tail
+    paths: ["/admin/logs/stream"]
+    upstream: app
+    # In an estate this route sits behind an identity filter as well --
+    # see examples/filters -- which is a separate decision from the one
+    # here: who may open the stream, rather than how much it may carry.
+    sse_guard:
+      max_event_bytes: 16384
+      events_per_second: 500
+      max_stream_bytes: 1073741824
+      max_duration: 30m
+      idle_timeout: 5m
+      # No allow_events: the names come from the application. unknown_events
+      # defaults to allow when no list is given, and `observe` is how the
+      # list gets written -- run for a week, read the events, then name them.
+      unknown_events: observe
+      # A log line is not JSON here, so there is no schema. What there is
+      # instead is a bound on the whole stream: a log tail is the one
+      # endpoint on an estate where "read everything" is the normal case
+      # and also what an intruder wants.
+      deny_patterns: ["BEGIN [A-Z ]*PRIVATE KEY"]
+      log_events: false
+
+  # A route being brought under policy. monitor_only carries everything
+  # and reports what it would have refused, which is how an estate finds
+  # out what its own streams actually send before a bound is set.
+  - name: notifications
+    paths: ["/notify"]
+    upstream: app
+    sse_guard:
+      max_event_bytes: 8192
+      max_events: 10000
+      max_duration: 1h
+      allow_events: [notice, badge]
+      monitor_only: true
+
+upstreams:
+  - name: app
+    endpoints:
+      - {address: "10.0.0.20:8080"}
+      - {address: "10.0.0.21:8080"}
+    balancer: least_conn
+
+bans:
+  triggers:
+    # A client whose streams keep being ended for taking more than the
+    # route carries is not reading a dashboard.
+    - name: stream-collection
+      reasons: [sse_denied]
+      threshold: 5
+      window: 10m
+      duration: 1h

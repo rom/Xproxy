@@ -177,7 +177,7 @@ its own for what is deliberately *not* implemented and why.
 
 | Family | What is spoken here | Where |
 |--------|---------------------|-------|
-| HTTP | HTTP/1.1, HTTP/2 (ALPN or `h2c`), HTTP/3 over QUIC v1; extended CONNECT; WebSocket (RFC 6455), with `permessage-deflate` deliberately not negotiated on an inspected route; WebTransport over HTTP/3; gRPC and gRPC-web; Early Hints, trailers, ranges and priority signals | `http` |
+| HTTP | HTTP/1.1, HTTP/2 (ALPN or `h2c`), HTTP/3 over QUIC v1; extended CONNECT; WebSocket (RFC 6455), with `permessage-deflate` deliberately not negotiated on an inspected route; WebTransport over HTTP/3; Server-Sent Events (`text/event-stream`), read event by event and re-emitted, with all three of the standard's line terminators and compression stripped on an inspected route for the same reason; gRPC and gRPC-web; Early Hints, trailers, ranges and priority signals | `http` |
 | TLS | 1.2 and 1.3, SNI, ALPN, mutual TLS in both directions, SPKI pinning, session tickets with rotating keys, OCSP stapling, Certificate Transparency, ACME (HTTP-01 and TLS-ALPN-01), Encrypted Client Hello, the `X25519MLKEM768` hybrid key exchange, JA3 and JA4 fingerprints | every TLS listener |
 | Layer 4 | TLS and QUIC passthrough routed by server name; any datagram protocol; PROXY protocol v1 and v2, read and written; `IP_TRANSPARENT` with the original destination read from the socket | `tcp`, `udp` |
 | DNS | UDP, TCP, DoT (RFC 7858), DoH (RFC 8484) and DoQ (RFC 9250); DNSSEC validation with aggressive NSEC and NSEC3 caching (RFC 8198); response policy zones; DNS64 (RFC 6147); designated-resolver discovery (RFC 9462); SVCB and HTTPS records (RFC 9460); DNS cookies; EDNS client subnet policy | `dns` |
@@ -1353,6 +1353,22 @@ describes it, validation refuses what cannot work, and
   frame, message and rate, and an expression list over the messages
   themselves — the upgraded connection used to be the one place this
   proxy stopped looking, which is where applications put their real API
+- **Server-Sent Events**, the other long-lived HTTP response and the only
+  one nothing else in a configuration bounds: one GET, no length, flushed
+  per event, open for hours. `sse_guard` reads each event and writes it
+  out again, which is what resolves SSE's framing once rather than twice
+  — it has three line terminators, a blank line as its only separator and
+  a field with no colon that means an empty value. It is the WebSocket
+  guard's opposite in the way that matters: the direction is **outward**,
+  so every event is the estate's own application talking, which makes
+  this a policy about answers and makes `deny_patterns` here a control
+  that reads what is *leaving*. Nothing about an exfiltration channel
+  built this way is malformed — arbitrary text, chunked, under a
+  Content-Type a dashboard uses — so the bounds on an event, a stream's
+  total and its duration, and the list of event names a route carries,
+  are what tell a price feed from a copy of a database. The one piece of
+  client input, `Last-Event-ID`, is a cursor an application resumes from,
+  so it has a bound, a shape and an off switch
 - YARA rules over streams and bodies: a subset of the language
   implemented in Go, applied to a layer 4 connection as it passes or to
   a request or response body before it is forwarded, with a rule

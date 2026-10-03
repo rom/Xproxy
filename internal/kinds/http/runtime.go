@@ -174,7 +174,11 @@ type compiledRoute struct {
 	deceive *deceivePolicy
 	// wsGuard inspects the frames of an upgraded connection on this
 	// route; nil leaves the upgrade an opaque tunnel.
-	wsGuard  *wsGuard
+	wsGuard *wsGuard
+	// sseGuard inspects the events of a `text/event-stream` response on this
+	// route. Without it a stream is an opaque outbound channel: the one
+	// long-lived HTTP response nothing else here bounds.
+	sseGuard *sseGuard
 	static   *staticSite
 	compress *compressPolicy
 	// compressAuth allows compressing a response to a request that
@@ -543,6 +547,14 @@ func newRuntime(cfg *config.Config, generation uint64, pools map[string]*upstrea
 				return nil, fmt.Errorf("route %s: websocket_guard: %w", r.Name, err)
 			}
 			cr.wsGuard = g
+		}
+		if sg := r.SSEGuard; sg != nil {
+			g, err := newSSEGuard(sg)
+			if err != nil {
+				rt.stop()
+				return nil, fmt.Errorf("route %s: sse_guard: %w", r.Name, err)
+			}
+			cr.sseGuard = g
 		}
 		if hp := r.Honeypot; hp != nil {
 			cr.honeypotType = hp.ContentType

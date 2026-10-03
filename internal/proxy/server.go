@@ -1223,6 +1223,15 @@ func (s *Server) Reload(cfg *config.Config) error {
 			})
 		}
 	}
+	// Counted here rather than at the end of the reload, because this store
+	// is what makes the new generation visible to the management API: a
+	// counter incremented forty lines further on leaves a window in which
+	// status reports generation N with no reload recorded, and a fleet
+	// controller polling through a reload reads that pair as a daemon that
+	// changed its configuration without being asked. Nothing between here
+	// and the end of the function can fail, so counting first cannot
+	// over-count.
+	s.stats.Reloads.Add(1)
 	s.rt.Store(rt)
 	commitPlane()
 	// Switch the listener set: the new listeners start serving on the new
@@ -1268,7 +1277,6 @@ func (s *Server) Reload(cfg *config.Config) error {
 			node.AttachBans(banStore(newBans))
 		}
 	}
-	s.stats.Reloads.Add(1)
 	// The old generation stops probing at once: its health state is no
 	// longer consulted. Its pools stay open until the data plane reports
 	// that the last request compiled against it has finished — a pool
