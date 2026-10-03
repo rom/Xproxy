@@ -107,9 +107,23 @@ estate whose clients legitimately synchronise everything.
 
 `max_append_bytes` is checked against the **declared** size of a literal,
 because LITERAL+ sends the octets without waiting for anybody to agree. A
-refused command's octets are then read and dropped rather than left to
+refused `{n+}`'s octets are then read and dropped rather than left to
 desynchronise the connection: the client announced them and is going to send
-them whatever it is told.
+them whatever it is told. A refused plain `{n}` is the other case and nothing is
+read — the client is waiting for a continuation request that is not coming, and
+RFC 9051 §4.3 says it must not send the octets once it has a tagged refusal
+instead. The bound covers the command's literals together rather than each hop,
+and the rule that decided the command decides its continuations.
+
+An argument that arrives *as* a literal is refused. A literal is the last token
+on the line, so the argument list ends where it begins: `SELECT {25+}` parses as
+SELECT naming no mailbox, and every list keyed on that answer — `mailboxes`,
+`deny_mailboxes`, the rule selectors, `users`, the estate's authorization
+question — would decide about nothing while the server received the name intact.
+Reading the literal first would mean this relay answering the continuation
+request instead of the server, so the command is refused with
+`literal_argument`: a refusal an operator can see beats a policy that silently
+decided nothing.
 
 Two things happen to the server's own answers. The **capability list is
 narrowed**: a mechanism the policy will refuse is removed, `LOGINDISABLED` is

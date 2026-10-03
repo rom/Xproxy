@@ -391,8 +391,18 @@ func TestAPrivilegeGrantIsFoundInTheFormsEquipmentUses(t *testing.T) {
 		{"the bare form", "priv-lvl=7", 7, true},
 		{"an optional pair", "shell:priv-lvl*15", 15, true},
 		{"one pair among several", "shell:roles=admin,shell:priv-lvl=15", 15, true},
-		{"a level past the ladder", "shell:priv-lvl=16", 0, false},
+		// Past the ladder is still a grant, and read as one: the policy's
+		// bound is what refuses it. A reader that answered "this grants
+		// nothing" about `priv-lvl=16` would be deciding, in the parser, that
+		// a value it does not recognise is safe.
+		{"a level past the ladder", "shell:priv-lvl=16", 16, true},
 		{"something else entirely", "shell:roles=operator", 0, false},
+		// The NUL-separated pair list, which is how several platforms write
+		// it. This is the spelling that used to read as no grant at all,
+		// because the value was rendered through a text-safe accessor that
+		// refuses control characters -- one octet, and the bound never applied.
+		{"the NUL-separated form", "shell:roles=admin\x00shell:priv-lvl=15", 15, true},
+		{"a NUL-separated pair alone", "shell:priv-lvl=15\x00", 15, true},
 	}
 	for _, c := range cases {
 		p := mustParse(t, packet(CodeAccessAccept, 1, auth16(1),
@@ -402,11 +412,35 @@ func TestAPrivilegeGrantIsFoundInTheFormsEquipmentUses(t *testing.T) {
 			t.Errorf("%s (%q): (%d, %v), want (%d, %v)", c.name, c.av, got, ok, c.want, c.ok)
 		}
 	}
+	// Every attribute is read and the highest wins, because a bound applied to
+	// a grant the equipment is not the one to act on is not a bound: which of
+	// two priv-lvl pairs a platform takes is the platform's business, so both
+	// are the proxy's.
+	two := mustParse(t, packet(CodeAccessAccept, 1, auth16(1),
+		vsa(VendorCisco, 1, []byte("shell:priv-lvl=1")...),
+		vsa(VendorCisco, 1, []byte("shell:priv-lvl=15")...)))
+	if n, ok := two.PrivilegeLevel(); !ok || n != 15 {
+		t.Errorf("two priv-lvl pairs read as (%d, %v), want (15, true)", n, ok)
+	}
+	// And an unreadable one does not hide the one after it.
+	hidden := mustParse(t, packet(CodeAccessAccept, 1, auth16(1),
+		vsa(VendorCisco, 1, []byte("shell:roles=\x01\x02")...),
+		vsa(VendorCisco, 1, []byte("shell:priv-lvl=15")...)))
+	if n, ok := hidden.PrivilegeLevel(); !ok || n != 15 {
+		t.Errorf("a grant behind an unreadable attribute read as (%d, %v), want (15, true)", n, ok)
+	}
+
 	// And the standard attribute that means the same thing.
 	admin := mustParse(t, packet(CodeAccessAccept, 1, auth16(1),
 		attr(AttrServiceType, 0, 0, 0, 6)))
 	if !admin.Administrative() {
 		t.Error("Service-Type = Administrative-User was not recognised")
+	}
+	// Including when it is not the first Service-Type on the reply.
+	second := mustParse(t, packet(CodeAccessAccept, 1, auth16(1),
+		attr(AttrServiceType, 0, 0, 0, 1), attr(AttrServiceType, 0, 0, 0, 6)))
+	if !second.Administrative() {
+		t.Error("a second Service-Type granting Administrative-User was not read")
 	}
 	login := mustParse(t, packet(CodeAccessAccept, 1, auth16(1),
 		attr(AttrServiceType, 0, 0, 0, 1)))

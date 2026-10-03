@@ -114,6 +114,10 @@ type req struct {
 	padata  [][2]any
 	options wire.Options
 	addTkts int
+	// extraRealm adds a second realm field to the request body, which is not
+	// a thing any client does: it is how a test states the shape where one
+	// reader takes the first occurrence and another the last.
+	extraRealm string
 }
 
 type reqOpt func(*req)
@@ -124,6 +128,33 @@ func withPreauth() reqOpt {
 	return func(r *req) {
 		r.padata = append(r.padata, [2]any{wire.PAEncTimestamp, []byte{1, 2, 3, 4}})
 	}
+}
+
+// withPKINIT adds a PA-PK-AS-REQ carrying nothing a KDC could act on, which
+// is the shape of a request claiming to have pre-authenticated with a
+// certificate it does not have.
+func withPKINIT() reqOpt {
+	return func(r *req) {
+		r.padata = append(r.padata, [2]any{wire.PAPKASReq, []byte{1, 2, 3}})
+	}
+}
+
+// withS4UX509User adds a PA-S4U-X509-USER, which is the other way MS-SFU
+// spells protocol transition: the same ask as PA-FOR-USER, one structure
+// deeper.
+func withS4UX509User(p wire.Principal, realm string) reqOpt {
+	return func(r *req) {
+		id := append(ctxInt(0, 7), ctxPrincipal(1, p)...)
+		id = append(id, ctxStr(2, realm)...)
+		body := tlv(cContext|cons, 0, tlv(cUniversal|cons, tSequence, id))
+		r.padata = append(r.padata, [2]any{wire.PAS4UX509User,
+			tlv(cUniversal|cons, tSequence, body)})
+	}
+}
+
+// withExtraRealm names a second realm in the request body.
+func withExtraRealm(realm string) reqOpt {
+	return func(r *req) { r.extraRealm = realm }
 }
 
 // withForUser adds a PA-FOR-USER, which is S4U2Self and names the
@@ -191,6 +222,9 @@ func reqBody(realm string, cname, sname *wire.Principal, etypes []wire.EType, r 
 		b = append(b, ctxPrincipal(1, *cname)...)
 	}
 	b = append(b, ctxStr(2, realm)...)
+	if r.extraRealm != "" {
+		b = append(b, ctxStr(2, r.extraRealm)...)
+	}
 	if sname != nil {
 		b = append(b, ctxPrincipal(3, *sname)...)
 	}

@@ -122,7 +122,9 @@ const (
 	ETypeDESCBCCRC  EType = 1
 	ETypeDESCBCMD4  EType = 2
 	ETypeDESCBCMD5  EType = 3
+	ETypeDESCBCRaw  EType = 4
 	ETypeDES3CBCMD5 EType = 5
+	ETypeDES3CBCRaw EType = 6
 	ETypeDES3SHA1   EType = 16
 	ETypeAES128SHA1 EType = 17
 	ETypeAES256SHA1 EType = 18
@@ -143,7 +145,8 @@ const (
 
 var etypeNames = map[EType]string{
 	ETypeDESCBCCRC: "des-cbc-crc", ETypeDESCBCMD4: "des-cbc-md4",
-	ETypeDESCBCMD5: "des-cbc-md5", ETypeDES3CBCMD5: "des3-cbc-md5",
+	ETypeDESCBCMD5: "des-cbc-md5", ETypeDESCBCRaw: "des-cbc-raw",
+	ETypeDES3CBCMD5: "des3-cbc-md5", ETypeDES3CBCRaw: "des3-cbc-raw",
 	ETypeDES3SHA1: "des3-cbc-sha1", ETypeAES128SHA1: "aes128-cts-hmac-sha1-96",
 	ETypeAES256SHA1:   "aes256-cts-hmac-sha1-96",
 	ETypeAES128SHA256: "aes128-cts-hmac-sha256-128",
@@ -169,8 +172,28 @@ func (e EType) String() string {
 // password-cracking target the moment anybody who can ask for one asks.
 func (e EType) Weak() bool {
 	switch e {
-	case ETypeDESCBCCRC, ETypeDESCBCMD4, ETypeDESCBCMD5, ETypeDES3CBCMD5,
-		ETypeDES3SHA1, ETypeRC4HMAC, ETypeRC4HMACExp:
+	case ETypeDESCBCCRC, ETypeDESCBCMD4, ETypeDESCBCMD5, ETypeDESCBCRaw,
+		ETypeDES3CBCMD5, ETypeDES3CBCRaw, ETypeDES3SHA1,
+		ETypeRC4HMAC, ETypeRC4HMACExp:
+		return true
+	}
+	return false
+}
+
+// Strong reports whether an encryption type is one an estate is content to
+// have a ticket issued in.
+//
+// It is a list rather than the negation of Weak above, and that is the whole
+// point of having both. A number this registry has never assigned is neither:
+// a KDC hands out nothing in etype 9999, so a request offering `rc4-hmac` and
+// `9999` has asked for exactly one thing -- and a reader that called the
+// unknown number "not weak" would read that request as a mixed offer and let
+// the Kerberoasting through. Counting only what is named here means an
+// attacker cannot manufacture a strong-looking offer out of integers.
+func (e EType) Strong() bool {
+	switch e {
+	case ETypeAES128SHA1, ETypeAES256SHA1, ETypeAES128SHA256, ETypeAES256SHA384,
+		ETypeCamellia128, ETypeCamellia256:
 		return true
 	}
 	return false
@@ -265,6 +288,14 @@ const (
 	// clear. It is how a compromised service account becomes any user in
 	// the realm where the account has the right to ask.
 	PAForUser PAType = 129
+	// PAS4UX509User is the other way to ask for protocol transition
+	// (MS-SFU §2.2.2): the same request as PA-FOR-USER, naming the
+	// impersonated user by name or by certificate, and a KDC accepts it in
+	// place of PA-FOR-USER. It is here because a check that knew only about
+	// 129 was a check with a second door: the delegation switch never fired,
+	// the request was forwarded, and the log line said nothing about an
+	// impersonation.
+	PAS4UX509User PAType = 130
 	// PAPACOptions carries MS-SFU's resource-based constrained
 	// delegation flag, which is the half of S4U2Proxy that does not need
 	// the service to be trusted for delegation.
@@ -279,7 +310,8 @@ var paNames = map[PAType]string{
 	PAETypeInfo: "etype-info", PAPKASReq: "pk-as-req", PAPKASRep: "pk-as-rep",
 	PAETypeInfo2: "etype-info2", PAFXFast: "fx-fast", PAFXError: "fx-error",
 	PAFXCookie: "fx-cookie", PAEncryptedChallenge: "encrypted-challenge",
-	PAPACRequest: "pac-request", PAForUser: "for-user",
+	PAS4UX509User: "s4u-x509-user",
+	PAPACRequest:  "pac-request", PAForUser: "for-user",
 	PAPACOptions: "pac-options", PASupportedETypes: "supported-etypes",
 }
 

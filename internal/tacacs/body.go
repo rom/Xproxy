@@ -634,6 +634,39 @@ func ParseAuthenContinue(b []byte) (AuthenContinue, error) {
 	return c, nil
 }
 
+// ContinueUserMsg reads the user_msg field of a CONTINUE body as a name.
+//
+// This is the one reading of that field this package offers, and it exists
+// because of what the field holds when the server asked for a *name*. In the
+// ASCII login exchange of RFC 8907 §5.4.2 the START may carry no user at all:
+// the server answers GETUSER and the name arrives here, in the field the
+// comment above says a relay must never hold. A relay that could not read it
+// would have a user list with a bypass anybody can take -- leave the START's
+// user field empty and type the name at the prompt -- so the choice is between
+// holding a name for the length of one decision and not having the control.
+//
+// It is never the way to read an answer to GETPASS or GETDATA, and nothing
+// here can tell the difference: the caller holds the reply status that
+// prompted the packet and must call this only where the server asked for a
+// name. AuthenContinue itself still keeps lengths and nothing else, so the
+// default remains that the typed text cannot be had.
+//
+// A field with octets no name may contain is an error rather than an empty
+// name, because "unreadable" and "absent" are the two answers a policy must
+// not confuse: the second means there is nothing to decide about and the first
+// means there is something that cannot be decided about.
+func ContinueUserMsg(b []byte) (string, error) {
+	c, err := ParseAuthenContinue(b)
+	if err != nil {
+		return "", err
+	}
+	if c.UserMsgBytes == 0 {
+		return "", nil
+	}
+	const fixed = 5
+	return text(b[fixed : fixed+c.UserMsgBytes])
+}
+
 // AuthorRequest is an authorization request: the one that names a
 // command.
 type AuthorRequest struct {

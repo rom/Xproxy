@@ -11826,7 +11826,7 @@ int
 T}	T{
 \fB15\fR (no bound)
 T}	T{
-The administrative privilege a \fIreply\fR may grant,\: 0 to 15,\: read from a Cisco av\-pair\(aqs \fBpriv\-\:lvl\fR. Setting it to 1 on the listener in front of the switches means no RADIUS answer crossing this relay can hand out enable,\: whatever the server says
+The administrative privilege a \fIreply\fR may grant,\: 0 to 15,\: read from a Cisco av\-pair\(aqs \fBpriv\-\:lvl\fR. Setting it to 1 on the listener in front of the switches means no RADIUS answer crossing this relay can hand out enable,\: whatever the server says. Every av\-pair on the reply is read,\: and every pair inside one,\: and the highest grant found is the one bounded \[u2014] including the NUL\-separated spelling several platforms use,\: and a value outside 0\[u2013]15. Which pair a given platform acts on is the platform\(aqs business,\: so all of them are this relay\(aqs
 T}
 T{
 \fBdeny_\:administrative_\:replies\fR
@@ -11997,7 +11997,7 @@ enum
 T}	T{
 \fBallow\fR
 T}	T{
-\fBallow\fR,\: \fBdeny\fR or \fBobserve\fR. \fBobserve\fR logs and counts and then keeps looking,\: which is how a rule is tried on live traffic before it decides anything
+\fBallow\fR,\: \fBdeny\fR or \fBobserve\fR. \fBobserve\fR records the rule in the access line and decides nothing,\: so the rules below it still decide: the whole point is to try a rule on live traffic without it changing what happens,\: and a rule that decided \[u2014] by allowing what it covers \[u2014] would make trying one out the way to switch off every deny rule under it
 T}
 T{
 \fBclients\fR
@@ -12243,7 +12243,7 @@ list
 T}	T{
 \fB[]\fR
 T}	T{
-Checked first,\: and no rule overrides it,\: which is how an exception inside an allowed set is written: \fBshow .\:.\:.\fR allowed,\: \fBshow running\-\:config\fR denied
+Checked first,\: and no rule overrides it,\: which is how an exception inside an allowed set is written: \fBshow .\:.\:.\fR allowed,\: \fBshow running\-\:config\fR denied. A deny pattern covers the command it names \fBand whatever is appended to it\fR,\: because a device\(aqs command line takes suffixes: \fBshow running\-\:config\fR denies \fBshow running\-\:config | include password\fR and \fBcopy running\-\:config\fR denies it to any destination. An allow pattern is read exactly,\: unless it ends in \fB.\:.\:.\fR \[u2014] allowing more than was asked for is the unsafe direction
 T}
 T{
 \fBmax_\:privilege_\:level\fR
@@ -12414,8 +12414,8 @@ Counters: \fBtacacs_sessions\fR, \fBtacacs_commands\fR, \fBtacacs_accounting\fR,
 .PP
 .TS
 allbox;
-lbw(1.1i) lbw(0.7i) lbw(1.0i) lbx
-lw(1.1i) lw(0.7i) lw(1.0i) lx.
+lbw(1.1i) lbw(0.7i) lbw(1.1i) lbx
+lw(1.1i) lw(0.7i) lw(1.1i) lx.
 T{
 Key
 T}	T{
@@ -12441,7 +12441,7 @@ enum
 T}	T{
 \fBallow\fR
 T}	T{
-\fBallow\fR,\: \fBdeny\fR or \fBobserve\fR
+\fBallow\fR,\: \fBdeny\fR or \fBobserve\fR. \fBobserve\fR records the rule in the access line and decides nothing,\: so the rules below it still decide: the whole point is to try a rule on live traffic without it changing what happens,\: and a rule that decided \[u2014] by allowing what it covers \[u2014] would make trying one out the way to switch off every deny rule under it
 T}
 T{
 \fBclients\fR
@@ -12475,9 +12475,9 @@ T{
 T}	T{
 list
 T}	T{
-inherited
+added to the listener\(aqs
 T}	T{
-The command lines this rule covers,\: and the ones it does not cover even when \fBcommands\fR would match. A rule whose command list does not cover a command does not decide it,\: so a rule written to allow \fBshow .\:.\:.\fR is not the rule that allows \fBreload\fR
+The command lines this rule covers,\: and the ones it does not cover even when \fBcommands\fR would match. A rule whose command list does not cover a command does not decide it,\: so a rule written to allow \fBshow .\:.\:.\fR is not the rule that allows \fBreload\fR. The lists \fBadd to\fR the listener\(aqs rather than standing in for them: both deny lists are checked and both allow lists have to be satisfied,\: so a rule can only ever narrow. A rule that replaced the listener\(aqs deny list would be a hole in the sentence "no router behind this relay accepts \fBwrite erase\fR",\: opened by writing a deny
 T}
 T{
 \fBservices\fR,\: \fBauthen_\:services\fR
@@ -12531,15 +12531,15 @@ It is the only listener here that translates one protocol into another, and it i
 .PP
 .ti -3n
 \(bu
-A TGS\-REQ offering \fBnothing but RC4\fR is Kerberoasting: an RC4 service ticket\(aqs encrypted part is crackable offline against the service account\(aqs NT hash. \fBrefuse_weak_etypes\fR refuses those. "Nothing but" rather than "any", and the distinction is the whole setting \[u2014] a Windows client lists aes256, aes128 and rc4 and the KDC takes the first it can, so refusing a request that \fImentions\fR RC4 would refuse the estate.
+A TGS\-REQ offering \fBnothing but RC4\fR is Kerberoasting: an RC4 service ticket\(aqs encrypted part is crackable offline against the service account\(aqs NT hash. \fBrefuse_weak_etypes\fR refuses those. "Nothing but" rather than "any", and the distinction is the whole setting \[u2014] a Windows client lists aes256, aes128 and rc4 and the KDC takes the first it can, so refusing a request that \fImentions\fR RC4 would refuse the estate. "Nothing but" is read as "offers no type this estate is content with", not as "every type is on a list of bad ones": the field is integers a client chooses, and a number nobody has assigned is not a strong offer just because this proxy has no name for it.
 .PP
 .ti -3n
 \(bu
-An \fBAS\-REP for a request that brought no pre\-authentication\fR means the account is pre\-authentication exempt, and the reply\(aqs encrypted part is an offline password\-cracking target. That is AS\-REP roasting, and \fBrefuse_preauth_exempt\fR refuses the \fIreply\fR \[u2014] because the question cannot be answered on the request: a bare AS\-REQ is the normal first message of every exchange, and the KDC answers one with \fBKDC_ERR_PREAUTH_REQUIRED\fR.
+An \fBAS\-REP for a request whose pre\-authentication cannot be seen to have been acted on\fR means the account is pre\-authentication exempt, and the reply\(aqs encrypted part is an offline password\-cracking target. That is AS\-REP roasting, and \fBrefuse_preauth_exempt\fR refuses the \fIreply\fR \[u2014] because the question cannot be answered on the request: a bare AS\-REQ is the normal first message of every exchange, and the KDC answers one with \fBKDC_ERR_PREAUTH_REQUIRED\fR. It cannot be answered by the request\(aqs own padata either, which is a field the client writes and this relay holds no key to check: what is read instead is the pair of messages, so a claim the KDC must decrypt to act on counts, and a PKINIT claim counts when the reply carries the KDC\(aqs own half of it.
 .PP
 .ti -3n
 \(bu
-A TGS\-REQ carrying \fBPA\-FOR\-USER\fR is \fBS4U2Self\fR and one carrying the constrained\-delegation option with an additional ticket is \fBS4U2Proxy\fR, the two primitives behind most delegation abuse. Both default off, and S4U2Proxy needs both halves to be recognised as one: the option alone is a client setting a reserved bit, and an additional ticket alone is a user\-to\-user request.
+A TGS\-REQ carrying \fBPA\-FOR\-USER\fR or \fBPA\-S4U\-X509\-USER\fR is \fBS4U2Self\fR and one carrying the constrained\-delegation option with an additional ticket is \fBS4U2Proxy\fR, the two primitives behind most delegation abuse. Both default off, and S4U2Proxy needs both halves to be recognised as one: the option alone is a client setting a reserved bit, and an additional ticket alone is a user\-to\-user request.
 .RE
 .PP
 .PP
@@ -12630,7 +12630,7 @@ bool
 T}	T{
 \fBtrue\fR
 T}	T{
-Refuse a request offering nothing but weak types: single DES,\: triple DES and RC4\-HMAC
+Refuse a request that offers the KDC nothing it could issue a ticket in that an estate is content with: aes128 or aes256 (RFC 3962 or RFC 8009) or camellia. The test is "offers no strong type" rather than "every type is weak",\: because the etype field is a list of integers the client chooses: under the other reading one number the registry has never assigned \[u2014] appended to \fBrc4\-\:hmac\fR and discarded by the KDC \[u2014] made the list look mixed and the control a formality
 T}
 T{
 \fBrefuse_\:weak_\:ticket_\:etypes\fR
@@ -12648,7 +12648,7 @@ bool
 T}	T{
 \fBtrue\fR
 T}	T{
-Refuse an AS\-REP answering a request that carried no pre\-authentication;\: see above
+Refuse an AS\-REP the KDC cannot be seen to have pre\-authenticated;\: see above. "Cannot be seen to" rather than "said it did not": a request\(aqs padata is written by the client and this relay holds no key,\: so the test pairs the claim with the KDC\(aqs own answer \[u2014] an encrypted timestamp or an encrypted challenge is one the KDC must decrypt before it issues anything,\: and a PKINIT claim is proven by the \fBPA\-\:PK\-\:AS\-\:REP\fR in the reply rather than by the asking
 T}
 T{
 \fBallow_\:s4u2self\fR,\: \fBallow_\:s4u2proxy\fR
@@ -12657,7 +12657,7 @@ bool
 T}	T{
 \fBfalse\fR
 T}	T{
-Carry MS\-SFU\(aqs protocol transition and constrained delegation
+Carry MS\-SFU\(aqs protocol transition and constrained delegation. Protocol transition is recognised in both of its spellings,\: \fBPA\-\:FOR\-\:USER\fR and \fBPA\-\:S4U\-\:X509\-\:USER\fR,\: because a KDC honours either and the impersonated name is read from whichever arrived
 T}
 T{
 \fBallow_\:anonymous\fR
@@ -12801,7 +12801,7 @@ enum
 T}	T{
 \fBerror\fR
 T}	T{
-\fBerror\fR (a KRB\-ERROR with \fBKDC_\:ERR_\:POLICY\fR and a text saying which proxy refused it,\: wrapped in the envelope the client expects) or \fBstatus\fR (HTTP 403 and no Kerberos message). \fBerror\fR is the better default,\: because silence on this protocol is a client that falls back to port 88 \[u2014] where there is no relay \[u2014] and then reports a network fault to whoever is sitting at it
+\fBerror\fR (a KRB\-ERROR with \fBKDC_\:ERR_\:POLICY\fR and a text saying which proxy refused it,\: wrapped in the envelope the client expects) or \fBstatus\fR (HTTP 403 and no Kerberos message). \fBerror\fR is the better default,\: because silence on this protocol is a client that falls back to port 88 \[u2014] where there is no relay \[u2014] and then reports a network fault to whoever is sitting at it. The text names the proxy and \fBnot\fR the control that fired: on this protocol the reason a refusal happened is usually the intelligence the refusal exists to deny \[u2014] \fBpreauth_\:not_\:required\fR would confirm to a roaster that the account exists and is exempt,\: which is a cleaner answer than the AS\-REP it was refused. The reason is in this proxy\(aqs security log and counters instead
 T}
 T{
 \fBlog_\:requests\fR
@@ -12873,7 +12873,7 @@ enum
 T}	T{
 \fBallow\fR
 T}	T{
-\fBallow\fR,\: \fBdeny\fR or \fBobserve\fR
+\fBallow\fR,\: \fBdeny\fR or \fBobserve\fR. \fBobserve\fR records the rule in the access line and decides nothing,\: so the rules below it still decide: the whole point is to try a rule on live traffic without it changing what happens,\: and a rule that decided \[u2014] by allowing what it covers \[u2014] would make trying one out the way to switch off every deny rule under it
 T}
 T{
 \fBclients\fR
@@ -12958,7 +12958,9 @@ IMAP on 143 and IMAPS on 993: the protocol a mail client reads a mailbox with, w
 .PP
 \fBThe capability list is narrowed on the way out.\fR A mechanism \fBmechanisms\fR does not name is removed from what the client is shown, and \fBLOGINDISABLED\fR is added where LOGIN will be refused \[u2014] RFC 3501 \[u00A7]6.2.3 makes that the way a server says so, and a client that reads it asks for something else instead of sending a password into a refusal. \fBCOMPRESS=DEFLATE\fR is removed whenever \fBrefuse_compression\fR is on, which is the default: a deflated connection cannot be inspected, so advertising it would be offering to stop.
 .PP
-\fBA literal is decided on its declared size.\fR \fBAPPEND INBOX {310}\fR says the next 310 octets are a message, and RFC 7888\(aqs \fB{310+}\fR sends them without waiting for anybody to agree \[u2014] so \fBmax_append_bytes\fR is checked on the command line, and a refused command\(aqs octets are read and dropped rather than left to desynchronise the connection.
+\fBA literal is decided on its declared size.\fR \fBAPPEND INBOX {310}\fR says the next 310 octets are a message, and RFC 7888\(aqs \fB{310+}\fR sends them without waiting for anybody to agree \[u2014] so \fBmax_append_bytes\fR is checked on the command line, and a refused \fB{310+}\fR\(aqs octets are read and dropped rather than left to desynchronise the connection. A refused plain \fB{310}\fR is the opposite case: the client is waiting for a continuation request that is never coming and RFC 9051 \[u00A7]4.3 says it must not send the octets, so nothing is read. The bound applies to the command\(aqs literals \fBtogether\fR, so a client cannot divide its way past it one hop at a time, and the rule that decided the command decides its continuations too.
+.PP
+\fBAn argument sent as a literal is refused.\fR A literal is the last token on the line, so the argument list ends where it begins: \fBSELECT {25+}\fR parses as SELECT naming \fIno\fR mailbox, and \fBmailboxes\fR, \fBdeny_mailboxes\fR, the rule selectors, \fBusers\fR and the estate\(aqs authorization question would each decide about nothing while the server received the name intact. Such a command is refused with \fBliteral_argument\fR rather than guessed at \[u2014] reading the literal first would mean this proxy answering the continuation request instead of the server, which makes it a participant in an exchange it is relaying. Clients spell mailbox names as atoms or quoted strings; a literal there is conformant and rare, and a refusal an operator can see beats a policy that silently decided nothing.
 .PP
 \fBA PREAUTH greeting is not carried.\fR RFC 9051 \[u00A7]7.1.4 lets a server decide from the transport that no credential is needed; a relay that carried that would make every later decision here about a name it never saw. The connection is closed and \fBimap_preauth_refused\fR counts it.
 .PP
@@ -13063,7 +13065,7 @@ list
 T}	T{
 \fB[]\fR (any)
 T}	T{
-Allow and deny lists of mailbox names,\: compared on the \fBdecoded\fR name so a rule written \fBSent\fR matches the modified UTF\-7 a client sent. A name may end in \fB*\fR (the rest of the name,\: hierarchy included) or \fB%\fR (within one level);\: a wildcard anywhere else is refused at load
+Allow and deny lists of mailbox names,\: compared on the \fBdecoded\fR name so a rule written \fBSent\fR matches the modified UTF\-7 a client sent. A name may end in \fB*\fR (the rest of the name,\: hierarchy included) or \fB%\fR (within one level);\: a wildcard anywhere else is refused at load. \fBINBOX\fR is compared case\-insensitively \[u2014] it is the one name RFC 9051 \[u00A7]5.1 makes so \[u2014] and that fold covers the hierarchy under it,\: because a server with mail below INBOX folds that component too: \fBinbox/\:Finance\fR and \fBINBOX/\:Finance\fR are one mailbox there and must not be two patterns here. Every other component is the server\(aqs own and \fBArchive\fR is not \fBarchive\fR
 T}
 T{
 \fBread_\:only\fR
@@ -13458,7 +13460,7 @@ list
 T}	T{
 \fB[]\fR (any)
 T}	T{
-\fBuser\fR for the USER and PASS pair,\: \fBapop\fR for the digest,\: and a SASL name per AUTH mechanism. A mechanism not named is refused \fIand\fR removed from the CAPA list
+\fBuser\fR for the USER and PASS pair,\: \fBapop\fR for the digest,\: and a SASL name per AUTH mechanism. A mechanism not named is refused \fIand\fR removed from the CAPA list. An \fBAUTH\fR that names no mechanism at all is refused: there is nothing for this list or for \fBrequire_\:tls\fR to decide about,\: and the exchange that used to follow it moved this relay\(aqs view of the session to the transaction state on the server\(aqs \fB+OK\fR with no credential behind it. A client that wants the mechanism list has CAPA
 T}
 T{
 \fBusers\fR
@@ -25738,7 +25740,7 @@ bool
 T}	T{
 \fBtrue\fR
 T}	T{
-Whether a client\(aqs \fBLast\-\:Event\-\:ID\fR request header is forwarded. It is the one piece of client\-controlled input on this protocol and it reaches the application as a \fBcursor\fR: an application that replays from it is being told where to start,\: and an identifier a client was never issued is a request for history it was not shown
+Whether a client\(aqs \fBLast\-\:Event\-\:ID\fR request header is forwarded. It is the one piece of client\-controlled input on this protocol and it reaches the application as a \fBcursor\fR: an application that replays from it is being told where to start,\: and an identifier a client was never issued is a request for history it was not shown. The cursor policy applies to \fBevery\fR request on a route that has an \fBsse_\:guard\fR,\: not only to one whose \fBAccept\fR header asked for a stream: what makes a response a stream is its Content\-Type,\: so an application that answers a path with \fBtext/\:event\-\:stream\fR answers it that way for a client that sent no \fBAccept\fR header at all. A request carrying the header twice has both removed \[u2014] the first value is one library\(aqs answer and the last is another\(aqs,\: so a check on one of them is a check on a value the application need not be the one to use
 T}
 T{
 \fBmax_\:id_\:bytes\fR
@@ -25756,7 +25758,7 @@ RE2
 T}	T{
 none
 T}	T{
-A shape a client\(aqs \fBLast\-\:Event\-\:ID\fR must match,\: anchored at both ends. An estate whose identifiers are integers or ULIDs says so here,\: and then the cursor reaching the application is one of its own shape rather than whatever was sent. A cursor that does not match is \fBremoved\fR,\: not refused: the client gets the stream from the beginning,\: which is what a client with no cursor gets
+A shape a client\(aqs \fBLast\-\:Event\-\:ID\fR must match,\: anchored around the \fBwhole\fR pattern \[u2014] so \fB[0\-\:9]{1,\:19}|[0\-\:9A\-\:HJKMNP\-\:TV\-\:Z]{26}\fR,\: the estate whose identifiers are a counter or a ULID,\: is anchored on both branches rather than on the first and the last. An estate whose identifiers are integers or ULIDs says so here,\: and then the cursor reaching the application is one of its own shape rather than whatever was sent. A cursor that does not match is \fBremoved\fR,\: not refused: the client gets the stream from the beginning,\: which is what a client with no cursor gets
 T}
 T{
 \fBmin_\:retry\fR

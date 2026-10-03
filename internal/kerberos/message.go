@@ -360,14 +360,22 @@ func (m *Message) readPAData(r *der, e element) error {
 			}
 		}
 		m.PAData = append(m.PAData, pt)
-		if pt == PAForUser && len(value) > 0 {
+		if len(value) > 0 && (pt == PAForUser || pt == PAS4UX509User) {
 			// S4U2Self names the impersonated user in the clear, and that
 			// name is the whole of what the request is asking for -- so it
-			// is read. A PA-FOR-USER this reader cannot parse is not an
-			// error: the type's presence is already recorded, and the
+			// is read. Both spellings are read, because a KDC accepts
+			// either: a reader that knew only PA-FOR-USER would leave the
+			// principal as the *service's* own name on a request made the
+			// other way, and then every rule about principals would be
+			// applied to the wrong one. Neither is an error when it does
+			// not parse: the type's presence is already recorded, and the
 			// policy that refuses S4U2Self outright does not need the
 			// name.
-			if p, ok := forUser(value); ok {
+			read := forUser
+			if pt == PAS4UX509User {
+				read = s4uX509User
+			}
+			if p, ok := read(value); ok {
 				m.ForUser, m.HasForUser = p, true
 			}
 		}
@@ -399,6 +407,59 @@ func forUser(b []byte) (Principal, bool) {
 			return Principal{}, false
 		}
 		return p, true
+	}
+	return Principal{}, false
+}
+
+// s4uX509User reads the impersonated principal out of a PA-S4U-X509-USER
+// (MS-SFU §2.2.2). The name is one level deeper than PA-FOR-USER's: the
+// padata holds a SEQUENCE whose user-id [0] is an S4UUserID, and the cname
+// is that structure's [1].
+//
+// cname is optional there -- a request may name only a certificate -- and an
+// absent one is not a failure of this reader. The type's presence has already
+// been recorded, which is what the delegation switch acts on.
+func s4uX509User(b []byte) (Principal, bool) {
+	r := newDER(b)
+	top, err := r.next()
+	if err != nil {
+		return Principal{}, false
+	}
+	seq, err := r.sequence(top)
+	if err != nil {
+		return Principal{}, false
+	}
+	for !seq.empty() {
+		e, err := seq.next()
+		if err != nil {
+			return Principal{}, false
+		}
+		if !e.ctx(0) {
+			continue
+		}
+		inner, in, err := seq.only(e)
+		if err != nil {
+			return Principal{}, false
+		}
+		id, err := in.sequence(inner)
+		if err != nil {
+			return Principal{}, false
+		}
+		for !id.empty() {
+			f, err := id.next()
+			if err != nil {
+				return Principal{}, false
+			}
+			if !f.ctx(1) {
+				continue
+			}
+			p, err := principalField(id, f)
+			if err != nil {
+				return Principal{}, false
+			}
+			return p, true
+		}
+		return Principal{}, false
 	}
 	return Principal{}, false
 }
@@ -816,6 +877,48 @@ func (m Message) Preauthenticated() bool {
 	return false
 }
 
+// PreauthMustVerify reports whether a request carried pre-authentication of a
+// kind a KDC has to verify before it issues anything.
+//
+// The distinction this draws is the one that makes Preauthenticated above safe
+// to act on. The padata field is written by the client and this relay holds no
+// key, so "the request says it pre-authenticated" is a claim and not a fact:
+// three random octets under padata-type 2 read exactly like a real encrypted
+// timestamp from here. What rescues it is the KDC's own behaviour. A KDC handed
+// a PA-ENC-TIMESTAMP or an encrypted challenge must decrypt it to issue a
+// ticket, and answers one it cannot with KDC_ERR_PREAUTH_FAILED -- so an AS-REP
+// to a request carrying one is an AS-REP the KDC's verification stands behind,
+// and a forged field buys nothing.
+func (m Message) PreauthMustVerify() bool {
+	return m.HasPAData(PAEncTimestamp) || m.HasPAData(PAEncryptedChallenge)
+}
+
+// PreauthPKINIT reports whether a request asked to pre-authenticate with a
+// certificate.
+//
+// PKINIT is the claim a KDC may *ignore* rather than refuse: a KDC with no
+// PKINIT configured is looking at a padata type it does not implement, and
+// several will pass over it and answer the request on its merits. For an
+// account that requires no pre-authentication those merits are an AS-REP with a
+// crackable encrypted part, which is how one junk padata item used to turn the
+// exempt-account check off. So this one is not proof on its own: the proof is
+// the KDC's own half of the exchange, PA-PK-AS-REP in the reply (RFC 4556
+// §3.2.3), which no client can write.
+func (m Message) PreauthPKINIT() bool { return m.HasPAData(PAPKASReq) }
+
+// PreauthProven reports whether the KDC can be seen to have acted on the
+// pre-authentication this request claimed, given the reply it answered with.
+// The receiver is the request and rep is the reply.
+func (m Message) PreauthProven(rep Message) bool {
+	if m.PreauthMustVerify() {
+		return true
+	}
+	if m.PreauthPKINIT() {
+		return rep.HasPAData(PAPKASRep)
+	}
+	return false
+}
+
 // WeakETypes are the weak encryption types a request asked for.
 func (m Message) WeakETypes() []EType {
 	var out []EType
@@ -827,20 +930,30 @@ func (m Message) WeakETypes() []EType {
 	return out
 }
 
-// OnlyWeakETypes reports whether every type a request offered is weak,
-// which is a stronger signal than merely listing one.
+// OnlyWeakETypes reports whether a request offered the KDC nothing it could
+// issue a ticket in that an estate is content with.
 //
 // A Windows client in a mixed estate lists aes256, aes128 and rc4, in that
 // order, and the KDC picks the first it can -- so a request *mentioning*
 // RC4 is ordinary. A request offering nothing else has asked for a ticket
 // it can crack, and in a TGS-REQ for a service principal that is
 // Kerberoasting with no ambiguity left in it.
+//
+// The test is "offers no strong type" rather than "every type is weak", and
+// the difference is a bypass rather than a nicety. The etype field is a list
+// of integers the client chooses, and the registry is longer than any list
+// here: under the negative reading one number nobody has assigned -- `9999`,
+// `0`, `-1` -- counted as a strong offer, so appending it to a list of
+// `rc4-hmac` made this return false and the whole control was a formality.
+// The KDC discards the unknown number and issues RC4, which is what was
+// asked for and what the attacker wanted. Counting only the types EType.Strong
+// names leaves nothing to manufacture.
 func (m Message) OnlyWeakETypes() bool {
 	if len(m.ETypes) == 0 {
 		return false
 	}
 	for _, e := range m.ETypes {
-		if !e.Weak() {
+		if e.Strong() {
 			return false
 		}
 	}
@@ -867,7 +980,15 @@ func (m Message) Lifetime(now time.Time) (time.Duration, bool) {
 
 // S4U2Self reports whether a request is MS-SFU's protocol transition: a
 // service asking for a ticket to itself as another user.
-func (m Message) S4U2Self() bool { return m.HasPAData(PAForUser) }
+//
+// Both spellings count. MS-SFU defines PA-FOR-USER and PA-S4U-X509-USER and a
+// KDC honours either, so a check that named only the first was a switch with a
+// second door beside it: `allow_s4u2self: false` and a compromised service
+// account asking for `administrator` under padata type 130 went through, with
+// the delegation counter and the log line both saying nothing happened.
+func (m Message) S4U2Self() bool {
+	return m.HasPAData(PAForUser) || m.HasPAData(PAS4UX509User)
+}
 
 // S4U2Proxy reports whether a request is MS-SFU's constrained delegation:
 // the cname-in-addl-tkt option with a ticket to present.

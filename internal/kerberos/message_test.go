@@ -254,7 +254,7 @@ func TestAKRBErrorIsReadForItsCodeAndText(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 10, 2, 9, 30, 0, 0, time.UTC)
 	b := MarshalError(now, KDCErrPreauthRequired, "CORP.EXAMPLE",
-		KrbtgtFor("CORP.EXAMPLE"), ErrorText("kdc", "etype_not_allowed"))
+		KrbtgtFor("CORP.EXAMPLE"), ErrorText("kdc"))
 	m, err := Parse(b)
 	if err != nil {
 		t.Fatalf("Parse: %v", err)

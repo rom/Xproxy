@@ -1,6 +1,7 @@
 package tacacs
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -266,6 +267,14 @@ func authenBody(action wire.AuthenAction, typ wire.AuthenType, svc wire.AuthenSe
 	return append(out, rem...)
 }
 
+// continueBody renders an authentication CONTINUE carrying typed text, which
+// is what a person answering a prompt sends.
+func continueBody(userMsg string) []byte {
+	out := []byte{0, 0, 0, 0, 0}
+	binary.BigEndian.PutUint16(out[0:2], uint16(len(userMsg)))
+	return append(out, userMsg...)
+}
+
 // acctBody renders an accounting record.
 func acctBody(flags uint8, user string, args ...string) []byte {
 	const port, rem = "tty0", "10.0.0.9"
@@ -325,6 +334,166 @@ func TestACommandIsAllowedOrRefusedByItsWholeLine(t *testing.T) {
 	d2 := connect(t, addr)
 	if r, ok := d2.authorize(3, "alice", 1, "service=shell", "cmd=configure", "cmd-arg=terminal"); ok && r.Status.Pass() {
 		t.Fatal("`configure terminal` was allowed")
+	}
+}
+
+// The ASCII login that names nobody. RFC 8907 §5.4.2 lets a START leave the
+// user field empty: the server answers GETUSER, the device prompts, and the
+// name arrives in the typed text of a CONTINUE. That is the ordinary shape of
+// `telnet` to a router, and it used to be the way past every control keyed on a
+// name -- the user lists, and the estate's own authorization rules -- because
+// the only name this relay read was the one in the START.
+func TestANameTypedAtTheServersPromptIsStillDecidedAbout(t *testing.T) {
+	t.Parallel()
+	srv := startServer(t, &fakeServer{
+		authen: func(st wire.AuthenStart) wire.AuthenReply {
+			if st.User == "" {
+				return wire.AuthenReply{Status: wire.AuthenGetUser, ServerMsg: "Username: "}
+			}
+			return wire.AuthenReply{Status: wire.AuthenPass, ServerMsg: "ok"}
+		},
+		continueReply: wire.AuthenPass,
+	})
+	section := "        allow_clients: [127.0.0.1/32]\n" +
+		"        deny_users: [mallory]\n        default_action: allow\n"
+	s, addr := relay(t, section, "", srv.addr())
+
+	// A name the list admits, typed at the prompt, still logs in.
+	d := connect(t, addr)
+	if _, plain := d.ask(wire.TypeAuthen, 1, 1, 0,
+		authenBody(wire.ActionLogin, wire.AuthenASCII, wire.ServiceLogin, "", 1)); plain == nil {
+		t.Fatal("the login with no name in its START was refused outright")
+	}
+	if _, plain := d.ask(wire.TypeAuthen, 1, 3, 0, continueBody("dana")); plain == nil {
+		t.Fatal("a name the policy admits was refused when typed at the prompt")
+	}
+
+	// And the one the list names is refused, at the packet that carries it.
+	d2 := connect(t, addr)
+	if _, plain := d2.ask(wire.TypeAuthen, 2, 1, 0,
+		authenBody(wire.ActionLogin, wire.AuthenASCII, wire.ServiceLogin, "", 1)); plain == nil {
+		t.Fatal("the second login was refused at its START")
+	}
+	_, plain := d2.ask(wire.TypeAuthen, 2, 3, 0, continueBody("mallory"))
+	if plain != nil {
+		if r, err := wire.ParseAuthenReply(plain); err == nil && r.Status == wire.AuthenPass {
+			t.Fatalf("a denied user logged in by typing the name at the prompt: %+v", r)
+		}
+	}
+	if refusals(s, "user_not_allowed") == 0 {
+		t.Errorf("the refusal was not counted: %+v", s.Stats().Refusals["tacacs"])
+	}
+
+	// And the reading follows the question the server actually asked. An
+	// exchange that has moved on to GETPASS must leave the typed text alone:
+	// reading it there would make a password a user name -- decided about as
+	// one, and written to a log as one.
+	pw := startServer(t, &fakeServer{
+		authen: func(st wire.AuthenStart) wire.AuthenReply {
+			if st.User == "" {
+				return wire.AuthenReply{Status: wire.AuthenGetUser, ServerMsg: "Username: "}
+			}
+			return wire.AuthenReply{Status: wire.AuthenPass}
+		},
+		// The second answer in the exchange, which is the password prompt.
+		continueReply: wire.AuthenGetPass,
+	})
+	s2, addr2 := relay(t, section, "", pw.addr())
+	d3 := connect(t, addr2)
+	if _, plain := d3.ask(wire.TypeAuthen, 3, 1, 0,
+		authenBody(wire.ActionLogin, wire.AuthenASCII, wire.ServiceLogin, "", 1)); plain == nil {
+		t.Fatal("the login was refused at its START")
+	}
+	// An empty answer to GETUSER -- a bare return at the prompt -- after which
+	// the server asks for the password instead.
+	if _, plain := d3.ask(wire.TypeAuthen, 3, 3, 0, continueBody("")); plain == nil {
+		t.Fatal("an empty answer to the prompt was refused")
+	}
+	// The password, answering GETPASS -- and it happens to be a name the
+	// policy denies, which is how this test can tell whether it was read as
+	// one.
+	if _, plain := d3.ask(wire.TypeAuthen, 3, 5, 0, continueBody("mallory")); plain == nil {
+		t.Fatal("the password's packet was refused, so it was read as a name")
+	}
+	if n := refusals(s2, "user_not_allowed"); n != 0 {
+		t.Errorf("the typed password was decided about as a user name: %+v",
+			s2.Stats().Refusals["tacacs"])
+	}
+}
+
+// A rule's deny list adds to the listener's rather than standing in for it.
+// The listener-wide list is the sentence "no router behind this relay accepts
+// `write erase`", and a list a rule could replace would not be that sentence:
+// an estate that gave its network team a deny of its own would have handed that
+// team everything the estate denied, by writing a deny.
+func TestARulesDenyListAddsToTheListenersRatherThanReplacingIt(t *testing.T) {
+	t.Parallel()
+	srv := startServer(t, &fakeServer{})
+	section := "        allow_clients: [127.0.0.1/32]\n" +
+		"        deny_commands: [\"write erase\", \"reload\"]\n" +
+		"        default_action: allow\n" +
+		"        rules:\n" +
+		"          - {name: netops, users: [nina], deny_commands: [\"debug all\"], action: allow}\n"
+	s, addr := relay(t, section, "", srv.addr())
+
+	// The rule's own deny works.
+	if r, ok := connect(t, addr).authorize(1, "nina", 15, "service=shell", "cmd=debug", "cmd-arg=all"); ok && r.Status.Pass() {
+		t.Fatal("the rule's own deny_commands did not refuse `debug all`")
+	}
+	// And the listener's still does, for the traffic that rule covers.
+	if r, ok := connect(t, addr).authorize(2, "nina", 15, "service=shell", "cmd=write", "cmd-arg=erase"); ok && r.Status.Pass() {
+		t.Fatal("a rule with a deny list of its own disarmed the listener's")
+	}
+	if got := srv.seen(&srv.commands); len(got) != 0 {
+		t.Errorf("the server saw %q, want nothing", got)
+	}
+	if refusals(s, "command_not_allowed") < 2 {
+		t.Errorf("refusals: %+v", s.Stats().Refusals["tacacs"])
+	}
+}
+
+// A deny covers the command it names and whatever follows it. A device's
+// command line takes suffixes -- a filter, a redirect, an argument -- and under
+// an exact reading a deny of `show running-config` matched the spelling an
+// operator would type and missed every spelling an attacker would.
+func TestADenyCoversTheCommandAndWhatIsAppendedToIt(t *testing.T) {
+	t.Parallel()
+	srv := startServer(t, &fakeServer{})
+	section := "        allow_clients: [127.0.0.1/32]\n" +
+		"        commands: [\"show ...\", \"copy ...\"]\n" +
+		"        deny_commands: [\"show running-config\", \"copy running-config\"]\n" +
+		"        default_action: allow\n"
+	s, addr := relay(t, section, "", srv.addr())
+
+	for i, args := range [][]string{
+		// The pipe filter, which is the one that reads the credentials out.
+		{"service=shell", "cmd=show", "cmd-arg=running-config", "cmd-arg=|",
+			"cmd-arg=include", "cmd-arg=password"},
+		// The redirect, which writes them somewhere.
+		{"service=shell", "cmd=copy", "cmd-arg=running-config", "cmd-arg=tftp://10.9.9.9/cfg"},
+		// And the bare command the operator had in mind.
+		{"service=shell", "cmd=show", "cmd-arg=running-config"},
+	} {
+		if r, ok := connect(t, addr).authorize(uint32(10+i), "alice", 15, args...); ok && r.Status.Pass() {
+			t.Errorf("%q was allowed", args)
+		}
+	}
+	if got := srv.seen(&srv.commands); len(got) != 0 {
+		t.Errorf("the server saw %q, want nothing", got)
+	}
+
+	// An allow list is still read exactly, because allowing more than was
+	// asked is the unsafe direction: `show version` does not cover `show
+	// version | redirect`, and the `show ...` pattern above is what covers it.
+	section = "        allow_clients: [127.0.0.1/32]\n" +
+		"        commands: [\"show version\"]\n        default_action: allow\n"
+	s2, addr2 := relay(t, section, "", srv.addr())
+	if r, ok := connect(t, addr2).authorize(20, "alice", 1, "service=shell", "cmd=show",
+		"cmd-arg=version", "cmd-arg=|", "cmd-arg=include", "cmd-arg=serial"); ok && r.Status.Pass() {
+		t.Error("an exact allow pattern covered a longer command")
+	}
+	if refusals(s, "command_not_allowed") < 3 || refusals(s2, "command_not_allowed") == 0 {
+		t.Errorf("refusals: %+v %+v", s.Stats().Refusals["tacacs"], s2.Stats().Refusals["tacacs"])
 	}
 }
 
@@ -760,6 +929,37 @@ func TestARuleDecidesOnlyTheCommandsItNames(t *testing.T) {
 // there too. The action asked about is `connect` rather than `session` because
 // the authenticated session is the one thing this relay never sees: the server
 // proves the password and says only pass or fail.
+// An observe rule records what it would have covered and decides nothing. A
+// rule that decided -- by allowing -- would make trying a rule out the way to
+// turn off every deny rule below it, which is the opposite of trying it out.
+func TestAnObserveRuleIsRecordedAndDecidesNothing(t *testing.T) {
+	t.Parallel()
+	srv := startServer(t, &fakeServer{})
+	section := "        allow_clients: [127.0.0.1/32]\n" +
+		"        default_action: allow\n" +
+		"        rules:\n" +
+		"          - {name: trial, action: observe, clients: [127.0.0.1/32]}\n" +
+		"          - {name: lockdown, action: deny, commands: [\"reload\"]}\n"
+	s, addr := relay(t, section, "", srv.addr())
+
+	// trial covers every command from this address and is listed first. The
+	// deny below it still decides.
+	if r, ok := connect(t, addr).authorize(1, "alice", 15, "service=shell", "cmd=reload"); ok && r.Status.Pass() {
+		t.Fatal("a trial rule above the deny rule carried `reload`")
+	}
+	if refusals(s, "rule_denied") == 0 {
+		t.Errorf("refusals: %+v", s.Stats().Refusals["tacacs"])
+	}
+	// And a command no deny rule names is carried, because an observe rule
+	// refusing things would be no better than one allowing them.
+	if r, ok := connect(t, addr).authorize(2, "alice", 15, "service=shell", "cmd=show", "cmd-arg=version"); !ok || !r.Status.Pass() {
+		t.Fatalf("the trial rule refused a command nothing denies: %+v ok=%v", r, ok)
+	}
+	if got := srv.seen(&srv.commands); len(got) != 1 || got[0] != "show version" {
+		t.Errorf("the server saw %q", got)
+	}
+}
+
 func TestTheEstateWideIdentityRulesApplyToTheClaimedUser(t *testing.T) {
 	t.Parallel()
 	srv := startServer(t, &fakeServer{})

@@ -52,12 +52,16 @@ const (
 
 // The universal tags this package reads.
 const (
-	tagInteger     uint32 = 0x02
-	tagBitString   uint32 = 0x03
-	tagOctetString uint32 = 0x04
-	tagSequence    uint32 = 0x10
-	tagGeneralStr  uint32 = 0x1B
-	tagGeneralTime uint32 = 0x18
+	tagInteger      uint32 = 0x02
+	tagBitString    uint32 = 0x03
+	tagOctetString  uint32 = 0x04
+	tagSequence     uint32 = 0x10
+	tagGeneralStr   uint32 = 0x1B
+	tagGeneralTime  uint32 = 0x18
+	tagUTF8Str      uint32 = 0x0C
+	tagPrintableStr uint32 = 0x13
+	tagIA5Str       uint32 = 0x16
+	tagVisibleStr   uint32 = 0x1A
 )
 
 // Errors the reader returns. They are values so a kind's refusal reason
@@ -92,11 +96,29 @@ func (e element) is(tag uint32) bool { return e.class == classUniversal && e.tag
 // every field of every Kerberos structure is encoded.
 func (e element) ctx(tag uint32) bool { return e.class == classContext && e.tag == tag }
 
+// isString says the element carries one of the universal string tags a
+// KerberosString is written with.
+func (e element) isString() bool {
+	if e.class != classUniversal {
+		return false
+	}
+	switch e.tag {
+	case tagGeneralStr, tagIA5Str, tagUTF8Str, tagPrintableStr, tagVisibleStr:
+		return true
+	}
+	return false
+}
+
 // der walks one level.
 type der struct {
 	b     []byte
 	depth int
 	read  int
+	// ctxSeen is the set of context tags already read at this level, so a
+	// structure carrying one of its fields twice is refused rather than
+	// resolved. See next below for why that is a security property and not
+	// tidiness.
+	ctxSeen uint64
 }
 
 func newDER(b []byte) *der { return &der{b: b} }
@@ -135,6 +157,24 @@ func (r *der) next() (element, error) {
 	// class holds the two class bits only; the constructed bit is cons, so
 	// a comparison against a class never has to mask it out.
 	e := element{class: id & 0xc0, tag: tag, cons: id&constructed != 0, data: r.b[at : at+n]}
+	if e.class == classContext {
+		// A field twice in one structure is refused, and this is the other
+		// half of the promise the comment at the top of this file makes.
+		// Every Kerberos field is an explicit context tag and every field
+		// loop in message.go is a switch over them, so a repeated tag would
+		// be resolved rather than rejected: the last occurrence overwrites
+		// the realm, the sname, the cname or the options, and the etype list
+		// concatenates. A KDC's decoder resolves it its own way -- the first
+		// occurrence, or an error -- and the two readings are then a request
+		// the policy allowed for one realm and the KDC acted on for another,
+		// with the audit record wrong in the same direction as the decision.
+		// There is no Kerberos structure that uses one context tag twice, so
+		// nothing legitimate is refused here.
+		if e.tag < 64 && r.ctxSeen&(1<<e.tag) != 0 {
+			return element{}, fmt.Errorf("%w: context tag [%d] twice in one structure", ErrTag, e.tag)
+		}
+		r.ctxSeen |= 1 << e.tag
+	}
 	r.b = r.b[at+n:]
 	r.read++
 	return e, nil
@@ -194,6 +234,13 @@ func (r *der) sequence(e element) (*der, error) {
 // returns that element, which is the shape of every field in a Kerberos
 // structure: [n] EXPLICIT whatever.
 func (r *der) only(e element) (element, *der, error) {
+	if !e.cons {
+		// An explicit tag is constructed by definition: the value is inside
+		// it as its own TLV. A primitive context tag whose content happens to
+		// parse as one is a second spelling of the field, and a reader that
+		// took it would accept an encoding a KDC rejects.
+		return element{}, nil, fmt.Errorf("%w: explicit tag is not constructed", ErrTag)
+	}
 	in, err := r.inner(e)
 	if err != nil {
 		return element{}, nil, err
@@ -256,7 +303,13 @@ func derInteger(e element) (int32, error) {
 // one with an escape sequence is a terminal doing what the sequence says
 // when an operator reads the record back.
 func derString(e element) (string, error) {
-	if e.class != classUniversal {
+	// The class is not enough on its own: every universal tag shares it, so a
+	// realm encoded under the INTEGER or OCTET STRING tag would be read here
+	// as text while a KDC reads it as the type it claims to be. The set below
+	// is the string types a KerberosString arrives as -- GeneralString from
+	// the installed base, and the others from implementations that took
+	// RFC 4120 §5.2.1's IA5String constraint literally or went to UTF-8.
+	if !e.isString() {
 		return "", fmt.Errorf("%w: not a string", ErrTag)
 	}
 	if len(e.data) > maxString {

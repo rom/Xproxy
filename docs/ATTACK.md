@@ -722,6 +722,8 @@ them, which is why an operations centre can filter on
 | `idle_not_allowed` | T1499 |  |
 | `idle_too_long` | T1499 |  |
 | `line_too_long` | T1499 |  |
+| `auth_injection` | T1562, T1071.003 | a line sent inside a SASL exchange the server did not ask for, which the server reads as a command |
+| `literal_argument` | T1114, T1071.003 | a mailbox, a name or a sequence set sent as a literal, where the policy would read none |
 | `literal_too_large` | T1499 |  |
 | `mailbox_denied` | T1114 |  |
 | `mailbox_not_allowed` | T1114 |  |
@@ -790,6 +792,7 @@ them, which is why an operations centre can filter on
 | `too_many_messages` | T1114, T1114.002 |  |
 | `unknown_command` | T1071.003 |  |
 | `user_not_allowed` | T1078 |  |
+| `auth_no_mechanism` | T1071.003, T1040 | an AUTH naming no mechanism, which no credential check can be applied to |
 | `wrong_state` | T1071.003 |  |
 
 #### radius (shared: xrelay and xot)
@@ -1044,6 +1047,7 @@ them, which is why an operations centre can filter on
 | `sse_id_too_long` | T1071.001 |  |
 | `sse_json` | T1071.001 |  |
 | `sse_last_event_id_not_allowed` | T1213 |  |
+| `sse_last_event_id_repeated` | T1213, T1190 | two resumption cursors on one request, so the one checked need not be the one used |
 | `sse_last_event_id_shape` | T1213, T1190 | a resumption cursor of a shape this estate does not issue |
 | `sse_line_too_long` | T1071.001 |  |
 | `sse_malformed_stream` | T1071.001 |  |

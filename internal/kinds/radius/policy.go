@@ -39,6 +39,10 @@ type Decision struct {
 	// kind is the dynamic authorization codes: carrying a Disconnect-Request
 	// to find out what it would have done ends somebody's session.
 	Hard bool
+	// Observed names the observe rules this request matched. They are
+	// recorded in the access line and decide nothing, which is what lets a
+	// rule be tried on live traffic before it decides anything.
+	Observed []string
 }
 
 // Request is what the policy decides about on the way in.
@@ -448,8 +452,15 @@ func (p *policy) names(req Request) Decision {
 	return Decision{Allow: true}
 }
 
-// rulesFor finds the rule that decides this request and applies it.
+// rulesFor finds the rule that decides this request and applies it, and
+// records the observe rules it matched on the way past.
 func (p *policy) rulesFor(req Request) Decision {
+	d := p.ruleDecision(req)
+	d.Observed = p.observed(req)
+	return d
+}
+
+func (p *policy) ruleDecision(req Request) Decision {
 	r := p.match(req)
 	if r == nil {
 		d := Decision{Allow: p.allowByDef}
@@ -457,9 +468,6 @@ func (p *policy) rulesFor(req Request) Decision {
 			d.Reason = "no_rule_matched"
 		}
 		return d
-	}
-	if r.observe {
-		return Decision{Allow: true, Rule: r.name}
 	}
 	if r.action == "deny" {
 		return Decision{Reason: "rule_denied", Rule: r.name}
@@ -476,9 +484,30 @@ func (p *policy) match(req Request) *rule {
 		if !r.covers(req) {
 			continue
 		}
+		if r.observe {
+			// An observe rule records and the search carries on, which is what
+			// lets a rule be tried on live traffic before it decides anything.
+			// A rule that stopped the search here would *allow* everything it
+			// covered -- so trying out a rule would have been a way to turn
+			// off every deny rule below it, which is the opposite of trying
+			// something out.
+			continue
+		}
 		return r
 	}
 	return nil
+}
+
+// observed names the observe rules a request matches, for the caller's log
+// line: they are recorded and counted, and they decide nothing.
+func (p *policy) observed(req Request) []string {
+	var out []string
+	for _, r := range p.rules {
+		if r.observe && r.covers(req) {
+			out = append(out, r.name)
+		}
+	}
+	return out
 }
 
 func (r *rule) covers(req Request) bool {

@@ -155,8 +155,16 @@ func (t *server) setClientDeadline(c *conn, deadline time.Time) bool {
 func (t *server) handleLine(c *conn, line []byte) bool {
 	// Inside a SASL exchange the lines are credential material: base64, or
 	// `*` to cancel. They are bounded and forwarded, never parsed as
-	// commands and never logged.
+	// commands and never logged -- but only in answer to a continuation
+	// request the server sent and this relay saw. A line the server did not
+	// ask for is not a credential: the exchange may already be over at the
+	// far end, in which case the server reads it as a command and this relay
+	// has forwarded a command nothing decided about. See takeAuthTurn.
 	if c.inAuth() {
+		if !c.takeAuthTurn() {
+			t.denyConn(c, "auth_injection", "")
+			return true
+		}
 		return c.writeServer(append(line, '\r', '\n')) != nil
 	}
 	// Between IDLE and DONE the only line the protocol allows is DONE.
@@ -191,12 +199,11 @@ func (t *server) handleLine(c *conn, line []byte) bool {
 	if !d.Allow {
 		t.refused(c, &req, d)
 		if t.enforcing() || d.Hard {
-			if cmd.Literal != nil {
-				// The client announced octets and will send them whatever
-				// it is told, so they are read and dropped.
-				_ = c.reader().Discard(cmd.Literal.Size)
-			}
-			return c.refuse(cmd.Tag, d) != nil
+			// The refusal goes first, because the client may be waiting for
+			// an answer before it sends anything else.
+			err := c.refuse(cmd.Tag, d)
+			dropLiteral(c, cmd)
+			return err != nil
 		}
 	}
 	return t.forward(c, cmd, req)
@@ -210,6 +217,14 @@ func (t *server) decide(c *conn, cmd *wire.Command) (Request, Decision) {
 	}
 	if cmd.Literal != nil {
 		req.Literal = cmd.Literal.Size
+	}
+	if wire.LiteralArgument(cmd) {
+		// The argument the policy would decide about is in the literal, so
+		// there is nothing here to decide about yet -- and every list below
+		// would read "this command names no mailbox" and allow it. Hard,
+		// because carrying it to see what would have happened is carrying a
+		// command nothing decided about.
+		return req, Decision{Reason: "literal_argument", Detail: cmd.Effective(), Hard: true}
 	}
 	names, err := wire.Mailboxes(cmd)
 	if err != nil {
@@ -311,7 +326,11 @@ func (t *server) forward(c *conn, cmd *wire.Command, req Request) bool {
 	}
 	t.host.Counters().IMAPCommands.Add(1)
 	if reason := t.decideAnomaly(c, req); reason != "" && t.enforcing() {
+		// The same as the policy path above: the refusal first, and then the
+		// octets the client has already committed are dropped so that a
+		// message body is not read as the next command.
 		_ = c.refuse(cmd.Tag, Decision{Reason: reason})
+		dropLiteral(c, cmd)
 		return false
 	}
 	if err := c.writeServer(append(cmd.Raw, '\r', '\n')); err != nil {
@@ -323,6 +342,33 @@ func (t *server) forward(c *conn, cmd *wire.Command, req Request) bool {
 		}
 	}
 	return false
+}
+
+// dropLiteral reads and discards the octets a refused command announced, where
+// the client has already committed them.
+//
+// Whether it has is the whole of the condition, and RFC 7888 is what decides
+// it. A non-synchronising literal -- `{n+}` -- is sent without waiting, so by
+// the time the refusal is written the octets are on the wire: leaving them
+// there would mean the next line this relay reads is the middle of a message,
+// and a body line that happens to parse as a command would be forwarded as
+// one. A plain `{n}` is the opposite case. The client is waiting for a
+// continuation request, RFC 9051 §4.3 says it must not send the octets once it
+// has a tagged refusal instead, and reading them would block this relay on
+// octets nobody is going to send -- and then swallow the next n octets the
+// client sends for any other reason, which is a desynchronisation of its own.
+func dropLiteral(c *conn, cmd *wire.Command) {
+	if cmd.Literal == nil || !cmd.Literal.NonSync {
+		return
+	}
+	if err := c.reader().Discard(cmd.Literal.Size); err != nil {
+		return
+	}
+	// And the rest of the line the octets sit in. A command does not end at a
+	// literal -- what follows is at least the CRLF and may be another argument
+	// -- so a reader that stopped at the last octet would take that remainder
+	// for the next command and report a malformed one.
+	_, _ = c.reader().ReadLine()
 }
 
 // starttls answers the upgrade itself rather than forwarding it.
@@ -390,6 +436,11 @@ func (t *server) fromServer(c *conn, deadline time.Time) {
 			t.refusedAnswer(c, r, d)
 			_ = c.line("* BYE " + reasonText(d))
 			return
+		}
+		if r.Continuation {
+			// The server is asking for the next step. While a SASL exchange
+			// is open that request is what gives the client its turn.
+			c.serverAsked()
 		}
 		if r.Tag != "" {
 			name, failed := c.advance(r)

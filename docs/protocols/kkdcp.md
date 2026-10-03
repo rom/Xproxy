@@ -83,6 +83,15 @@ refuse the estate. A request offering RC4 alone has asked for a ticket it can
 crack offline against the service account's password — on a TGS-REQ for a
 service principal, Kerberoasting with no ambiguity left in it.
 
+"Nothing but" is decided by what the request offers that is **strong** —
+aes128 or aes256 under RFC 3962 or RFC 8009, or camellia — rather than by what
+it offers that is on a list of bad ones. The etype field is a list of integers
+the client chooses and the registry is longer than any list in this proxy, so
+under the negative reading one unassigned number appended to `rc4-hmac` made the
+list look mixed; the KDC discards it, issues RC4, and the control was a
+formality. Counting only the types this proxy recognises as acceptable leaves
+nothing to manufacture.
+
 **Whether an AS exchange was pre-authenticated — on the reply.** A bare AS-REQ
 with no `padata` is the normal first message of every Kerberos exchange: the
 KDC answers it with `KDC_ERR_PREAUTH_REQUIRED` and the client retries with a
@@ -93,9 +102,24 @@ defaults on, and the check has to be on the reply because the question cannot
 be answered on the request. The pairing is this relay's own: nothing in the
 protocol says "this reply answers a request that had no padata".
 
-**Whether delegation crosses.** A TGS-REQ carrying `PA-FOR-USER` is S4U2Self,
-which names the impersonated user in the clear; one carrying bit 14 *and* an
-additional ticket is S4U2Proxy. Both default off, and S4U2Proxy needs both
+It cannot be answered by the request's padata either. That field is written by
+the client and this relay holds no key, so "it brought pre-authentication" is a
+claim: three octets under padata type 2 read exactly like a real encrypted
+timestamp from here. What is read instead is the two messages together. An
+encrypted timestamp or an encrypted challenge is something the KDC has to
+decrypt before it issues anything, so an AS-REP answering one is an AS-REP its
+verification stands behind. A PKINIT claim is the case a KDC may *ignore* rather
+than refuse — one with no PKINIT configured is looking at a padata type it does
+not implement — so that claim is proven by `PA-PK-AS-REP` in the reply, the
+KDC's own half of the exchange (RFC 4556 §3.2.3), which no client can write.
+
+**Whether delegation crosses.** A TGS-REQ carrying `PA-FOR-USER` or
+`PA-S4U-X509-USER` is S4U2Self, which names the impersonated user in the clear;
+one carrying bit 14 *and* an additional ticket is S4U2Proxy. Both spellings of
+protocol transition count, because a KDC honours either and a check that knew
+only the first was a switch with a second door beside it — the impersonated name
+is read from whichever arrived, so a rule about principals is applied to the name
+the request is *for* rather than to the service asking. Both default off, and S4U2Proxy needs both
 halves to be recognised as one — the option alone is a client setting a
 reserved bit, and an additional ticket alone is a user-to-user request.
 

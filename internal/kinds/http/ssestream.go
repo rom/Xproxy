@@ -307,31 +307,66 @@ func (c *countingReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// sseRequest applies the parts of the policy that are about the request: the
-// client's cursor and the encoding it asked for.
+// sseCursor applies the part of the policy that is about the client: its
+// cursor, which is the only input a client contributes to this protocol.
 //
-// It runs before the request is forwarded, which is the only place these two
-// can be decided: Last-Event-ID has to be removed before the application reads
-// it, and Accept-Encoding has to be removed before the application compresses.
-func (g *sseGuard) sseRequest(r *http.Request, rec sseRecorder) {
-	if id := r.Header.Get("Last-Event-ID"); id != "" {
-		switch {
-		case !g.lastEventID:
-			r.Header.Del("Last-Event-ID")
-			rec.stripped("last_event_id_not_allowed", "")
-		case len(id) > g.maxID:
-			r.Header.Del("Last-Event-ID")
-			rec.stripped("id_too_long", strconv.Itoa(len(id)))
-		case g.idShape != nil && !g.idShape.MatchString(id):
-			// A cursor of a shape the estate does not issue is not one the
-			// application should resume from: it is a request for history the
-			// client was never shown. Removing it rather than refusing the
-			// request means the client gets the stream from the beginning,
-			// which is what a client with no cursor gets.
-			r.Header.Del("Last-Event-ID")
-			rec.stripped("last_event_id_shape", textsafe.Clip64(id))
-		}
+// It runs before the request is forwarded, which is the only place it can be
+// decided -- Last-Event-ID has to be removed before the application reads it
+// -- and it runs for every request on a route that has a guard rather than
+// only for one whose Accept header asked for a stream. That is deliberate and
+// it is the whole of the check's reach: what decides whether a stream is served
+// is the *response's* Content-Type, so an application that answers a path with
+// `text/event-stream` answers it that way for a client that sent no Accept
+// header at all. Gating this on Accept would have meant the cursor policy was
+// skipped by leaving a header out, which is not a bound. A Last-Event-ID on a
+// request that turns out not to be a stream means nothing to anybody, so
+// deciding about it there costs nothing.
+func (g *sseGuard) sseCursor(r *http.Request, rec sseRecorder) {
+	ids := r.Header.Values("Last-Event-ID")
+	if len(ids) == 0 {
+		return
 	}
+	if len(ids) > 1 {
+		// Two cursors are a differential rather than a cursor. Reading the
+		// first is one library's answer, the last is another's and the pair
+		// joined by a comma is a third, so a policy that checked one of them
+		// has checked a value the application may not be the one to use.
+		// There is no reading of two Last-Event-ID headers that is a client
+		// resuming a stream, so the header goes whatever the values are.
+		r.Header.Del("Last-Event-ID")
+		rec.stripped("last_event_id_repeated", strconv.Itoa(len(ids)))
+		return
+	}
+	id := ids[0]
+	if id == "" {
+		return
+	}
+	switch {
+	case !g.lastEventID:
+		r.Header.Del("Last-Event-ID")
+		rec.stripped("last_event_id_not_allowed", "")
+	case len(id) > g.maxID:
+		r.Header.Del("Last-Event-ID")
+		rec.stripped("id_too_long", strconv.Itoa(len(id)))
+	case g.idShape != nil && !g.idShape.MatchString(id):
+		// A cursor of a shape the estate does not issue is not one the
+		// application should resume from: it is a request for history the
+		// client was never shown. Removing it rather than refusing the
+		// request means the client gets the stream from the beginning,
+		// which is what a client with no cursor gets.
+		r.Header.Del("Last-Event-ID")
+		rec.stripped("last_event_id_shape", textsafe.Clip64(id))
+	}
+}
+
+// sseEncoding applies the part of the policy that is about what the client
+// offered to accept, which has to be settled before the application compresses.
+//
+// Unlike the cursor above, this one is for a request that asked for a stream:
+// a route that serves a page and a stream under one path is ordinary, and
+// stripping Accept-Encoding from the page would make this proxy the reason the
+// page is uncompressed.
+func (g *sseGuard) sseEncoding(r *http.Request) {
 	switch g.compression {
 	case sseCompressInspect:
 		// The route inflates, so the offer stands.

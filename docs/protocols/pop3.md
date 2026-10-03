@@ -39,7 +39,12 @@ identity; `PASS secret` sends the password on the next line. There is no
 negotiation in between, nothing to inspect and nothing to downgrade: either the
 transport protects it or it has been published. `APOP` is the one alternative
 the base protocol offers — an MD5 digest over the timestamp in the server's
-greeting and the password — and RFC 5034 adds `AUTH` with SASL mechanisms.
+greeting and the password — and RFC 5034 adds `AUTH` with SASL mechanisms. An
+`AUTH` that names no mechanism is refused: it is a capability query in the shape
+of a credential exchange, there is nothing in it for `mechanisms` or
+`require_tls` to decide about, and the `+OK` that answers it used to move this
+relay's view of the session into the transaction state with nobody logged in.
+CAPA is where a client reads the mechanism list.
 
 **The greeting carries a challenge.** The `<1896.697170952@mail.test>` in a POP3
 greeting is what an APOP digest is computed over. A relay that invented its own

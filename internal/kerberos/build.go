@@ -98,16 +98,23 @@ func derInt(v int64) []byte {
 	return derTLV(classUniversal, tagInteger, b)
 }
 
-// ErrorText renders the message a refusal carries, which is read by a
-// person at a keyboard: it says which proxy refused, and why, and nothing
-// about the estate's internals.
-func ErrorText(listener, reason string) string {
+// ErrorText renders the message a refusal carries. It says which proxy
+// refused and nothing else.
+//
+// Nothing else is the point, and it took a KRB-ERROR to see why. The e-text
+// goes to whoever sent the request, which on a KDC proxy means anybody who can
+// reach the port -- and the reason a control fired is, on this protocol,
+// usually the intelligence the control exists to deny. `preauth_not_required`
+// says the account exists and is AS-REP-roastable, which is the whole of what
+// the roaster wanted and is a cleaner answer than the AS-REP it was refused.
+// `realm_not_allowed` enumerates the realms, `service_not_allowed` the service
+// list, and `preauth_failure_burst` tells an attacker which rate to stay under.
+// So the reason stays in this proxy's own logs and counters, where the operator
+// reads it, and the client is told only that it was refused.
+func ErrorText(listener string) string {
 	s := "refused by xproxy"
 	if listener != "" {
 		s += " (" + listener + ")"
-	}
-	if reason != "" {
-		s += ": " + reason
 	}
 	return s
 }

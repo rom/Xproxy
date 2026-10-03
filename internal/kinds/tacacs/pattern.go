@@ -78,13 +78,22 @@ func compilePattern(s string) (pattern, error) {
 	return p, nil
 }
 
-// match reports whether a command line matches.
+// match reports whether a command line matches, which is the reading an
+// *allow* list is given: exactly these words, unless the pattern said `...`.
+// Allowing a command because it begins with an allowed one is the unsafe
+// direction -- `show running-config | include password` begins with `show
+// running-config` -- so a longer command is not covered here.
 func (p pattern) match(cmd string) bool {
 	words := strings.Fields(strings.ToLower(cmd))
-	if len(words) < len(p.words) {
+	if !p.prefix && len(words) != len(p.words) {
 		return false
 	}
-	if !p.prefix && len(words) != len(p.words) {
+	return p.covers(words)
+}
+
+// covers is the word comparison the two readings share.
+func (p pattern) covers(words []string) bool {
+	if len(words) < len(p.words) {
 		return false
 	}
 	for i, w := range p.words {
@@ -95,10 +104,37 @@ func (p pattern) match(cmd string) bool {
 	return true
 }
 
-// matchAny reports whether any pattern matches.
+// reaches reports whether a pattern covers this command or any command that
+// begins with it, which is the reading a *deny* list is given.
+//
+// The asymmetry is deliberate and it is the only place in this file where a
+// pattern means two things. A device's command line takes suffixes: a filter
+// (`show running-config | include password`), a redirect (`copy
+// running-config tftp: ...`), a trailing argument. Under the exact reading a
+// deny of `show running-config` misses every one of them -- which is to say it
+// misses the spelling an attacker would use and matches only the one an
+// operator would -- so a deny pattern covers the command it names and whatever
+// follows. Denying more than was asked is the safe direction on a list whose
+// purpose is "no router behind this relay accepts this"; allowing more than was
+// asked is not, which is why match above stays exact.
+func (p pattern) reaches(cmd string) bool {
+	return p.covers(strings.Fields(strings.ToLower(cmd)))
+}
+
+// matchAny reports whether any pattern matches, for an allow list.
 func matchAny(ps []pattern, cmd string) bool {
 	for _, p := range ps {
 		if p.match(cmd) {
+			return true
+		}
+	}
+	return false
+}
+
+// reachesAny reports whether any pattern reaches the command, for a deny list.
+func reachesAny(ps []pattern, cmd string) bool {
+	for _, p := range ps {
+		if p.reaches(cmd) {
 			return true
 		}
 	}

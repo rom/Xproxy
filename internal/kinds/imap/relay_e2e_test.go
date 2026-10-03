@@ -57,6 +57,10 @@ type fakeServer struct {
 	caps string
 	// answers maps a command name to the tagged status it answers.
 	answers map[string]string
+	// sasl makes AUTHENTICATE a real exchange: a continuation request, one
+	// line read back, and then the tagged answer. Without it AUTHENTICATE is
+	// answered straight away, which is the initial-response case.
+	sasl bool
 	// untagged is sent before the tagged answer of the named command.
 	untagged map[string]string
 
@@ -177,6 +181,15 @@ func (f *fakeServer) serve(c net.Conn) {
 			}
 		}
 		switch name {
+		case "AUTHENTICATE":
+			if f.sasl && status == "OK" {
+				_, _ = fmt.Fprintf(c, "+ \r\n")
+				answer, err := br.ReadString('\n')
+				if err != nil {
+					return
+				}
+				f.record("sasl:" + strings.TrimRight(answer, "\r\n"))
+			}
 		case "CAPABILITY":
 			_, _ = fmt.Fprintf(c, "* CAPABILITY %s\r\n", f.caps)
 		case "IDLE":
@@ -366,6 +379,220 @@ func TestAnAppendIsDecidedOnItsDeclaredSizeAndItsOctetsAreDropped(t *testing.T) 
 	}
 	if got := srv.bodies(); len(got) != 1 {
 		t.Fatalf("the refused body reached the server: %q", got)
+	}
+}
+
+// A line the server did not ask for is not credential material.
+//
+// Inside a SASL exchange the lines are forwarded unparsed, which is right --
+// they are a password in base64 -- and is also the shape of the hole this test
+// is about. A client that sends `AUTHENTICATE` with a mechanism the server does
+// not implement is answered with a tagged NO and is then back at a command
+// boundary at the far end; this relay was not, so the next line it read was
+// forwarded without being parsed as the command the server would read it as.
+func TestALineTheServerDidNotAskForIsNotCredentialMaterial(t *testing.T) {
+	srv := startServer(t, &fakeServer{answers: map[string]string{"AUTHENTICATE": "NO"}})
+	s, addr := relay(t, noTLS, srv.addr())
+	c := dial(t, addr)
+	c.line()
+	// Both lines in one write, which is what makes this work against a relay
+	// that reads the second before the server has answered the first.
+	c.raw("a1 AUTHENTICATE XNOTAMECH\r\na2 LOGIN victim@example.com Hunter2\r\n")
+	// The connection ends, and the smuggled command is not forwarded.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if s.Stats().Refusals["imap"]["auth_injection"] > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if s.Stats().Refusals["imap"]["auth_injection"] == 0 {
+		t.Errorf("the line was carried as a credential: %v", s.Stats().Refusals["imap"])
+	}
+	for _, line := range srv.saw() {
+		if strings.Contains(strings.ToUpper(line), "LOGIN") {
+			t.Fatalf("a command was smuggled past the policy:\n%s", strings.Join(srv.saw(), "\n"))
+		}
+	}
+}
+
+// And the exchange itself still works, one continuation request at a time.
+func TestASASLExchangeIsCarriedAStepAtATime(t *testing.T) {
+	srv := startServer(t, &fakeServer{sasl: true})
+	_, addr := relay(t, noTLS, srv.addr())
+	c := dial(t, addr)
+	c.line()
+	c.send("a1 AUTHENTICATE PLAIN")
+	if l := c.line(); !strings.HasPrefix(l, "+") {
+		t.Fatalf("expected the server's continuation request, got %q", l)
+	}
+	c.send("AGJvYgBzZWNyZXQ=")
+	last := c.until("a1")
+	if answer := last[len(last)-1]; !strings.Contains(answer, "OK") {
+		t.Fatalf("the exchange was refused: %q", answer)
+	}
+	if seen := strings.Join(srv.saw(), "\n"); !strings.Contains(seen, "sasl:AGJvYgBzZWNyZXQ=") {
+		t.Errorf("the credential did not reach the server:\n%s", seen)
+	}
+}
+
+// An argument sent as a literal is refused rather than decided about.
+//
+// A literal is the last token on the line, so the argument list ends where it
+// begins: `SELECT {25+}` parses as SELECT with no arguments, and every list the
+// policy keeps -- mailboxes, deny_mailboxes, the rule selectors, the user list
+// -- then reads "this command names none" and allows it, while the server
+// receives the name intact.
+func TestAnArgumentSentAsALiteralIsRefused(t *testing.T) {
+	srv := startServer(t, &fakeServer{})
+	s, addr := relay(t, noTLS+"        mailboxes: [INBOX, Sent]\n", srv.addr())
+	c := dial(t, addr)
+	c.line()
+	c.send("a1 LOGIN bob secret")
+	c.until("a1")
+	for i, tc := range []struct{ cmd, octets string }{
+		{"a2 SELECT {21+}", "Other Users/ceo/INBOX\r\n"},
+		{"a3 COPY 1:* {11+}", "Exfil/Stash\r\n"},
+		{"a4 LOGIN {5+}", "alice\r\n"},
+	} {
+		tag := strings.Fields(tc.cmd)[0]
+		c.send(tc.cmd)
+		c.raw(tc.octets)
+		last := c.until(tag)
+		if answer := last[len(last)-1]; !strings.Contains(answer, "literal_argument") {
+			t.Errorf("case %d: %q was not refused: %q", i, tc.cmd, answer)
+		}
+	}
+	if s.Stats().Refusals["imap"]["literal_argument"] != 3 {
+		t.Errorf("refusals: %v", s.Stats().Refusals["imap"])
+	}
+	if seen := strings.Join(srv.saw(), "\n"); strings.Contains(seen, "Other Users") ||
+		strings.Contains(seen, "Exfil") {
+		t.Errorf("a refused name reached the server:\n%s", seen)
+	}
+}
+
+// A synchronising literal is not read after a refusal. The client is waiting
+// for a continuation request and RFC 9051 §4.3 says it must not send the octets
+// once it has a tagged refusal instead -- so reading them would block on octets
+// nobody is going to send, and then swallow the next command.
+func TestASynchronisingLiteralIsNotReadAfterARefusal(t *testing.T) {
+	srv := startServer(t, &fakeServer{})
+	_, addr := relay(t, noTLS+"        max_append_bytes: 32\n", srv.addr())
+	c := dial(t, addr)
+	c.line()
+	c.send("a1 LOGIN bob secret")
+	c.until("a1")
+	// No `+` on the literal, and the octets are never sent.
+	c.send("a2 APPEND INBOX {64}")
+	last := c.until("a2")
+	if answer := last[len(last)-1]; !strings.Contains(answer, "append_too_large") {
+		t.Fatalf("the refusal did not arrive: %q", answer)
+	}
+	// The next command is read as a command rather than as the first 64 octets
+	// of something.
+	c.send("a3 NOOP")
+	last = c.until("a3")
+	if answer := last[len(last)-1]; !strings.Contains(answer, "OK") {
+		t.Fatalf("the connection lost step: %q", answer)
+	}
+}
+
+// A chained literal is bounded by the rule that decided the command. The first
+// literal on the line was checked against the rule's own bound and the chained
+// ones against the listener's, so a rule tightening the bound for one user
+// applied to the mailbox name and not to the message.
+func TestAChainedLiteralIsBoundedByTheRuleThatDecided(t *testing.T) {
+	srv := startServer(t, &fakeServer{})
+	section := noTLS + "        max_append_bytes: 1048576\n" +
+		"        rules:\n" +
+		"          - {name: interns, users: [bob], max_append_bytes: 64}\n"
+	s, addr := relay(t, section, srv.addr())
+	c := dial(t, addr)
+	c.line()
+	c.send("a1 LOGIN bob secret")
+	c.until("a1")
+	// The mailbox as the first literal, a message past the rule's bound as the
+	// second. The listener's bound is a megabyte, the rule's is 64 octets.
+	c.send("a2 APPEND INBOX (\\Seen) {4096+}")
+	c.raw(strings.Repeat("x", 4096) + "\r\n")
+	last := c.until("a2")
+	if answer := last[len(last)-1]; !strings.Contains(answer, "append_too_large") {
+		t.Fatalf("the rule's bound did not apply to the chained literal: %q", answer)
+	}
+	if s.Stats().Refusals["imap"]["append_too_large"] == 0 {
+		t.Errorf("refusals: %v", s.Stats().Refusals["imap"])
+	}
+}
+
+// An anomaly refusal drops the octets the client has already committed, the
+// same as a policy refusal does. Without that the next line this relay reads is
+// the middle of a message, and a body line that happens to parse as a command
+// is forwarded as one.
+func TestAnAnomalyRefusalDropsTheOctetsTheClientCommitted(t *testing.T) {
+	srv := startServer(t, &fakeServer{})
+	section := noTLS + `        anomaly:
+          enabled: true
+          action: deny
+          settle: 0s
+          novelty: {symbols: true}
+`
+	s, addr := relay(t, section, srv.addr())
+	c := dial(t, addr)
+	c.line()
+	// The password in a literal, which no policy list reads -- so the command
+	// reaches the anomaly check with octets already on the wire.
+	c.send("a1 LOGIN bob {6+}")
+	c.raw("secret\r\n")
+	last := c.until("a1")
+	if answer := last[len(last)-1]; !strings.Contains(answer, "anomaly") {
+		t.Fatalf("the models did not refuse the first command: %q", answer)
+	}
+	// The next line is read as a command: it gets an answer under its own tag
+	// rather than being taken for the rest of a message.
+	c.send("a2 NOOP")
+	last = c.until("a2")
+	if answer := last[len(last)-1]; !strings.HasPrefix(answer, "a2 ") {
+		t.Fatalf("the connection lost step: %q", answer)
+	}
+	if n := s.Stats().Refusals["imap"]["malformed_command"]; n != 0 {
+		t.Errorf("the dropped literal left %d octets behind", n)
+	}
+	if seen := strings.Join(srv.saw(), "\n"); strings.Contains(seen, "secret") {
+		t.Errorf("the refused command's octets reached the server:\n%s", seen)
+	}
+}
+
+// The INBOX fold reaches the hierarchy below it, because the servers that put
+// mail there fold that component too: `inbox/Finance` and `INBOX/Finance` are
+// one mailbox at the server and were two different strings here.
+func TestTheInboxFoldCoversTheHierarchyBelowIt(t *testing.T) {
+	srv := startServer(t, &fakeServer{})
+	s, addr := relay(t, noTLS+"        deny_mailboxes: [\"INBOX/Finance*\"]\n", srv.addr())
+	c := dial(t, addr)
+	c.line()
+	c.send("a1 LOGIN bob secret")
+	c.until("a1")
+	for i, cmd := range []string{
+		"a2 SELECT INBOX/Finance/Payroll",
+		"a3 SELECT inbox/Finance/Payroll",
+		"a4 SELECT InBoX/Finance/Payroll",
+	} {
+		tag := strings.Fields(cmd)[0]
+		c.send(cmd)
+		last := c.until(tag)
+		if answer := last[len(last)-1]; !strings.Contains(answer, "mailbox_denied") {
+			t.Errorf("case %d: %q was allowed: %q", i, cmd, answer)
+		}
+	}
+	// And a mailbox whose name merely begins with those letters is not INBOX.
+	c.send("a5 SELECT Inboxes/Finance")
+	last := c.until("a5")
+	if answer := last[len(last)-1]; !strings.Contains(answer, "OK") {
+		t.Errorf("a mailbox that is not under INBOX was denied: %q", answer)
+	}
+	if s.Stats().Refusals["imap"]["mailbox_denied"] != 3 {
+		t.Errorf("refusals: %v", s.Stats().Refusals["imap"])
 	}
 }
 

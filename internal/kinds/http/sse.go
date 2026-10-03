@@ -4,7 +4,6 @@ import (
 	"errors"
 	"regexp"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/rom/xproxy/internal/config"
@@ -191,15 +190,17 @@ func newSSEGuard(c *config.SSEGuard) (*sseGuard, error) {
 // anchored wraps a pattern so it has to match the whole value. A cursor
 // pattern that matched a substring would admit every identifier with a legal
 // one somewhere inside it, which is the opposite of what its author wrote.
-func anchored(p string) string {
-	if !strings.HasPrefix(p, "^") {
-		p = "^" + p
-	}
-	if !strings.HasSuffix(p, "$") {
-		p += "$"
-	}
-	return p
-}
+//
+// The group is what makes that true of a pattern with alternation, and it is
+// the reason this is a function rather than two string additions at the call
+// site. `|` has the lowest precedence there is, so "^" + `a|b` + "$" reads as
+// "starts with a, or ends with b": the anchors bind to the first and the last
+// branch and every branch is unanchored at one end. An estate whose cursors
+// are a counter or a ULID writes exactly that pattern, so the whole pattern is
+// wrapped before the anchors go on. A pattern that already carries its own
+// anchors is left as it is inside the group, where they still mean the start
+// and the end of the value.
+func anchored(p string) string { return "^(?:" + p + ")$" }
 
 func sseSet(list []string) map[string]bool {
 	if len(list) == 0 {

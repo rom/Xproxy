@@ -859,24 +859,32 @@ func (s *engine) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 		s.deny(rw, r, st, http.StatusBadRequest, "websocket")
 		return
 	}
-	if g := cr.sseGuard; g != nil && acceptsEventStream(r) {
-		if g.compression == sseCompressRefuse && r.Header.Get("Accept-Encoding") != "" {
-			// The route would rather say no than quietly change what the
-			// client asked for. Stripping the offer is the default and is
-			// friendlier; this is for an estate that would rather a
-			// client's own logs recorded the refusal.
-			s.stats.SSEViolations.Add(1)
-			st.denied = "sse:encoding"
-			s.logs.SecurityEvent(r.Context(), "sse", "sse",
-				"route", st.route, "client_ip", st.clientIP.String(), "reason", "encoding_not_allowed",
-				"detail", textsafe.Clip64(r.Header.Get("Accept-Encoding")))
-			s.deny(rw, r, st, http.StatusBadRequest, "sse")
-			return
+	if g := cr.sseGuard; g != nil {
+		// The cursor first, for every request on the route: the response's
+		// Content-Type is what decides whether a stream is served, so a client
+		// that sends no Accept header still gets one, and a cursor check gated
+		// on Accept would be a check a client opts out of by omission.
+		g.sseCursor(r, s.sseRecorder(st, r))
+		// The encoding is the other way round, and only for a request that
+		// asked for a stream: a route that serves a page and a stream under
+		// one path is ordinary, and stripping Accept-Encoding from the page
+		// would make this proxy the reason the page is uncompressed.
+		if acceptsEventStream(r) {
+			if g.compression == sseCompressRefuse && r.Header.Get("Accept-Encoding") != "" {
+				// The route would rather say no than quietly change what the
+				// client asked for. Stripping the offer is the default and is
+				// friendlier; this is for an estate that would rather a
+				// client's own logs recorded the refusal.
+				s.stats.SSEViolations.Add(1)
+				st.denied = "sse:encoding"
+				s.logs.SecurityEvent(r.Context(), "sse", "sse",
+					"route", st.route, "client_ip", st.clientIP.String(), "reason", "encoding_not_allowed",
+					"detail", textsafe.Clip64(r.Header.Get("Accept-Encoding")))
+				s.deny(rw, r, st, http.StatusBadRequest, "sse")
+				return
+			}
+			g.sseEncoding(r)
 		}
-		// Last-Event-ID is the one piece of client input on this protocol and
-		// it reaches the application as a cursor, so it is decided here --
-		// before the application can read it.
-		g.sseRequest(r, s.sseRecorder(st, r))
 	}
 	if isUpgrade(r) && cr.wsGuard != nil {
 		// The reverse proxy hijacks the connection when the origin
