@@ -66,7 +66,10 @@ func (c *sseRecord) comment() {
 func (c *sseRecord) refused(v *sseViolation) {
 	c.st.sseRefused = v.reason
 	c.s.stats.SSEViolations.Add(1)
-	c.s.stats.Refuse("sse", v.reason)
+	// Counted under the http kind with an sse_ prefix rather than under a
+	// kind of its own: the refusal table is keyed by listener kind, and an
+	// event stream is a response on an http listener rather than a listener.
+	c.s.stats.Refuse("http", "sse_"+v.reason)
 	attrs := []any{"route", c.st.route, "client_ip", c.st.clientIP.String(),
 		"reason", v.reason, "events", c.st.sseEvents, "bytes", c.st.sseBytes}
 	if v.detail != "" {
@@ -76,14 +79,21 @@ func (c *sseRecord) refused(v *sseViolation) {
 		attrs = append(attrs, "hard", true)
 	}
 	c.s.logs.SecurityEvent(c.req.Context(), "sse", "sse_"+v.reason, attrs...)
+	// And the ban ladder. A client whose streams keep being ended for taking
+	// more than the route carries is not reading a dashboard; the category is
+	// one reason rather than one per bound, because what a trigger is counting
+	// is the refusals and not which of them it was.
+	if bl := c.s.host.Bans(); bl != nil && c.st.clientIP.IsValid() {
+		bl.ObserveClient(c.st.clientIP, c.st.ja4, "sse_denied")
+	}
 }
 
 // would reports what enforcement would have refused. Shadow mode's report is
 // as detailed as the refusal, because an operator comparing the two is the
 // person the mode exists for.
 func (c *sseRecord) would(v *sseViolation) {
-	c.s.stats.WouldRefuse("sse", v.reason)
-	c.s.host.Shadow().Record("sse", c.st.route, v.reason, "event", v.detail)
+	c.s.stats.WouldRefuse("http", "sse_"+v.reason)
+	c.s.host.Shadow().Record("http", c.st.route, "sse_"+v.reason, "event", v.detail)
 }
 
 func (c *sseRecord) observed(name string) {

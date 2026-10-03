@@ -6,6 +6,106 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (the event stream: a policy for text/event-stream)
+
+- **`sse_guard` on a route is a policy for Server-Sent Events**, which is the
+  other long-lived HTTP response an estate runs and the only one nothing else
+  in a configuration bounds. One GET, a response with no length, flushed per
+  event, held open for hours. Without a guard it is an opaque outbound channel
+  on a port that is already open.
+
+  It reads like the WebSocket guard beside it and it answers a different
+  question, because two facts about SSE decide what a policy here can be.
+
+  **It is one-directional, and the direction is outward.** The client sends a
+  GET and then says nothing; everything after that is the application talking.
+  So every event is the estate's own output leaving it, which puts this in the
+  same position as the `dhcp` kind -- a policy about answers -- and makes
+  `deny_patterns` here a control that reads what is *leaving*. That matters
+  because an event stream is the shape of a channel for moving data out
+  quietly: arbitrary text, chunked, flushed per event, under a Content-Type a
+  dashboard uses, and nothing about it malformed. `max_events`,
+  `max_stream_bytes` and `max_duration` are what make a stream finite, and a
+  stream has none of them by default because HTTP gives a response with no
+  length no bound at all.
+
+  **A single event cannot be refused.** By the time one is read the status line
+  has gone and the response is committed; there is no way to say "not that one"
+  inside a sequence a client is reading in order. So `action` has two values
+  rather than three -- the stream ends, or the event is carried and reported --
+  and a refusal is a decision to end the stream *at* that event. The client
+  sees a closed body, which is what it sees when an application finishes, and
+  reconnects: the right outcome for a dashboard and a dead end for a channel.
+
+  The rest of the settings: bounds on an event, a line and a field count; the
+  event names a route carries, with a per-name size, rate and JSON Schema,
+  because one `max_event_bytes` for the stream is the bound that lets every
+  event be that large and this is where the keepalive and the hourly report get
+  different answers; a floor on the `retry:` field, which **rewrites** rather
+  than refuses, because `retry: 0` from a misconfigured application is a fleet
+  of browsers reconnecting as fast as they can and the stream itself is fine;
+  and the compression decision the WebSocket guard already has, for the same
+  reason -- a compressed stream cannot be read without being inflated.
+
+- **`Last-Event-ID` is treated as a cursor rather than a header.** It is the
+  one piece of client-controlled input on this protocol, and an application
+  that replays from it is being told where to start -- so an identifier a
+  client was never issued is a request for history it was not shown.
+  `last_event_id_pattern` says what an estate's identifiers look like,
+  `max_id_bytes` bounds both ends of the round trip (the server's `id:` field
+  and the client's header are the same value coming back), and
+  `allow_last_event_id: false` stops it crossing at all. A cursor that does not
+  pass is **removed** rather than refused: the client gets the stream from the
+  beginning, which is what a client with no cursor gets.
+
+- **`internal/sse` reads the format, and the tests are about the traps its
+  smallness hides.** All three of the standard's line terminators -- CRLF, LF
+  *and a bare CR* -- because a reader that waited for an LF after a CR would
+  hold a whole event and deliver nothing, which on this protocol looks exactly
+  like a server that has stopped sending. A field with no colon is a field with
+  an empty value rather than a malformed line. Exactly one space after the
+  colon is stripped. `data` accumulates across lines. The BOM goes once, at the
+  start only. An `id` with a NUL is dropped, field and all, which is the one
+  value the standard says to ignore rather than carry. Nineteen table tests and
+  three fuzz targets.
+
+  The guard reads each event and **writes it out again** rather than splicing,
+  which is what makes the rest trustworthy: the framing is resolved once here
+  instead of twice at the two ends, so a client cannot read an event boundary
+  differently from the way the policy did. A stream whose framing cannot be
+  read is not forwarded at all, and that is the one refusal that stands in
+  `monitor_only` too -- forwarding it raw would mean forwarding octets nobody
+  decided about.
+
+- **Seven counters, twenty-three mappings and two new techniques.**
+  `sse_streams`, `sse_events`, `sse_event_bytes`, `sse_comments`,
+  `sse_violations`, `sse_unknown_events` and `sse_cursors_stripped`. Refusals
+  are counted under the `http` kind with an `sse_` prefix, because an event
+  stream is a response on an http listener rather than a listener of its own,
+  and every one of them is bannable as `sse_denied`. The ATT&CK catalogue gains
+  **T1041 (Exfiltration Over C2 Channel)** and **T1071.001 (Application Layer
+  Protocol: Web Protocols)**, which are the right names for this and were not
+  there; the bound refusals carry T1041, T1048 and T1567, the framing and
+  state refusals carry T1071.001, the cursor refusals carry T1213 and T1190,
+  and the compression ones carry T1562.
+
+- **Documentation and examples.** A section in [CONFIG.md](CONFIG.md) with the
+  per-name table, a "Server-Sent Events" section in [USAGE.md](USAGE.md),
+  [`examples/routes/events.yaml`](../examples/routes/events.yaml) (a dashboard
+  feed with its event names written down, a log tail with no list but a hard
+  bound on how much one person may take, and a third route under
+  `monitor_only`, which is how an estate finds out what its own streams send
+  before a bound is set), the protocol in [README.md](../README.md)'s table and
+  inspection list, and four rows in
+  [THREAT_MODEL.md](THREAT_MODEL.md).
+
+- **Fixed in passing**: `.gitignore`'s fuzz-corpus rule was
+  `testdata/fuzz/**/[!R]*`. A pattern containing a slash is anchored to the
+  file's own directory, so it only ever matched a corpus at the repository root
+  and never one under `internal/<pkg>/testdata/fuzz` -- where every package's
+  corpus actually lives. A generated seed would have been committed by
+  `git add -A`.
+
 ### Added (the other half of mail: the two mailbox protocols)
 
 - **`kind: imap` is a relay in front of the most complete record an estate

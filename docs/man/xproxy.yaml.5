@@ -25598,6 +25598,346 @@ With \fBinspect\fR, every check above is about the inflated message: its size, i
 An origin that claims an extension on a route that offered none is still refused at the 101, and a reserved bit arriving after all means what it says: a peer using an extension nobody negotiated.
 .PP
 Violations are security events with reason \fBwebsocket\fR, carrying the specific finding \[u2014] \fBprotocol\fR, \fBopcode\fR, \fBframe_size\fR, \fBmessage_size\fR, \fBrate\fR, \fBpattern\fR, \fBextension\fR, \fBcompression\fR, \fBcompression_bomb\fR, \fBjson\fR, \fBmessage_type\fR, \fBtype_size\fR, \fBtype_rate\fR or \fBschema\fR \[u2014] counted per route by \fBxproxyctl\fR and \fBGET /v1/websocket\fR, and exported as \fBxproxy_websocket_violations_total\fR, \fBxproxy_websocket_closed_total\fR, \fBxproxy_websocket_unknown_type_total\fR and, per named type, \fBxproxy_websocket_type_messages_total\fR and \fBxproxy_websocket_type_violations_total\fR.
+.SS "routes[].sse_guard"
+.PP
+A \fBtext/event\-stream\fR response is the other long\-lived HTTP exchange an estate runs, and the only one nothing else in this configuration bounds. One GET, a response with no length, flushed per event, held open for hours. Without a guard it is an opaque outbound channel on a port that is already open.
+.PP
+It is the WebSocket guard\(aqs opposite in the two ways that decide what a policy here can be.
+.PP
+\fBIt is one\-directional, and the direction is outward.\fR The client sends a GET and then says nothing; everything after that is the application talking. So every event is the estate\(aqs own output leaving it, which puts this in the same position as the \fBdhcp\fR kind \[u2014] a policy about answers \[u2014] and makes \fBdeny_patterns\fR here a control that reads what is \fIleaving\fR. Nothing about an exfiltration channel built this way is malformed: it is arbitrary text, chunked, under a Content\-Type a dashboard uses. The bounds and the event list are what make the difference between a price feed and a copy of a database something a configuration can state.
+.PP
+\fBA single event cannot be refused.\fR By the time an event is read the status line has gone and the response is committed; there is no way to say "not that one" inside a sequence a client is reading in order. So \fBaction\fR has two values rather than three \[u2014] the stream ends, or the event is carried and reported \[u2014] and a refusal is a decision to end the stream at that event. The client sees a closed body, which is what it sees when an application finishes, and reconnects: the right outcome for a dashboard and a dead end for a channel.
+.PP
+The guard reads each event and \fBwrites it out again\fR rather than splicing. That is why the rest is trustworthy: SSE has three line terminators (CRLF, LF \fIand a bare CR\fR), a blank line as its only separator and a field with no colon that means an empty value, so a spliced stream leaves the framing to be resolved twice and the two ends can disagree about where an event ends.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.9i) lbw(0.8i) lbx
+lw(1.2i) lw(0.9i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Meaning
+T}
+T{
+\fBmax_\:event_\:bytes\fR
+T}	T{
+bytes
+T}	T{
+\fB1048576\fR
+T}	T{
+The largest reassembled event: the joined \fBdata\fR,\: the name and the identifier. Past it the stream ends rather than the event being truncated,\: because half an event delivered as whole is worse than none
+T}
+T{
+\fBmax_\:line_\:bytes\fR
+T}	T{
+bytes
+T}	T{
+\fB65536\fR
+T}	T{
+The longest single field line. Separate from \fBmax_\:event_\:bytes\fR because \fBdata\fR accumulates across lines,\: so an event\(aqs size and a line\(aqs are different questions
+T}
+T{
+\fBmax_\:fields\fR
+T}	T{
+int
+T}	T{
+\fB256\fR
+T}	T{
+How many field lines one event may be built from. A stream that sends ten thousand \fBdata:\fR lines before its blank line is not sending an event
+T}
+T{
+\fBevents_\:per_\:second\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (none)
+T}	T{
+The stream\(aqs event rate. This is the \fIserver\(aqs\fR rate,\: which is unusual in this file and is the point: an application that has started emitting a thousand events a second is either broken or being read
+T}
+T{
+\fBmax_\:events\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (none)
+T}	T{
+How many events one stream may carry before it ends
+T}
+T{
+\fBmax_\:stream_\:bytes\fR
+T}	T{
+bytes
+T}	T{
+\fB0\fR (none)
+T}	T{
+How many bytes one stream may carry before it ends. With \fBmax_\:events\fR,\: the pair that makes a stream finite
+T}
+T{
+\fBmax_\:duration\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR (none)
+T}	T{
+How long one stream may be held open. A dashboard that reconnects every hour costs nothing;\: a stream open for three weeks is not a dashboard
+T}
+T{
+\fBidle_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR (none)
+T}	T{
+Ends a stream that has sent nothing for this long. Comment lines count as traffic \[u2014] that is what a keepalive is \[u2014] so this bounds a stream whose application has stopped without closing the socket
+T}
+T{
+\fBallow_\:events\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The event names that may cross,\: by the \fBevent:\fR field. An event with no name is \fBmessage\fR,\: which is what a client calls it,\: so that is the name a rule uses
+T}
+T{
+\fBdeny_\:events\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Names that may not cross. Checked first,\: and no entry in \fBallow_\:events\fR overrides it,\: which is how an exception inside an admitted set is written
+T}
+T{
+\fBunknown_\:events\fR
+T}	T{
+\fBallow\fR,\: \fBobserve\fR,\: \fBdeny\fR
+T}	T{
+\fBdeny\fR once \fBallow_\:events\fR names any,\: else \fBallow\fR
+T}	T{
+What happens to a name neither list covers. A list of the events a stream carries that also carries everything else is not a list,\: which is why naming any makes the rest deny;\: \fBobserve\fR records and forwards,\: which is how the list gets written
+T}
+T{
+\fBevents[]\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The policy per event name;\: see below
+T}
+T{
+\fBallow_\:last_\:event_\:id\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Whether a client\(aqs \fBLast\-\:Event\-\:ID\fR request header is forwarded. It is the one piece of client\-controlled input on this protocol and it reaches the application as a \fBcursor\fR: an application that replays from it is being told where to start,\: and an identifier a client was never issued is a request for history it was not shown
+T}
+T{
+\fBmax_\:id_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB256\fR
+T}	T{
+Bounds the server\(aqs \fBid:\fR field and the client\(aqs \fBLast\-\:Event\-\:ID\fR alike. They are the same value making a round trip,\: so one bound covers both ends
+T}
+T{
+\fBlast_\:event_\:id_\:pattern\fR
+T}	T{
+RE2
+T}	T{
+none
+T}	T{
+A shape a client\(aqs \fBLast\-\:Event\-\:ID\fR must match,\: anchored at both ends. An estate whose identifiers are integers or ULIDs says so here,\: and then the cursor reaching the application is one of its own shape rather than whatever was sent. A cursor that does not match is \fBremoved\fR,\: not refused: the client gets the stream from the beginning,\: which is what a client with no cursor gets
+T}
+T{
+\fBmin_\:retry\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR (leave alone)
+T}	T{
+A floor on the \fBretry:\fR field the server sends. The field tells the client how long to wait before reconnecting,\: so \fBretry:\: 0\fR from a misconfigured application is a fleet of browsers reconnecting as fast as they can. A floor \fBrewrites\fR rather than refuses,\: because the stream itself is fine
+T}
+T{
+\fBinspect\fR
+T}	T{
+\fBnone\fR,\: \fBdata\fR,\: \fBall\fR
+T}	T{
+\fBdata\fR
+T}	T{
+Which part of an event is kept for pattern matching. \fBdata\fR is the payload;\: \fBall\fR adds the name and the identifier
+T}
+T{
+\fBmax_\:inspect_\:bytes\fR
+T}	T{
+bytes
+T}	T{
+\fB65536\fR
+T}	T{
+The prefix of an event kept for matching
+T}
+T{
+\fBdeny_\:patterns\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+RE2 patterns matched against the inspected part. On this protocol they read what is leaving,\: which is the direction an exfiltration channel runs in
+T}
+T{
+\fBcompression\fR
+T}	T{
+\fBstrip\fR,\: \fBrefuse\fR,\: \fBinspect\fR
+T}	T{
+\fBstrip\fR
+T}	T{
+What happens to compression. A compressed stream cannot be read without being inflated. \fBstrip\fR removes the client\(aqs \fBAccept\-\:Encoding\fR for this route so the application sends the stream in the clear,\: which costs little because an event stream is small messages flushed one at a time and a sender has already given up cross\-message compression to keep latency;\: \fBrefuse\fR answers the request with 400 instead,\: for an estate that would rather a client was told than quietly changed;\: \fBinspect\fR inflates each event before the policy sees it
+T}
+T{
+\fBmax_\:inflate_\:ratio\fR
+T}	T{
+int
+T}	T{
+\fB100\fR
+T}	T{
+How far a compressed stream may expand before it is a bomb rather than a stream. Only read with \fBcompression:\: inspect\fR
+T}
+T{
+\fBallow_\:comments\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Whether \fB:\fR\-prefixed lines are forwarded. They are how a stream stays alive through an intermediary that would time it out,\: so removing them would make this proxy the reason a stream dies;\: an estate that wants nothing but named events turns them off
+T}
+T{
+\fBrequire_\:json\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Makes an event whose data is not a JSON object a violation rather than one the schema policy cannot read. Off by default: an event stream carries whatever the application chose,\: and plenty of real ones carry a bare number or a fragment of HTML
+T}
+T{
+\fBaction\fR
+T}	T{
+\fBclose\fR,\: \fBlog\fR
+T}	T{
+\fBclose\fR
+T}	T{
+What a violation does. There is no third answer here,\: for the reason above
+T}
+T{
+\fBlog_\:events\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+One line per event. Off by default,\: because a stream is thousands of events and the summary at its end is what an operator reads;\: a route being investigated turns it on
+T}
+T{
+\fBmonitor_\:only\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Report what would be refused and carry everything,\: which is how an estate finds out what its own streams send before a bound is set
+T}
+.TE
+.SS "routes[].sse_guard.events[]"
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.7i) lbw(0.9i) lbx
+lw(0.8i) lw(0.7i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Meaning
+T}
+T{
+\fBname\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+The \fBevent:\fR field this entry is about. \fBmessage\fR names the events that carry no \fBevent:\fR field,\: because that is what a client calls them
+T}
+T{
+\fBmax_\:bytes\fR
+T}	T{
+bytes
+T}	T{
+\fB0\fR
+T}	T{
+One event of this name,\: after inflation where the route inspects a compressed stream. 0 leaves it to \fBmax_\:event_\:bytes\fR
+T}
+T{
+\fBevents_\:per_\:second\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+This name\(aqs rate. 0 is no bound of its own;\: the stream\(aqs \fBevents_\:per_\:second\fR still applies
+T}
+T{
+\fBschema_\:file\fR
+T}	T{
+path
+T}	T{
+none
+T}	T{
+A JSON Schema (JSON or YAML) every event of this name must match. Read at load and on reload. An event too large to have been inspected whole cannot be validated and is \fBrefused\fR: a check that silently stops applying above a size the sender chooses is not a check,\: and the sender here is the thing being checked
+T}
+.TE
+.PP
+One \fBmax_event_bytes\fR for the stream is the bound of its largest event, which is the bound that lets every other event be that large too. \fBevents[]\fR is where the keepalive and the hourly report get different answers.
+.PP
+.RS 4
+.nf
+.ft CR
+routes:
+  \- name: dashboard
+    paths: ["/events"]
+    upstream: app
+    sse_guard:
+      max_event_bytes: 65536
+      events_per_second: 50
+      max_events: 100000
+      max_duration: 2h
+      idle_timeout: 90s
+      allow_events: [price, volume, heartbeat]
+      events:
+        \- {name: heartbeat, max_bytes: 128, events_per_second: 1}
+        \- {name: price, max_bytes: 4096, schema_file: /etc/xproxy/schemas/price.json}
+      last_event_id_pattern: "[0\-9]{1,19}"
+      min_retry: 5s
+      deny_patterns: ["BEGIN [A\-Z ]*PRIVATE KEY", "[0\-9]{13,19}"]
+.ft
+.fi
+.RE
+.PP
+Counters: \fBsse_streams\fR, \fBsse_events\fR, \fBsse_event_bytes\fR, \fBsse_comments\fR, \fBsse_violations\fR, \fBsse_unknown_events\fR and \fBsse_cursors_stripped\fR. Every refusal is counted under its own reason and is bannable as \fBsse_denied\fR; \fBsse_cursors_stripped\fR counts the \fBLast\-Event\-ID\fR headers that did not cross, which is not a refusal \[u2014] the request goes on without the cursor.
 .SS "routes[].deceive"
 .PP
 A refusal is information. A scanner that gets 403 has learned that the request it sent was the interesting one, and it will vary that request until something is not refused \[u2014] the refusal is the oracle that tells it when it has found the way through. \fBdeceive\fR answers a client the route no longer trusts with something ordinary instead: the crawl completes, the data is wrong, and the request that would have worked looks exactly like the one that did not.

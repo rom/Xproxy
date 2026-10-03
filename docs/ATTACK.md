@@ -178,10 +178,12 @@ the mappings below are also the vocabulary a pack is written in.
 | [T1021.004](https://attack.mitre.org/techniques/T1021/004/) | Remote Services: SSH | lateral-movement | The same, over SSH: a shell, a forwarded port or an SFTP session on a machine the policy does not open to this client. |
 | [T1021.005](https://attack.mitre.org/techniques/T1021/005/) | Remote Services: VNC | lateral-movement | The same, over VNC or RFB: the framebuffer protocol an HMI is reached with, where a session is a hand on the plant's own screen. |
 | [T1040](https://attack.mitre.org/techniques/T1040/) | Network Sniffing | credential-access, discovery | A credential or a session put on the wire where anything on the segment can read it: a bind in the clear, a cleartext password, an authentication method downgraded, TLS not used where it was available. |
+| [T1041](https://attack.mitre.org/techniques/T1041/) | Exfiltration Over C2 Channel | exfiltration | Data leaving through the same connection that is carrying the instructions, so there is no second destination to notice: a long-lived response on a port that is already open and already allowed out. |
 | [T1046](https://attack.mitre.org/techniques/T1046/) | Network Service Discovery | discovery | Finding what answers: a client choosing destination after destination through a relay, a request for a name or a host this edge does not serve. |
 | [T1048](https://attack.mitre.org/techniques/T1048/) | Exfiltration Over Alternative Protocol | exfiltration | Data leaving over a protocol that exists for something else: a name query carrying payload in its labels, a tunnel inside a service the policy allows out. |
 | [T1059](https://attack.mitre.org/techniques/T1059/) | Command and Scripting Interpreter | execution | A command interpreter reached through a protocol that is not meant to be one: COPY ... PROGRAM, a LOAD from a program, xp_cmdshell, a Redis MODULE or SCRIPT, a shell command on a bastion the policy does not grant. |
 | [T1071](https://attack.mitre.org/techniques/T1071/) | Application Layer Protocol | command-and-control | An ordinary protocol carrying something else: a request through a forward proxy to a destination no egress rule covers, which is where a channel is built out of traffic that looks like browsing. |
+| [T1071.001](https://attack.mitre.org/techniques/T1071/001/) | Application Layer Protocol: Web Protocols | command-and-control | HTTP used as a channel rather than as a request and an answer: a response held open for hours carrying whatever the application chose to put in it, which is what an event stream is by design. |
 | [T1071.004](https://attack.mitre.org/techniques/T1071/004/) | Application Layer Protocol: DNS | command-and-control | Name resolution used as a channel rather than as a lookup: a name on a block list or a policy zone, a query whose shape is a tunnel. |
 | [T1078](https://attack.mitre.org/techniques/T1078/) | Valid Accounts | defense-evasion, initial-access, persistence, privilege-escalation | A real credential used where the policy does not grant it: an account, an application identity or a certificate that authenticates and is still not allowed here, now, or for this target. |
 | [T1078.001](https://attack.mitre.org/techniques/T1078/001/) | Valid Accounts: Default Accounts | defense-evasion, initial-access, persistence, privilege-escalation | A credential the equipment or the product shipped with: an SNMP community of `public`, a vendor account, a password this estate never set. |
@@ -1027,11 +1029,34 @@ them, which is why an operations centre can filter on
 | `body_size` | T1499 |  |
 | `concurrency` | T1499 |  |
 | `honeytoken` | T1078 | a credential that exists only to be stolen: whoever used it did not get it from the person it was issued to |
-| `max_connections` | T1499 |  |
 | `max_connections_per_ip` | T1499 |  |
+| `max_connections` | T1499 |  |
 | `no_route` | T1046 |  |
 | `normalization` | T1190 | double encoding, overlong UTF-8 and traversal are ways to make two readers of one request disagree about what it asks for |
 | `rate_limit` | T1499 |  |
+| `sse_control_character` | T1071.001 | a control character in an event name, which is either a mistake or an attempt to confuse something downstream that logs it |
+| `sse_encoding_not_allowed` | T1562 | a compressed event stream cannot be read, so offering one is an offer to stop inspecting |
+| `sse_encoding_not_readable` | T1562 |  |
+| `sse_event_denied` | T1071.001, T1213 |  |
+| `sse_event_not_allowed` | T1071.001, T1213 | an event name this route does not carry, which is the stream being used for something other than its purpose |
+| `sse_event_rate` | T1499 |  |
+| `sse_event_too_large` | T1041, T1048, T1567 | one event carrying more than this stream's events are shaped to carry |
+| `sse_id_too_long` | T1071.001 |  |
+| `sse_json` | T1071.001 |  |
+| `sse_last_event_id_not_allowed` | T1213 |  |
+| `sse_last_event_id_shape` | T1213, T1190 | a resumption cursor of a shape this estate does not issue |
+| `sse_line_too_long` | T1071.001 |  |
+| `sse_malformed_stream` | T1071.001 |  |
+| `sse_name_too_long` | T1071.001 |  |
+| `sse_not_inspectable` | T1071.001 | an event too large to have been read, so the checks that depend on reading it cannot run |
+| `sse_not_utf8` | T1071.001 |  |
+| `sse_pattern` | T1041, T1048, T1567 | an event whose payload matched a pattern the route refuses to let leave |
+| `sse_schema` | T1071.001 |  |
+| `sse_stream_idle` | T1071.001 |  |
+| `sse_stream_too_large` | T1041, T1048, T1567 | a stream past the octets a route carries |
+| `sse_stream_too_long` | T1071.001 | a response held open past max_duration, which is the shape of a channel rather than a feed |
+| `sse_too_many_events` | T1041, T1048, T1567 | a stream past the number of events a route carries, which is the bound that makes it finite |
+| `sse_too_many_fields` | T1071.001 |  |
 | `virtual_patch` | T1190 | a virtual patch matches the shape of a known vulnerability in the application behind, which is the exploit attempt itself |
 | `waf` | T1190 |  |
 | `websocket` | T1572 |  |

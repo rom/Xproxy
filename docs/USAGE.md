@@ -5470,6 +5470,107 @@ extension would turn every check above off silently.
 `examples/routes/websocket.yaml` pairs a chat route with tight bounds
 and a market-data feed with wide ones and no inspection.
 
+### Server-Sent Events (text/event-stream)
+
+The other long-lived HTTP response, and the only one nothing else in a
+configuration bounds: one GET, a response with no length, flushed per
+event, held open for hours.
+
+```yaml
+routes:
+  - name: dashboard
+    paths: ["/events"]
+    upstream: app
+    sse_guard:
+      max_event_bytes: 65536
+      events_per_second: 50
+      max_events: 100000
+      max_duration: 2h
+      idle_timeout: 90s
+      allow_events: [price, volume, heartbeat]
+      events:
+        - {name: heartbeat, max_bytes: 128, events_per_second: 1}
+      last_event_id_pattern: "[0-9]{1,19}"
+      min_retry: 5s
+      deny_patterns: ["BEGIN [A-Z ]*PRIVATE KEY"]
+```
+
+This reads like the WebSocket guard above and it is answering a
+different question. Two facts about SSE decide what a policy here can
+be, and both are worth having in mind before setting a number.
+
+**It is one-directional, and the direction is outward.** The client
+sends a GET and then says nothing; everything after that is your
+application talking. So `deny_patterns` here is not a check on what
+somebody sent you — it is a check on what is *leaving*, which puts this
+in the same position as the `dhcp` kind, whose whole policy is about
+replies. It matters because an event stream is exactly what you would
+build to move data out quietly: arbitrary text, chunked, flushed per
+event, on a port that is already open, under a Content-Type a dashboard
+uses. Nothing about it is malformed. `max_events`, `max_stream_bytes`
+and `max_duration` are what tell a price feed from a copy of a database,
+and they are the settings a stream has none of by default.
+
+**A single event cannot be refused.** By the time an event is read the
+status line has gone and the response is committed, so there is no way
+to say "not that one" inside a sequence a client is reading in order.
+`action` therefore has two values rather than three: the stream ends, or
+the event is carried and reported. A refusal is a decision to end the
+stream *at* that event — the client sees a closed body, which is what it
+sees when an application finishes, and reconnects. That is the right
+outcome for a dashboard and a dead end for a channel.
+
+A few things worth knowing.
+
+- **Events are read and written out again**, not spliced. SSE has three
+  line terminators (CRLF, LF **and a bare CR**), a blank line as its only
+  separator and a field with no colon that means an empty value; a
+  spliced stream leaves all of that to be resolved twice, and the two
+  ends can disagree about where an event ends. What the client reads is
+  what the policy decided about.
+- **`Last-Event-ID` is a cursor, not a header.** It is the one piece of
+  client input on this protocol, and an application that replays from it
+  is being told where to start — so an identifier a client was never
+  issued is a request for history it was not shown.
+  `last_event_id_pattern` says what your identifiers look like; a cursor
+  that does not match is **removed** rather than refused, so the client
+  gets the stream from the beginning, which is what a client with no
+  cursor gets.
+- **`min_retry` rewrites rather than refuses.** The `retry:` field tells
+  the client how long to wait before reconnecting, so `retry: 0` from a
+  misconfigured application is a fleet of browsers reconnecting as fast
+  as they can. The stream itself is fine, so the floor is applied and the
+  event goes on.
+- **Comments cross by default.** A `:` line carries no data and exists so
+  a stream survives an intermediary that would time it out; removing them
+  would make this proxy the reason a stream dies. `allow_comments: false`
+  is for a route that wants nothing but named events.
+- **Compression is stripped**, for the same reason `permessage-deflate`
+  is on a WebSocket: a compressed stream cannot be read without being
+  inflated. It costs almost nothing here — an event stream is small
+  messages flushed one at a time, so a sender has already given up
+  cross-message compression to keep latency. `compression: refuse`
+  answers the request with 400 instead, and `inspect` inflates each event
+  with `max_inflate_ratio` guarding against a bomb.
+- **An event larger than `max_inspect_bytes` cannot be validated**, so a
+  schema refuses it rather than passing it. Validation warns where a size
+  bound makes that certain.
+
+Start in `monitor_only: true` and read what your own streams actually
+send; `log_events: true` gives a line per event for a route under
+investigation, and is not something to leave on across an estate.
+
+```
+$ xproxyctl metrics | grep sse
+xproxy_sse_streams_total{route="dashboard"} 310
+xproxy_sse_events_total{route="dashboard"} 2904155
+xproxy_sse_violations_total{route="dashboard"} 2
+xproxy_sse_cursors_stripped_total{route="dashboard"} 7
+```
+
+`examples/routes/events.yaml` pairs a dashboard feed with tight bounds
+and a log-tail route with an identity policy and no event list.
+
 ### gRPC services
 
 ```yaml
