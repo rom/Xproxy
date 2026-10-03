@@ -10593,6 +10593,109 @@ finding — `protocol`, `opcode`, `frame_size`, `message_size`, `rate`, `pattern
 per named type, `xproxy_websocket_type_messages_total` and
 `xproxy_websocket_type_violations_total`.
 
+### routes[].sse_guard
+
+A `text/event-stream` response is the other long-lived HTTP exchange an estate
+runs, and the only one nothing else in this configuration bounds. One GET, a
+response with no length, flushed per event, held open for hours. Without a
+guard it is an opaque outbound channel on a port that is already open.
+
+It is the WebSocket guard's opposite in the two ways that decide what a policy
+here can be.
+
+**It is one-directional, and the direction is outward.** The client sends a GET
+and then says nothing; everything after that is the application talking. So
+every event is the estate's own output leaving it, which puts this in the same
+position as the `dhcp` kind — a policy about answers — and makes `deny_patterns`
+here a control that reads what is *leaving*. Nothing about an exfiltration
+channel built this way is malformed: it is arbitrary text, chunked, under a
+Content-Type a dashboard uses. The bounds and the event list are what make the
+difference between a price feed and a copy of a database something a
+configuration can state.
+
+**A single event cannot be refused.** By the time an event is read the status
+line has gone and the response is committed; there is no way to say "not that
+one" inside a sequence a client is reading in order. So `action` has two values
+rather than three — the stream ends, or the event is carried and reported — and
+a refusal is a decision to end the stream at that event. The client sees a
+closed body, which is what it sees when an application finishes, and reconnects:
+the right outcome for a dashboard and a dead end for a channel.
+
+The guard reads each event and **writes it out again** rather than splicing.
+That is why the rest is trustworthy: SSE has three line terminators (CRLF, LF
+*and a bare CR*), a blank line as its only separator and a field with no colon
+that means an empty value, so a spliced stream leaves the framing to be resolved
+twice and the two ends can disagree about where an event ends.
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `max_event_bytes` | bytes | `1048576` | The largest reassembled event: the joined `data`, the name and the identifier. Past it the stream ends rather than the event being truncated, because half an event delivered as whole is worse than none |
+| `max_line_bytes` | bytes | `65536` | The longest single field line. Separate from `max_event_bytes` because `data` accumulates across lines, so an event's size and a line's are different questions |
+| `max_fields` | int | `256` | How many field lines one event may be built from. A stream that sends ten thousand `data:` lines before its blank line is not sending an event |
+| `events_per_second` | int | `0` (none) | The stream's event rate. This is the *server's* rate, which is unusual in this file and is the point: an application that has started emitting a thousand events a second is either broken or being read |
+| `max_events` | int | `0` (none) | How many events one stream may carry before it ends |
+| `max_stream_bytes` | bytes | `0` (none) | How many bytes one stream may carry before it ends. With `max_events`, the pair that makes a stream finite |
+| `max_duration` | duration | `0` (none) | How long one stream may be held open. A dashboard that reconnects every hour costs nothing; a stream open for three weeks is not a dashboard |
+| `idle_timeout` | duration | `0` (none) | Ends a stream that has sent nothing for this long. Comment lines count as traffic — that is what a keepalive is — so this bounds a stream whose application has stopped without closing the socket |
+| `allow_events` | list | `[]` | The event names that may cross, by the `event:` field. An event with no name is `message`, which is what a client calls it, so that is the name a rule uses |
+| `deny_events` | list | `[]` | Names that may not cross. Checked first, and no entry in `allow_events` overrides it, which is how an exception inside an admitted set is written |
+| `unknown_events` | `allow`, `observe`, `deny` | `deny` once `allow_events` names any, else `allow` | What happens to a name neither list covers. A list of the events a stream carries that also carries everything else is not a list, which is why naming any makes the rest deny; `observe` records and forwards, which is how the list gets written |
+| `events[]` | list | `[]` | The policy per event name; see below |
+| `allow_last_event_id` | bool | `true` | Whether a client's `Last-Event-ID` request header is forwarded. It is the one piece of client-controlled input on this protocol and it reaches the application as a **cursor**: an application that replays from it is being told where to start, and an identifier a client was never issued is a request for history it was not shown |
+| `max_id_bytes` | int | `256` | Bounds the server's `id:` field and the client's `Last-Event-ID` alike. They are the same value making a round trip, so one bound covers both ends |
+| `last_event_id_pattern` | RE2 | none | A shape a client's `Last-Event-ID` must match, anchored at both ends. An estate whose identifiers are integers or ULIDs says so here, and then the cursor reaching the application is one of its own shape rather than whatever was sent. A cursor that does not match is **removed**, not refused: the client gets the stream from the beginning, which is what a client with no cursor gets |
+| `min_retry` | duration | `0` (leave alone) | A floor on the `retry:` field the server sends. The field tells the client how long to wait before reconnecting, so `retry: 0` from a misconfigured application is a fleet of browsers reconnecting as fast as they can. A floor **rewrites** rather than refuses, because the stream itself is fine |
+| `inspect` | `none`, `data`, `all` | `data` | Which part of an event is kept for pattern matching. `data` is the payload; `all` adds the name and the identifier |
+| `max_inspect_bytes` | bytes | `65536` | The prefix of an event kept for matching |
+| `deny_patterns` | list | `[]` | RE2 patterns matched against the inspected part. On this protocol they read what is leaving, which is the direction an exfiltration channel runs in |
+| `compression` | `strip`, `refuse`, `inspect` | `strip` | What happens to compression. A compressed stream cannot be read without being inflated. `strip` removes the client's `Accept-Encoding` for this route so the application sends the stream in the clear, which costs little because an event stream is small messages flushed one at a time and a sender has already given up cross-message compression to keep latency; `refuse` answers the request with 400 instead, for an estate that would rather a client was told than quietly changed; `inspect` inflates each event before the policy sees it |
+| `max_inflate_ratio` | int | `100` | How far a compressed stream may expand before it is a bomb rather than a stream. Only read with `compression: inspect` |
+| `allow_comments` | bool | `true` | Whether `:`-prefixed lines are forwarded. They are how a stream stays alive through an intermediary that would time it out, so removing them would make this proxy the reason a stream dies; an estate that wants nothing but named events turns them off |
+| `require_json` | bool | `false` | Makes an event whose data is not a JSON object a violation rather than one the schema policy cannot read. Off by default: an event stream carries whatever the application chose, and plenty of real ones carry a bare number or a fragment of HTML |
+| `action` | `close`, `log` | `close` | What a violation does. There is no third answer here, for the reason above |
+| `log_events` | bool | `false` | One line per event. Off by default, because a stream is thousands of events and the summary at its end is what an operator reads; a route being investigated turns it on |
+| `monitor_only` | bool | `false` | Report what would be refused and carry everything, which is how an estate finds out what its own streams send before a bound is set |
+
+#### routes[].sse_guard.events[]
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `name` | string | required | The `event:` field this entry is about. `message` names the events that carry no `event:` field, because that is what a client calls them |
+| `max_bytes` | bytes | `0` | One event of this name, after inflation where the route inspects a compressed stream. 0 leaves it to `max_event_bytes` |
+| `events_per_second` | int | `0` | This name's rate. 0 is no bound of its own; the stream's `events_per_second` still applies |
+| `schema_file` | path | none | A JSON Schema (JSON or YAML) every event of this name must match. Read at load and on reload. An event too large to have been inspected whole cannot be validated and is **refused**: a check that silently stops applying above a size the sender chooses is not a check, and the sender here is the thing being checked |
+
+One `max_event_bytes` for the stream is the bound of its largest event, which is
+the bound that lets every other event be that large too. `events[]` is where the
+keepalive and the hourly report get different answers.
+
+```yaml
+routes:
+  - name: dashboard
+    paths: ["/events"]
+    upstream: app
+    sse_guard:
+      max_event_bytes: 65536
+      events_per_second: 50
+      max_events: 100000
+      max_duration: 2h
+      idle_timeout: 90s
+      allow_events: [price, volume, heartbeat]
+      events:
+        - {name: heartbeat, max_bytes: 128, events_per_second: 1}
+        - {name: price, max_bytes: 4096, schema_file: /etc/xproxy/schemas/price.json}
+      last_event_id_pattern: "[0-9]{1,19}"
+      min_retry: 5s
+      deny_patterns: ["BEGIN [A-Z ]*PRIVATE KEY", "[0-9]{13,19}"]
+```
+
+Counters: `sse_streams`, `sse_events`, `sse_event_bytes`, `sse_comments`,
+`sse_violations`, `sse_unknown_events` and `sse_cursors_stripped`. Every
+refusal is counted under its own reason and is bannable as `sse_denied`;
+`sse_cursors_stripped` counts the `Last-Event-ID` headers that did not cross,
+which is not a refusal — the request goes on without the cursor.
+
+
 ### routes[].deceive
 
 A refusal is information. A scanner that gets 403 has learned that the

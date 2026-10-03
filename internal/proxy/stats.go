@@ -566,6 +566,15 @@ type Stats struct {
 	// visible in those two long before it is visible anywhere else, because
 	// the mail server's own log says a client read its mail and not how
 	// much of it.
+	// Server-Sent Events: a stream is one response, so SSEStreams counts
+	// responses and the rest count what crossed inside them.
+	SSEStreams               atomic.Uint64
+	SSEEvents                atomic.Uint64
+	SSEEventBytes            atomic.Uint64
+	SSEComments              atomic.Uint64
+	SSEViolations            atomic.Uint64
+	SSEUnknownEvents         atomic.Uint64
+	SSECursorsStripped       atomic.Uint64
 	IMAPConnections          atomic.Uint64
 	IMAPCommands             atomic.Uint64
 	IMAPAuthFailures         atomic.Uint64
@@ -1261,6 +1270,13 @@ type Snapshot struct {
 	KKDCPPreauthExempt       uint64 `json:"kkdcp_preauth_exempt"`
 	KKDCPDelegations         uint64 `json:"kkdcp_delegations"`
 	KKDCPRealmMismatch       uint64 `json:"kkdcp_realm_mismatch"`
+	SSEStreams               uint64 `json:"sse_streams"`
+	SSEEvents                uint64 `json:"sse_events"`
+	SSEEventBytes            uint64 `json:"sse_event_bytes"`
+	SSEComments              uint64 `json:"sse_comments"`
+	SSEViolations            uint64 `json:"sse_violations"`
+	SSEUnknownEvents         uint64 `json:"sse_unknown_events"`
+	SSECursorsStripped       uint64 `json:"sse_cursors_stripped"`
 	IMAPConnections          uint64 `json:"imap_connections"`
 	IMAPCommands             uint64 `json:"imap_commands"`
 	IMAPAuthFailures         uint64 `json:"imap_auth_failures"`
@@ -1878,6 +1894,13 @@ func (s *Stats) snapshot() Snapshot {
 		KKDCPPreauthExempt:       s.KKDCPPreauthExempt.Load(),
 		KKDCPDelegations:         s.KKDCPDelegations.Load(),
 		KKDCPRealmMismatch:       s.KKDCPRealmMismatch.Load(),
+		SSEStreams:               s.SSEStreams.Load(),
+		SSEEvents:                s.SSEEvents.Load(),
+		SSEEventBytes:            s.SSEEventBytes.Load(),
+		SSEComments:              s.SSEComments.Load(),
+		SSEViolations:            s.SSEViolations.Load(),
+		SSEUnknownEvents:         s.SSEUnknownEvents.Load(),
+		SSECursorsStripped:       s.SSECursorsStripped.Load(),
 		IMAPConnections:          s.IMAPConnections.Load(),
 		IMAPCommands:             s.IMAPCommands.Load(),
 		IMAPAuthFailures:         s.IMAPAuthFailures.Load(),

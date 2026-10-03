@@ -30,6 +30,7 @@ import (
 	"github.com/rom/xproxy/internal/originsig"
 	"github.com/rom/xproxy/internal/otlp"
 	"github.com/rom/xproxy/internal/securitytxt"
+	"github.com/rom/xproxy/internal/sse"
 	"github.com/rom/xproxy/internal/textsafe"
 	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/tracing"
@@ -91,7 +92,15 @@ type reqState struct {
 	grpcWeb    bool         // request is gRPC-web: translated to gRPC for the upstream
 	h3srv      *h3.Server   // the HTTP/3 endpoint the request arrived on, for WebTransport
 	grpcCode   string       // grpc-status of the upstream response
-	release    func()       // concurrency slot; idempotent
+	// The event stream, where the response was one. sseGuard is kept so the
+	// recorder can read log_events without threading the route through.
+	sse         bool
+	sseGuard    *sseGuard
+	sseEvents   int64
+	sseBytes    int64
+	sseComments int64
+	sseRefused  string
+	release     func() // concurrency slot; idempotent
 	// cr is the matched route; captures and captureNames hold the
 	// route's regular expression match for templates.
 	cr           *compiledRoute
@@ -850,6 +859,25 @@ func (s *engine) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 		s.deny(rw, r, st, http.StatusBadRequest, "websocket")
 		return
 	}
+	if g := cr.sseGuard; g != nil && acceptsEventStream(r) {
+		if g.compression == sseCompressRefuse && r.Header.Get("Accept-Encoding") != "" {
+			// The route would rather say no than quietly change what the
+			// client asked for. Stripping the offer is the default and is
+			// friendlier; this is for an estate that would rather a
+			// client's own logs recorded the refusal.
+			s.stats.SSEViolations.Add(1)
+			st.denied = "sse:encoding"
+			s.logs.SecurityEvent(r.Context(), "sse", "sse",
+				"route", st.route, "client_ip", st.clientIP.String(), "reason", "encoding_not_allowed",
+				"detail", textsafe.Clip64(r.Header.Get("Accept-Encoding")))
+			s.deny(rw, r, st, http.StatusBadRequest, "sse")
+			return
+		}
+		// Last-Event-ID is the one piece of client input on this protocol and
+		// it reaches the application as a cursor, so it is decided here --
+		// before the application can read it.
+		g.sseRequest(r, s.sseRecorder(st, r))
+	}
 	if isUpgrade(r) && cr.wsGuard != nil {
 		// The reverse proxy hijacks the connection when the origin
 		// answers 101; the guard is installed now so that it is in
@@ -1029,6 +1057,37 @@ func (s *engine) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 			}
 			if !upgraded && cr.idleTimeout > 0 && st.cancel != nil && resp.Body != nil && resp.Body != http.NoBody {
 				resp.Body = newIdleReader(resp.Body, cr.idleTimeout, st.cancel)
+			}
+			// An event stream is read, decided about one event at a time
+			// and written out again. It goes on after the idle reader so
+			// that the guard's own idle bound sees the events rather than
+			// the octets, and before the error pages and the shadow
+			// summary, which are about a response that ends.
+			if g := cr.sseGuard; g != nil && !upgraded && resp.Body != nil && resp.Body != http.NoBody &&
+				sse.Stream(resp.Header.Get("Content-Type")) {
+				st.sse, st.sseGuard = true, g
+				s.stats.SSEStreams.Add(1)
+				enc := resp.Header.Get("Content-Encoding")
+				if g.compression == sseCompressInspect && enc != "" {
+					// The route reads a compressed stream, so the body is
+					// counted on the way in -- the ratio bound needs a
+					// denominator -- and inflated before the policy sees it.
+					cnt := &countingReader{r: resp.Body}
+					str := newSSEStream(g, readCloser{Reader: cnt, Closer: resp.Body}, s.sseRecorder(st, r), st.cancel)
+					if err := str.inflate(enc); err != nil {
+						// A stream this route cannot read is a stream it
+						// cannot decide about, so it is not forwarded.
+						s.logs.SecurityEvent(r.Context(), "sse", "sse_encoding_not_readable",
+							"route", st.route, "client_ip", st.clientIP.String(),
+							"detail", textsafe.Clip64(enc))
+						s.stats.SSEViolations.Add(1)
+						return &filterDenied{v: filter.Verdict{Deny: true, Status: http.StatusBadGateway, Reason: "sse"}}
+					}
+					resp.Header.Del("Content-Encoding")
+					resp.Body = str
+				} else {
+					resp.Body = newSSEStream(g, resp.Body, s.sseRecorder(st, r), st.cancel)
+				}
 			}
 			if cr.cors != nil {
 				// The route's policy is authoritative; drop any copy the

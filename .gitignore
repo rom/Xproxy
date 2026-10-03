@@ -3,7 +3,7 @@ coverage.out
 *.pp
 *.mod.bin
 deploy/selinux/*.mod
-testdata/fuzz/**/[!R]*
+**/testdata/fuzz/**/[!R]*
 rpmbuild/
 deploy/selinux/*.pp*
 deploy/selinux/tmp/

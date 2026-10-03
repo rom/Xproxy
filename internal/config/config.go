@@ -9987,6 +9987,10 @@ type Route struct {
 	// WebSocketGuard inspects the frames of an upgraded connection.
 	// Without it an upgrade is an opaque tunnel.
 	WebSocketGuard *WebSocketGuard `yaml:"websocket_guard"`
+	// SSEGuard inspects the events of a `text/event-stream` response.
+	// Without it a stream is an opaque, unbounded, outbound channel: the one
+	// long-lived HTTP response nothing else in this configuration bounds.
+	SSEGuard *SSEGuard `yaml:"sse_guard"`
 	// WebTransport relays WebTransport sessions (extended CONNECT over
 	// HTTP/3 on a listener with h3) to the upstream, which must speak
 	// HTTP/3 (h3: true): bidirectional and unidirectional streams and
@@ -14887,4 +14891,197 @@ type POP3Rule struct {
 	Action string `yaml:"action"`
 	// Schedule limits the rule to a time window.
 	Schedule *ModbusSchedule `yaml:"schedule"`
+}
+
+// SSEGuard is the event policy of a `text/event-stream` response.
+//
+// Server-Sent Events is the other long-lived HTTP response an estate runs, and
+// it is the WebSocket's opposite in the two ways that decide what a policy
+// here can be about.
+//
+// It is one-directional, and the direction is outward. The client sends a GET
+// and then says nothing; everything after that is the application talking. So
+// every event is the estate's own output leaving it, which makes this a policy
+// about answers -- as the dhcp kind's whole policy is -- rather than about
+// requests. The one thing a client contributes is `Last-Event-ID` on a
+// reconnection, and that is a resumption token the application uses to decide
+// what history to replay, which is why it has settings of its own below.
+//
+// And it is indistinguishable, in shape, from the thing you would build to
+// move data out quietly: arbitrary text, chunked, flushed per event, held open
+// for hours, on a port that is already open, under a Content-Type a dashboard
+// uses. Nothing here is malformed. What the bounds and the event list do is
+// make the difference between a price feed and a copy of a database something
+// a configuration can state.
+//
+// Every bound is on the response, because there is nothing else; the rate and
+// the totals are per stream.
+type SSEGuard struct {
+	// MaxEventBytes is the largest single reassembled event -- the joined
+	// data, the name and the identifier. Default 1 MiB. An event past it ends
+	// the stream rather than being truncated: half an event delivered as whole
+	// is worse than none.
+	MaxEventBytes int64 `yaml:"max_event_bytes"`
+	// MaxLineBytes is the longest single field line. Default 64 KiB. It is
+	// separate from max_event_bytes because `data` accumulates across lines,
+	// so an event's size and a line's are different questions.
+	MaxLineBytes int64 `yaml:"max_line_bytes"`
+	// MaxFields is how many field lines one event may be built from. Default
+	// 256. A stream that sends ten thousand `data:` lines before its blank
+	// line is not sending an event.
+	MaxFields int `yaml:"max_fields"`
+	// EventsPerSecond bounds the stream's event rate. 0 is no bound. This is
+	// the server's rate, which is unusual for a rate limit in this project
+	// and is the point: an application that has started emitting a thousand
+	// events a second is either broken or being read.
+	EventsPerSecond int `yaml:"events_per_second"`
+	// MaxEvents and MaxStreamBytes are the totals one stream may carry before
+	// it is ended. 0 is no bound. These are the settings that make a stream
+	// finite: an event stream has no length and nothing else in HTTP bounds
+	// it, so without them a single GET is an open-ended channel.
+	MaxEvents      int64 `yaml:"max_events"`
+	MaxStreamBytes int64 `yaml:"max_stream_bytes"`
+	// MaxDuration is how long one stream may be held open. 0 is no bound. A
+	// dashboard that reconnects every hour costs nothing; a stream open for
+	// three weeks is not a dashboard.
+	MaxDuration Duration `yaml:"max_duration"`
+	// IdleTimeout ends a stream that has sent nothing for this long. Comment
+	// lines count as traffic, because that is what they are for -- a keepalive
+	// is the application saying it is still there -- so this bounds a stream
+	// whose application has stopped without closing the socket.
+	IdleTimeout Duration `yaml:"idle_timeout"`
+
+	// AllowEvents and DenyEvents name the events that may cross, by the
+	// `event:` field. An event with no name is `message`, which is what a
+	// client calls it, so that is the name a rule uses.
+	AllowEvents []string `yaml:"allow_events"`
+	DenyEvents  []string `yaml:"deny_events"`
+	// UnknownEvents is allow, observe or deny: what happens to an event whose
+	// name neither list names. The default is deny once allow_events names
+	// any and allow when it names none, because a list of the events a stream
+	// carries that also carries everything else is not a list.
+	UnknownEvents string `yaml:"unknown_events"`
+	// Events is the policy per event name: how large one of them may be, how
+	// often it may arrive, and the shape its data must have. One
+	// max_event_bytes for the stream is the bound of its largest event, which
+	// is the bound that lets every other event be that large too -- this is
+	// where the keepalive and the report get different answers.
+	Events []SSEEventType `yaml:"events"`
+
+	// AllowLastEventID says whether a client's `Last-Event-ID` request header
+	// is forwarded at all. Default true. It is a header worth a setting
+	// because it is the one piece of client-controlled input on this protocol
+	// and it reaches the application as a cursor: an application that replays
+	// from it is being told where to start, and an identifier a client was
+	// never given is a request for history it was not shown.
+	AllowLastEventID *bool `yaml:"allow_last_event_id"`
+	// MaxIDBytes bounds both the `id:` field the server sends and the
+	// `Last-Event-ID` the client sends back. Default 256. They are the same
+	// value making a round trip, so one bound covers both ends.
+	MaxIDBytes int `yaml:"max_id_bytes"`
+	// LastEventIDPattern is an RE2 pattern a client's Last-Event-ID must
+	// match, anchored at both ends. An estate whose identifiers are integers
+	// or ULIDs can say so here, and then the cursor reaching the application
+	// is one of its own shape rather than whatever was sent.
+	LastEventIDPattern string `yaml:"last_event_id_pattern"`
+
+	// MinRetry is a floor on the `retry:` field the server may send. 0 leaves
+	// it alone. The field tells the client how long to wait before
+	// reconnecting, so `retry: 0` from a misconfigured application is a fleet
+	// of browsers reconnecting as fast as they can; a floor rewrites it
+	// rather than refusing the stream, because the stream itself is fine.
+	MinRetry Duration `yaml:"min_retry"`
+
+	// Inspect is none, data or all: which part of an event is kept for
+	// pattern matching. data is the payload, all adds the name and the
+	// identifier. Default data.
+	Inspect string `yaml:"inspect"`
+	// MaxInspectBytes bounds the prefix of an event kept for matching.
+	// Default 64 KiB.
+	MaxInspectBytes int64 `yaml:"max_inspect_bytes"`
+	// DenyPatterns are RE2 patterns matched against the inspected part. On
+	// this protocol they are the control that reads what is leaving rather
+	// than what is arriving, which is the direction an exfiltration channel
+	// runs in.
+	DenyPatterns []string `yaml:"deny_patterns"`
+
+	// Compression says what happens to compression on an event stream. A
+	// compressed stream cannot be read without being inflated, so this is the
+	// setting that decides whether an inspected route is also a compressed
+	// one.
+	//
+	// strip, the default, removes the client's `Accept-Encoding` for this
+	// route so the application sends the stream uncompressed -- which costs
+	// little, because an event stream is small messages flushed one at a time
+	// and compression across them is what a sender has to give up anyway to
+	// keep latency. refuse answers the request instead, for an estate that
+	// would rather a client was told than quietly changed. inspect inflates
+	// each event before the rest of the policy sees it.
+	Compression string `yaml:"compression"`
+	// MaxInflateRatio bounds how far a compressed stream may expand before it
+	// is a bomb rather than a stream. Default 100. Only read with
+	// compression: inspect.
+	MaxInflateRatio int `yaml:"max_inflate_ratio"`
+
+	// AllowComments says whether `:`-prefixed lines are forwarded. Default
+	// true: they are how a stream stays alive through an intermediary that
+	// would time it out, and removing them would make this proxy the reason a
+	// stream dies. A comment carries no event and no data, which is also why
+	// an estate that wants nothing but named events can turn them off.
+	AllowComments *bool `yaml:"allow_comments"`
+
+	// RequireJSON makes an event whose data is not a JSON object a violation
+	// rather than an event the schema policy cannot read. Default false: an
+	// event stream carries whatever the application chose, and plenty of real
+	// ones carry a bare number or a fragment of HTML.
+	RequireJSON *bool `yaml:"require_json"`
+
+	// Action is close or log. Default close. There is no third answer on this
+	// protocol: an event cannot be refused on its own the way a request can,
+	// because the response has already begun and its status line has gone --
+	// so either the stream ends or the event is carried and reported.
+	Action string `yaml:"action"`
+
+	// LogEvents records one line per event. Off by default, because a stream
+	// is thousands of events and the summary at the end of it is what an
+	// operator reads; a route being investigated turns it on.
+	LogEvents bool `yaml:"log_events"`
+	// MonitorOnly reports what it would refuse and carries everything, which
+	// is how an estate finds out what its own streams actually send before a
+	// bound is set.
+	MonitorOnly bool `yaml:"monitor_only"`
+}
+
+// SSEEventType is one kind of event a stream carries: how large it may be, how
+// often it may arrive, and the shape it must have.
+type SSEEventType struct {
+	// Name is the `event:` field this entry is about. `message` names the
+	// events that carry no `event:` field, because that is what a client
+	// calls them.
+	Name string `yaml:"name"`
+	// MaxBytes bounds one event of this name, after inflation where the route
+	// inspects a compressed stream. 0 leaves it to max_event_bytes.
+	MaxBytes int64 `yaml:"max_bytes"`
+	// EventsPerSecond bounds this name's rate. 0 is no bound of its own; the
+	// stream's events_per_second still applies.
+	EventsPerSecond int `yaml:"events_per_second"`
+	// SchemaFile is a JSON Schema (JSON or YAML) every event of this name
+	// must match. It is read at load and on reload, and an event too large to
+	// have been inspected whole cannot be validated and is refused: a check
+	// that silently stops applying above a size the sender chooses is not a
+	// check.
+	SchemaFile string `yaml:"schema_file"`
+}
+
+// Comments reports the effective allow_comments.
+func (s *SSEGuard) Comments() bool { return s == nil || s.AllowComments == nil || *s.AllowComments }
+
+// LastEventID reports the effective allow_last_event_id.
+func (s *SSEGuard) LastEventID() bool {
+	return s == nil || s.AllowLastEventID == nil || *s.AllowLastEventID
+}
+
+// JSONRequired reports the effective require_json.
+func (s *SSEGuard) JSONRequired() bool {
+	return s != nil && s.RequireJSON != nil && *s.RequireJSON
 }
