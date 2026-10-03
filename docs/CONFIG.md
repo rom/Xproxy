@@ -5124,7 +5124,7 @@ flag on this one.
 | `realms`, `deny_realms` | list | `[]` | The realms a name may carry, in all three forms the installed base uses: `user@realm`, `realm\user` and `realm/user`. A realm is routing — a server proxies by it — so an allow list here is a say in where a credential goes |
 | `require_realm` | bool | `false` | Refuse a user name with no realm in it, which is where a misconfigured supplicant and a hand-typed login both land |
 | `nas_identifiers` | list | `[]` | The `NAS-Identifier` values carried. It is a claim rather than a fact, so it is worth pairing with `allow_clients` rather than trusting alone |
-| `max_privilege_level` | int | `15` (no bound) | The administrative privilege a *reply* may grant, 0 to 15, read from a Cisco av-pair's `priv-lvl`. Setting it to 1 on the listener in front of the switches means no RADIUS answer crossing this relay can hand out enable, whatever the server says |
+| `max_privilege_level` | int | `15` (no bound) | The administrative privilege a *reply* may grant, 0 to 15, read from a Cisco av-pair's `priv-lvl`. Setting it to 1 on the listener in front of the switches means no RADIUS answer crossing this relay can hand out enable, whatever the server says. Every av-pair on the reply is read, and every pair inside one, and the highest grant found is the one bounded — including the NUL-separated spelling several platforms use, and a value outside 0–15. Which pair a given platform acts on is the platform's business, so all of them are this relay's |
 | `deny_administrative_replies` | bool | `false` | Refuse a reply carrying `Service-Type = Administrative-User`, which is the standard attribute's spelling of the same grant |
 | `deny_attributes` | list | `[]` | Attribute types a request may not carry, by name or number |
 | `deny_reply_attributes` | list | `[]` | Attribute types a reply may not carry. The interesting one is `Tunnel-Private-Group-Id`: the VLAN a RADIUS answer puts a port in, which a listener whose job is authentication rather than authorisation can refuse to carry |
@@ -5154,7 +5154,7 @@ equipment rather than about this relay.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | string | required | Names the rule in the logs and the counters |
-| `action` | enum | `allow` | `allow`, `deny` or `observe`. `observe` logs and counts and then keeps looking, which is how a rule is tried on live traffic before it decides anything |
+| `action` | enum | `allow` | `allow`, `deny` or `observe`. `observe` records the rule in the access line and decides nothing, so the rules below it still decide: the whole point is to try a rule on live traffic without it changing what happens, and a rule that decided — by allowing what it covers — would make trying one out the way to switch off every deny rule under it |
 | `clients` | list of CIDR | `[]` | The networks the client is in |
 | `codes` | list | `[]` | The packet codes this rule covers |
 | `auth_types`, `eap_types` | list | inherited | The credential shapes and EAP methods this rule covers |
@@ -5235,7 +5235,7 @@ everything §10.3 admits. Almost no equipment speaks it yet, which is why
 | `authen_services` | list | any | The protocol's own `authen_service` field: `login`, `enable`, `ppp`, `rcmd`. `enable` is the one to think about — it is the privilege escalation inside an existing session, and a separate decision from the login |
 | `users`, `deny_users` | list | `[]` | The user names carried |
 | `commands` | list | any | The command lines carried, written the way they are typed; empty allows any |
-| `deny_commands` | list | `[]` | Checked first, and no rule overrides it, which is how an exception inside an allowed set is written: `show ...` allowed, `show running-config` denied |
+| `deny_commands` | list | `[]` | Checked first, and no rule overrides it, which is how an exception inside an allowed set is written: `show ...` allowed, `show running-config` denied. A deny pattern covers the command it names **and whatever is appended to it**, because a device's command line takes suffixes: `show running-config` denies `show running-config \| include password` and `copy running-config` denies it to any destination. An allow pattern is read exactly, unless it ends in `...` — allowing more than was asked for is the unsafe direction |
 | `max_privilege_level` | int | `15` (no bound) | The privilege level, 0 to 15, checked on a request's own field and on a `priv-lvl` argument in the server's response |
 | `max_args` | int | `64` | The arguments one request may carry; the protocol's own bound is 255 |
 | `max_body_bytes` | int | `32768` | One packet's body. RFC 8907 §4.1 says a server should refuse one past 65536, and nothing legitimate is near either number |
@@ -5267,11 +5267,11 @@ the packets whose body this listener could not read.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | string | required | Names the rule in the logs and the counters |
-| `action` | enum | `allow` | `allow`, `deny` or `observe` |
+| `action` | enum | `allow` | `allow`, `deny` or `observe`. `observe` records the rule in the access line and decides nothing, so the rules below it still decide: the whole point is to try a rule on live traffic without it changing what happens, and a rule that decided — by allowing what it covers — would make trying one out the way to switch off every deny rule under it |
 | `clients` | list of CIDR | `[]` | The networks the device is in |
 | `exchanges` | list | `[]` | The exchanges this rule covers |
 | `users` | list | `[]` | The user names this rule covers |
-| `commands`, `deny_commands` | list | inherited | The command lines this rule covers, and the ones it does not cover even when `commands` would match. A rule whose command list does not cover a command does not decide it, so a rule written to allow `show ...` is not the rule that allows `reload` |
+| `commands`, `deny_commands` | list | added to the listener's | The command lines this rule covers, and the ones it does not cover even when `commands` would match. A rule whose command list does not cover a command does not decide it, so a rule written to allow `show ...` is not the rule that allows `reload`. The lists **add to** the listener's rather than standing in for them: both deny lists are checked and both allow lists have to be satisfied, so a rule can only ever narrow. A rule that replaced the listener's deny list would be a hole in the sentence "no router behind this relay accepts `write erase`", opened by writing a deny |
 | `services`, `authen_services` | list | inherited | The service values this rule covers |
 | `authen_types` | list | inherited | The credential shapes this rule covers |
 | `max_privilege_level` | int | inherited | The rule's own bound |
@@ -5309,14 +5309,23 @@ about a different realm than the KDC.
   NT hash. `refuse_weak_etypes` refuses those. "Nothing but" rather than
   "any", and the distinction is the whole setting — a Windows client lists
   aes256, aes128 and rc4 and the KDC takes the first it can, so refusing a
-  request that *mentions* RC4 would refuse the estate.
-- An **AS-REP for a request that brought no pre-authentication** means the
-  account is pre-authentication exempt, and the reply's encrypted part is an
-  offline password-cracking target. That is AS-REP roasting, and
-  `refuse_preauth_exempt` refuses the *reply* — because the question cannot
-  be answered on the request: a bare AS-REQ is the normal first message of
-  every exchange, and the KDC answers one with `KDC_ERR_PREAUTH_REQUIRED`.
-- A TGS-REQ carrying `PA-FOR-USER` is **S4U2Self** and one carrying the
+  request that *mentions* RC4 would refuse the estate. "Nothing but" is read
+  as "offers no type this estate is content with", not as "every type is on a
+  list of bad ones": the field is integers a client chooses, and a number
+  nobody has assigned is not a strong offer just because this proxy has no
+  name for it.
+- An **AS-REP for a request whose pre-authentication cannot be seen to have
+  been acted on** means the account is pre-authentication exempt, and the
+  reply's encrypted part is an offline password-cracking target. That is
+  AS-REP roasting, and `refuse_preauth_exempt` refuses the *reply* — because
+  the question cannot be answered on the request: a bare AS-REQ is the normal
+  first message of every exchange, and the KDC answers one with
+  `KDC_ERR_PREAUTH_REQUIRED`. It cannot be answered by the request's own
+  padata either, which is a field the client writes and this relay holds no
+  key to check: what is read instead is the pair of messages, so a claim the
+  KDC must decrypt to act on counts, and a PKINIT claim counts when the reply
+  carries the KDC's own half of it.
+- A TGS-REQ carrying `PA-FOR-USER` or `PA-S4U-X509-USER` is **S4U2Self** and one carrying the
   constrained-delegation option with an additional ticket is **S4U2Proxy**,
   the two primitives behind most delegation abuse. Both default off, and
   S4U2Proxy needs both halves to be recognised as one: the option alone is a
@@ -5342,10 +5351,10 @@ without one is refused at load.
 | `require_target_domain` | bool | `false` | Refuse an envelope that names no target domain. The field is optional in MS-KKDCP and MIT's client omits it, so requiring it refuses real traffic; without it the decision is made on the inner realm, which is the realm the KDC will use |
 | `message_types` | list | `as-req`, `tgs-req` | The request types carried; `ap-req` is admitted only when `allow_password_change` is set |
 | `etypes`, `deny_etypes` | list | any not weak | The encryption types a request may ask for, by name (`aes256-cts-hmac-sha1-96`, `rc4-hmac`) or number |
-| `refuse_weak_etypes` | bool | `true` | Refuse a request offering nothing but weak types: single DES, triple DES and RC4-HMAC |
+| `refuse_weak_etypes` | bool | `true` | Refuse a request that offers the KDC nothing it could issue a ticket in that an estate is content with: aes128 or aes256 (RFC 3962 or RFC 8009) or camellia. The test is "offers no strong type" rather than "every type is weak", because the etype field is a list of integers the client chooses: under the other reading one number the registry has never assigned — appended to `rc4-hmac` and discarded by the KDC — made the list look mixed and the control a formality |
 | `refuse_weak_ticket_etypes` | bool | `false` | Refuse a *reply* whose ticket was encrypted in a weak type. The same finding from the other end, off by default because by then the KDC has minted the ticket; the counter is worth reading either way |
-| `refuse_preauth_exempt` | bool | `true` | Refuse an AS-REP answering a request that carried no pre-authentication; see above |
-| `allow_s4u2self`, `allow_s4u2proxy` | bool | `false` | Carry MS-SFU's protocol transition and constrained delegation |
+| `refuse_preauth_exempt` | bool | `true` | Refuse an AS-REP the KDC cannot be seen to have pre-authenticated; see above. "Cannot be seen to" rather than "said it did not": a request's padata is written by the client and this relay holds no key, so the test pairs the claim with the KDC's own answer — an encrypted timestamp or an encrypted challenge is one the KDC must decrypt before it issues anything, and a PKINIT claim is proven by the `PA-PK-AS-REP` in the reply rather than by the asking |
+| `allow_s4u2self`, `allow_s4u2proxy` | bool | `false` | Carry MS-SFU's protocol transition and constrained delegation. Protocol transition is recognised in both of its spellings, `PA-FOR-USER` and `PA-S4U-X509-USER`, because a KDC honours either and the impersonated name is read from whichever arrived |
 | `allow_anonymous` | bool | `false` | Carry a request asking for the anonymous principal (RFC 8062). It is authentication with no identity in it, and a proxy carrying it carries something nobody can attribute afterwards |
 | `allow_password_change` | bool | `false` | Carry RFC 3244's kpasswd exchange, which arrives as an AP-REQ for `kadmin/changepw` |
 | `allow_forwarded_tickets` | bool | `true` | Carry a request with the `forwarded` or `proxy` option set. It is how ordinary delegation works, and an estate that does none can turn it off |
@@ -5361,7 +5370,7 @@ without one is refused at load.
 | `max_sessions`, `max_sessions_per_client` | int | `0` (off) | Concurrent connections |
 | `rate_limit`, `rate_burst` | int | `0` (off) | Requests a second per client address. Worth setting here more than on most kinds: this listener's whole purpose is to be reachable from the open internet, and every request it carries costs the KDC a cryptographic operation |
 | `default_action` | enum | `deny` | `deny` or `allow` for a request no rule matched |
-| `deny_response` | enum | `error` | `error` (a KRB-ERROR with `KDC_ERR_POLICY` and a text saying which proxy refused it, wrapped in the envelope the client expects) or `status` (HTTP 403 and no Kerberos message). `error` is the better default, because silence on this protocol is a client that falls back to port 88 — where there is no relay — and then reports a network fault to whoever is sitting at it |
+| `deny_response` | enum | `error` | `error` (a KRB-ERROR with `KDC_ERR_POLICY` and a text saying which proxy refused it, wrapped in the envelope the client expects) or `status` (HTTP 403 and no Kerberos message). `error` is the better default, because silence on this protocol is a client that falls back to port 88 — where there is no relay — and then reports a network fault to whoever is sitting at it. The text names the proxy and **not** the control that fired: on this protocol the reason a refusal happened is usually the intelligence the refusal exists to deny — `preauth_not_required` would confirm to a roaster that the account exists and is exempt, which is a cleaner answer than the AS-REP it was refused. The reason is in this proxy's security log and counters instead |
 | `log_requests` | bool | `true` | A line per request and per reply: the realm, the principal, the service, the encryption types, and what the KDC answered |
 | `alert_on_deny` | bool | `true` | A security event for every refusal |
 | `monitor_only` | bool | `false` | Evaluate and enforce nothing, the same as `policy: {mode: shadow}`. The bounds, the realm check and the malformed-message refusals still apply — forwarding a message for a realm this proxy does not serve would make it the open relay the realm list exists to prevent |
@@ -5379,7 +5388,7 @@ refuse them.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | string | required | Names the rule in the logs and the counters |
-| `action` | enum | `allow` | `allow`, `deny` or `observe` |
+| `action` | enum | `allow` | `allow`, `deny` or `observe`. `observe` records the rule in the access line and decides nothing, so the rules below it still decide: the whole point is to try a rule on live traffic without it changing what happens, and a rule that decided — by allowing what it covers — would make trying one out the way to switch off every deny rule under it |
 | `clients` | list of CIDR | `[]` | The networks the client is in. On an internet-facing listener this will usually be empty; on one in front of a branch office it is the strongest line in the rule |
 | `realms` | list | `[]` | The realms this rule covers |
 | `message_types` | list | `[]` | The request types this rule covers |
@@ -5425,8 +5434,25 @@ stop.
 **A literal is decided on its declared size.** `APPEND INBOX {310}` says
 the next 310 octets are a message, and RFC 7888's `{310+}` sends them
 without waiting for anybody to agree — so `max_append_bytes` is checked on
-the command line, and a refused command's octets are read and dropped
-rather than left to desynchronise the connection.
+the command line, and a refused `{310+}`'s octets are read and dropped
+rather than left to desynchronise the connection. A refused plain `{310}` is
+the opposite case: the client is waiting for a continuation request that is
+never coming and RFC 9051 §4.3 says it must not send the octets, so nothing is
+read. The bound applies to the command's literals **together**, so a client
+cannot divide its way past it one hop at a time, and the rule that decided the
+command decides its continuations too.
+
+**An argument sent as a literal is refused.** A literal is the last token on
+the line, so the argument list ends where it begins: `SELECT {25+}` parses as
+SELECT naming *no* mailbox, and `mailboxes`, `deny_mailboxes`, the rule
+selectors, `users` and the estate's authorization question would each decide
+about nothing while the server received the name intact. Such a command is
+refused with `literal_argument` rather than guessed at — reading the literal
+first would mean this proxy answering the continuation request instead of the
+server, which makes it a participant in an exchange it is relaying. Clients
+spell mailbox names as atoms or quoted strings; a literal there is conformant
+and rare, and a refusal an operator can see beats a policy that silently
+decided nothing.
 
 **A PREAUTH greeting is not carried.** RFC 9051 §7.1.4 lets a server decide
 from the transport that no credential is needed; a relay that carried that
@@ -5444,7 +5470,7 @@ connection is closed and `imap_preauth_refused` counts it.
 | `mechanisms` | list | `[]` (any) | `login` for the LOGIN command plus a SASL name per AUTHENTICATE mechanism. Enforced twice: a mechanism not named is refused, and it is removed from the advertised capabilities |
 | `users` | list | `[]` (any) | The identities that may be claimed, folded for comparison. A claim rather than a proven identity: the server checks the password |
 | `commands`, `deny_commands` | list | `[]` | Allow and deny lists of IMAP command names; deny is evaluated first. A `UID` command is the command it qualifies |
-| `mailboxes`, `deny_mailboxes` | list | `[]` (any) | Allow and deny lists of mailbox names, compared on the **decoded** name so a rule written `Sent` matches the modified UTF-7 a client sent. A name may end in `*` (the rest of the name, hierarchy included) or `%` (within one level); a wildcard anywhere else is refused at load |
+| `mailboxes`, `deny_mailboxes` | list | `[]` (any) | Allow and deny lists of mailbox names, compared on the **decoded** name so a rule written `Sent` matches the modified UTF-7 a client sent. A name may end in `*` (the rest of the name, hierarchy included) or `%` (within one level); a wildcard anywhere else is refused at load. `INBOX` is compared case-insensitively — it is the one name RFC 9051 §5.1 makes so — and that fold covers the hierarchy under it, because a server with mail below INBOX folds that component too: `inbox/Finance` and `INBOX/Finance` are one mailbox there and must not be two patterns here. Every other component is the server's own and `Archive` is not `archive` |
 | `read_only` | bool | `false` | Refuse every command that changes a mailbox: APPEND, CREATE, DELETE, RENAME, STORE, COPY, MOVE, EXPUNGE, the ACL and quota writes |
 | `max_fetch_messages` | int | `0` (unbounded) | How many messages one FETCH, SEARCH, COPY or MOVE may name. The mailbox-copying bound; validation advises setting it |
 | `allow_open_sets` | bool | `false` | Carry an open-ended sequence set even with `max_fetch_messages` set |
@@ -5530,7 +5556,7 @@ verifies at the server that issued the challenge.
 | `upstream_tls_mode` | string | `disable` | `disable`, `implicit` or `starttls` towards the server |
 | `upstream_tls` | object | — | Verification for that leg. See `upstream_tls` |
 | `allow_clients`, `deny_clients` | list | `[]` | Networks a client may connect from; deny is evaluated first |
-| `mechanisms` | list | `[]` (any) | `user` for the USER and PASS pair, `apop` for the digest, and a SASL name per AUTH mechanism. A mechanism not named is refused *and* removed from the CAPA list |
+| `mechanisms` | list | `[]` (any) | `user` for the USER and PASS pair, `apop` for the digest, and a SASL name per AUTH mechanism. A mechanism not named is refused *and* removed from the CAPA list. An `AUTH` that names no mechanism at all is refused: there is nothing for this list or for `require_tls` to decide about, and the exchange that used to follow it moved this relay's view of the session to the transaction state on the server's `+OK` with no credential behind it. A client that wants the mechanism list has CAPA |
 | `users` | list | `[]` (any) | The identities that may be claimed, folded for comparison |
 | `commands`, `deny_commands` | list | `[]` | Allow and deny lists of POP3 command names; deny is evaluated first |
 | `read_only` | bool | `false` | Refuse DELE and RSET, the two commands that change what the mailbox holds after the update state |
@@ -10641,9 +10667,9 @@ twice and the two ends can disagree about where an event ends.
 | `deny_events` | list | `[]` | Names that may not cross. Checked first, and no entry in `allow_events` overrides it, which is how an exception inside an admitted set is written |
 | `unknown_events` | `allow`, `observe`, `deny` | `deny` once `allow_events` names any, else `allow` | What happens to a name neither list covers. A list of the events a stream carries that also carries everything else is not a list, which is why naming any makes the rest deny; `observe` records and forwards, which is how the list gets written |
 | `events[]` | list | `[]` | The policy per event name; see below |
-| `allow_last_event_id` | bool | `true` | Whether a client's `Last-Event-ID` request header is forwarded. It is the one piece of client-controlled input on this protocol and it reaches the application as a **cursor**: an application that replays from it is being told where to start, and an identifier a client was never issued is a request for history it was not shown |
+| `allow_last_event_id` | bool | `true` | Whether a client's `Last-Event-ID` request header is forwarded. It is the one piece of client-controlled input on this protocol and it reaches the application as a **cursor**: an application that replays from it is being told where to start, and an identifier a client was never issued is a request for history it was not shown. The cursor policy applies to **every** request on a route that has an `sse_guard`, not only to one whose `Accept` header asked for a stream: what makes a response a stream is its Content-Type, so an application that answers a path with `text/event-stream` answers it that way for a client that sent no `Accept` header at all. A request carrying the header twice has both removed — the first value is one library's answer and the last is another's, so a check on one of them is a check on a value the application need not be the one to use |
 | `max_id_bytes` | int | `256` | Bounds the server's `id:` field and the client's `Last-Event-ID` alike. They are the same value making a round trip, so one bound covers both ends |
-| `last_event_id_pattern` | RE2 | none | A shape a client's `Last-Event-ID` must match, anchored at both ends. An estate whose identifiers are integers or ULIDs says so here, and then the cursor reaching the application is one of its own shape rather than whatever was sent. A cursor that does not match is **removed**, not refused: the client gets the stream from the beginning, which is what a client with no cursor gets |
+| `last_event_id_pattern` | RE2 | none | A shape a client's `Last-Event-ID` must match, anchored around the **whole** pattern — so `[0-9]{1,19}|[0-9A-HJKMNP-TV-Z]{26}`, the estate whose identifiers are a counter or a ULID, is anchored on both branches rather than on the first and the last. An estate whose identifiers are integers or ULIDs says so here, and then the cursor reaching the application is one of its own shape rather than whatever was sent. A cursor that does not match is **removed**, not refused: the client gets the stream from the beginning, which is what a client with no cursor gets |
 | `min_retry` | duration | `0` (leave alone) | A floor on the `retry:` field the server sends. The field tells the client how long to wait before reconnecting, so `retry: 0` from a misconfigured application is a fleet of browsers reconnecting as fast as they can. A floor **rewrites** rather than refuses, because the stream itself is fine |
 | `inspect` | `none`, `data`, `all` | `data` | Which part of an event is kept for pattern matching. `data` is the payload; `all` adds the name and the identifier |
 | `max_inspect_bytes` | bytes | `65536` | The prefix of an event kept for matching |

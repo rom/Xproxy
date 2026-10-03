@@ -168,7 +168,7 @@ func (t *server) exchange(w http.ResponseWriter, ip netip.Addr, env wire.ProxyMe
 		http.Error(w, "", http.StatusBadGateway)
 		return
 	}
-	t.answer(w, req, reply, d.Rule)
+	t.answer(w, req, m, reply, d.Rule)
 }
 
 // request builds the policy's view of one message.
@@ -277,7 +277,7 @@ var (
 )
 
 // answer decides about the KDC's reply and sends it.
-func (t *server) answer(w http.ResponseWriter, req Request, reply []byte, rule string) {
+func (t *server) answer(w http.ResponseWriter, req Request, msg wire.Message, reply []byte, rule string) {
 	m, err := wire.Parse(reply)
 	if err != nil {
 		// A reply this relay cannot read is not forwarded. The alternative is
@@ -287,7 +287,7 @@ func (t *server) answer(w http.ResponseWriter, req Request, reply []byte, rule s
 		http.Error(w, "", http.StatusBadGateway)
 		return
 	}
-	a := t.reply(req, m, rule)
+	a := t.reply(req, msg, m, rule)
 	if d := t.policy.Answer(a); !d.Allow {
 		t.refusedAnswer(req, a, d)
 		if t.enforcing() || d.Hard {
@@ -301,7 +301,12 @@ func (t *server) answer(w http.ResponseWriter, req Request, reply []byte, rule s
 
 // reply builds the policy's view of one answer, and counts the three facts
 // worth counting whatever the policy says about them.
-func (t *server) reply(req Request, m wire.Message, rule string) Answer {
+//
+// req carries the request's claims and msg the request itself, because one of
+// the decisions below is about the two messages together rather than either on
+// its own: whether the KDC acted on the pre-authentication the request said it
+// brought.
+func (t *server) reply(req Request, msg, m wire.Message, rule string) Answer {
 	a := Answer{Client: req.Client, Type: m.Type, Rule: rule, At: time.Now()}
 	if m.HasTicketEType {
 		a.TicketEType, a.HasTicketEType = m.TicketEType, true
@@ -317,10 +322,16 @@ func (t *server) reply(req Request, m wire.Message, rule string) Answer {
 		}
 		return a
 	}
-	// A successful AS exchange answering a request that brought no
-	// pre-authentication: the account is exempt, and the reply's encrypted
-	// part is an offline password-cracking target.
-	if m.Type == wire.MsgASRep && req.Type == wire.MsgASReq && !req.Preauth {
+	// A successful AS exchange whose pre-authentication the KDC cannot be seen
+	// to have acted on: the account is exempt, and the reply's encrypted part
+	// is an offline password-cracking target.
+	//
+	// The test is on what can be shown rather than on what the request said.
+	// A request's padata is written by the client, so "it brought
+	// pre-authentication" was a claim an AS-REP roaster could make by adding
+	// one item the KDC would pass over -- which is why PreauthProven pairs the
+	// claim with the KDC's own answer. See Message.PreauthMustVerify.
+	if m.Type == wire.MsgASRep && req.Type == wire.MsgASReq && !msg.PreauthProven(m) {
 		a.PreauthExempt = true
 		t.host.Counters().KKDCPPreauthExempt.Add(1)
 	}
@@ -400,8 +411,12 @@ func (t *server) answerRefusal(w http.ResponseWriter, req Request, d Decision) {
 		return
 	}
 	sname := wire.KrbtgtFor(realm)
+	// The reason is deliberately not in the answer: see ErrorText. It is in
+	// the security event and the counters, which is where it belongs -- on
+	// this protocol the name of the control that fired is usually the thing
+	// the control exists to withhold.
 	msg := wire.MarshalError(time.Now(), wire.KDCErrPolicy, realm, sname,
-		wire.ErrorText(t.name, d.Reason))
+		wire.ErrorText(t.name))
 	t.write(w, req, msg)
 }
 

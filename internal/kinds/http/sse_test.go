@@ -489,7 +489,7 @@ func TestCompressionStripRemovesTheOfferBeforeTheApplicationSeesIt(t *testing.T)
 // request on the route: a route serving a page and a stream under one path is
 // ordinary, and stripping Accept-Encoding from the page would make this proxy
 // the reason the page is uncompressed.
-func TestTheRequestPolicyAppliesOnlyToARequestThatAskedForAStream(t *testing.T) {
+func TestTheEncodingPolicyAppliesOnlyToARequestThatAskedForAStream(t *testing.T) {
 	seen := make(chan string, 1)
 	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen <- r.Header.Get("Accept-Encoding")
@@ -508,6 +508,90 @@ func TestTheRequestPolicyAppliesOnlyToARequestThatAskedForAStream(t *testing.T) 
 	_ = resp.Body.Close()
 	if got := <-seen; got == "" {
 		t.Error("Accept-Encoding was stripped from a request that did not ask for a stream")
+	}
+}
+
+// The cursor policy is the other half of that decision and it goes the other
+// way, because the two are gated on different things. What makes a response a
+// stream is its Content-Type, so an application that answers a path with
+// text/event-stream answers it that way for a client that sent no Accept header
+// at all -- and a cursor check gated on Accept would be one a client opts out
+// of by leaving a header out.
+func TestTheCursorPolicyDoesNotDependOnTheAcceptHeader(t *testing.T) {
+	seen := make(chan string, 1)
+	app := sseApp(t, func(w http.ResponseWriter, r *http.Request) {
+		seen <- r.Header.Get("Last-Event-ID")
+		_, _ = io.WriteString(w, "data: x\n\n")
+	})
+	s := sseProxy(t, app.URL, `    sse_guard:
+      last_event_id_pattern: "[0-9]{1,19}"`)
+	req, _ := http.NewRequest(http.MethodGet, "http://"+s.Addrs()["main"]+"/", nil)
+	// No Accept header at all, which is a client asking for whatever the path
+	// answers with -- and this path answers with a stream.
+	req.Header.Set("Last-Event-ID", "' UNION SELECT secret FROM audit--")
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if got := <-seen; got != "" {
+		t.Errorf("the application saw Last-Event-ID %q from a request with no Accept header", got)
+	}
+	if s.Stats().SSECursorsStripped == 0 {
+		t.Error("the stripped cursor was not counted")
+	}
+}
+
+// A cursor pattern with alternation is anchored on every branch. `|` has the
+// lowest precedence there is, so a pattern wrapped by adding "^" and "$" to its
+// ends would be anchored only at the ends -- "starts with the first branch, or
+// ends with the last" -- which admits an identifier with a legal one at one end
+// and anything at all after it.
+func TestACursorPatternWithAlternationIsAnchoredOnEveryBranch(t *testing.T) {
+	seen := make(chan string, 1)
+	app := sseApp(t, func(w http.ResponseWriter, r *http.Request) {
+		seen <- r.Header.Get("Last-Event-ID")
+		_, _ = io.WriteString(w, "data: x\n\n")
+	})
+	// An estate whose identifiers are either a counter or a ULID.
+	s := sseProxy(t, app.URL, `    sse_guard:
+      last_event_id_pattern: "[0-9]{1,19}|[0-9A-HJKMNP-TV-Z]{26}"`)
+	if _, body := stream(t, s, "Last-Event-ID", "1' UNION SELECT secret FROM audit--"); !strings.Contains(body, "data: x") {
+		t.Fatalf("the stream did not arrive: %q", body)
+	}
+	if got := <-seen; got != "" {
+		t.Errorf("the application saw Last-Event-ID %q: the anchors bound to one branch", got)
+	}
+}
+
+// Two cursors are a differential rather than a cursor: the first is one
+// library's answer, the last another's, so a policy that checked one of them
+// has checked a value the application need not be the one to use. Neither
+// crosses.
+func TestTwoCursorsOnOneRequestBothGo(t *testing.T) {
+	seen := make(chan []string, 1)
+	app := sseApp(t, func(w http.ResponseWriter, r *http.Request) {
+		seen <- r.Header.Values("Last-Event-ID")
+		_, _ = io.WriteString(w, "data: x\n\n")
+	})
+	s := sseProxy(t, app.URL, `    sse_guard:
+      last_event_id_pattern: "[0-9]{1,19}"`)
+	req, _ := http.NewRequest(http.MethodGet, "http://"+s.Addrs()["main"]+"/", nil)
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Add("Last-Event-ID", "4321")
+	req.Header.Add("Last-Event-ID", "../../etc/passwd")
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if got := <-seen; len(got) != 0 {
+		t.Errorf("the application saw Last-Event-ID %q", got)
+	}
+	if s.Stats().SSECursorsStripped == 0 {
+		t.Error("the stripped cursors were not counted")
 	}
 }
 

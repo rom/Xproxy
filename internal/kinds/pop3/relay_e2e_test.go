@@ -583,6 +583,34 @@ func TestASASLExchangeIsCarriedWithoutBeingRead(t *testing.T) {
 	}
 }
 
+// `AUTH` with no mechanism is refused. It names nothing, so neither require_tls
+// nor the mechanism list has anything to decide about -- and the exchange that
+// used to follow it moved this relay's state to transaction on the server's
+// `+OK`, with no credential behind it and no name to attribute anything to.
+// From there every command the RFC 1939 state table exists to hold back passed.
+func TestAuthWithNoMechanismIsRefused(t *testing.T) {
+	srv := startServer(t, &fakeServer{sasl: true})
+	s, addr := relay(t, noTLS, srv.addr())
+	c := dial(t, addr)
+	c.line()
+	c.send("AUTH")
+	if l := c.line(); !strings.HasPrefix(l, "-ERR") || !strings.Contains(l, "auth_no_mechanism") {
+		t.Fatalf("a bare AUTH: %q", l)
+	}
+	// The state did not move, so a transaction command is still refused.
+	c.send("RETR 1")
+	if l := c.line(); !strings.HasPrefix(l, "-ERR") {
+		t.Fatalf("RETR after a bare AUTH: %q", l)
+	}
+	if seen := strings.Join(srv.saw(), "\n"); strings.Contains(seen, "AUTH") ||
+		strings.Contains(seen, "RETR") {
+		t.Errorf("a refused command reached the server:\n%s", seen)
+	}
+	if s.Stats().Refusals["pop3"]["auth_no_mechanism"] == 0 {
+		t.Errorf("refusals: %v", s.Stats().Refusals["pop3"])
+	}
+}
+
 // A client that is not allowed to connect is refused before anything is
 // dialled, which is the one refusal this kind makes with no session at all.
 func TestAClientOffTheListIsRefusedBeforeTheServerIsDialled(t *testing.T) {

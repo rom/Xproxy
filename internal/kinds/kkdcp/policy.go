@@ -44,6 +44,10 @@ type Decision struct {
 	Rule   string
 	// Hard marks a refusal that stands even in shadow mode.
 	Hard bool
+	// Observed names the observe rules this request matched. They are
+	// recorded in the access line and decide nothing, which is what lets a
+	// rule be tried on live traffic before it decides anything.
+	Observed []string
 }
 
 // Request is what the policy decides about on the way in.
@@ -259,8 +263,17 @@ func (p *policy) Realm(req Request) Decision {
 	return Decision{Allow: true}
 }
 
-// Decide answers one request.
+// Decide answers one request, and carries the observe rules it matched: they
+// are recorded and they decide nothing, which is what lets a rule be tried on
+// live traffic first.
 func (p *policy) Decide(req Request) Decision {
+	d := p.decide(req)
+	d.Observed = p.observed(req)
+	return d
+}
+
+// decide is the policy itself, in order.
+func (p *policy) decide(req Request) Decision {
 	if !p.types[req.Type] {
 		return Decision{Reason: "message_type_not_allowed", Detail: req.Type.String()}
 	}
@@ -300,9 +313,6 @@ func (p *policy) Decide(req Request) Decision {
 			d.Reason = "no_rule_matched"
 		}
 		return d
-	}
-	if r.observe {
-		return Decision{Allow: true, Rule: r.name}
 	}
 	if r.action == "deny" {
 		return Decision{Reason: "rule_denied", Rule: r.name}
@@ -409,11 +419,33 @@ func (p *policy) Answer(a Answer) Decision {
 // match finds the first rule a request matches, in order.
 func (p *policy) match(req Request) *rule {
 	for _, r := range p.rules {
-		if r.covers(req) {
-			return r
+		if !r.covers(req) {
+			continue
 		}
+		if r.observe {
+			// An observe rule records and the search carries on, which is what
+			// lets a rule be tried on live traffic before it decides anything.
+			// A rule that stopped the search here would *allow* everything it
+			// covered -- so trying out a rule would have been a way to turn
+			// off every deny rule below it, which is the opposite of trying
+			// something out.
+			continue
+		}
+		return r
 	}
 	return nil
+}
+
+// observed names the observe rules a request matches, for the caller's log
+// line: they are recorded and counted, and they decide nothing.
+func (p *policy) observed(req Request) []string {
+	var out []string
+	for _, r := range p.rules {
+		if r.observe && r.covers(req) {
+			out = append(out, r.name)
+		}
+	}
+	return out
 }
 
 func (r *rule) covers(req Request) bool {

@@ -311,6 +311,32 @@ func TestARequestReachesTheServerAndItsAnswerComesBack(t *testing.T) {
 	}
 }
 
+// An observe rule records and decides nothing, so a deny rule under it still
+// decides. The other reading -- an observe rule allowing what it covers -- would
+// make trying a rule out the way to switch off the rules below it.
+func TestAnObserveRuleDoesNotShadowTheDenyRuleBelowIt(t *testing.T) {
+	t.Parallel()
+	srv := startServer(t, &fakeServer{signMAC: true})
+	section := "        default_action: allow\n" +
+		"        rules:\n" +
+		"          - {name: trial, action: observe, clients: [127.0.0.1/32]}\n" +
+		"          - {name: lockdown, action: deny, users: [bob]}\n"
+	s, addr := relay(t, section, "", srv.addr())
+	if got := dial(t, addr).send(request(4, "bob", true)); got != nil && got.Code != wire.CodeAccessReject {
+		t.Fatalf("a trial rule above the deny rule carried bob's request: %v", got.Code)
+	}
+	if refusals(s, "rule_denied") == 0 {
+		t.Fatalf("refusals: %v", s.Stats().Refusals["radius"])
+	}
+	if len(srv.requests()) != 0 {
+		t.Fatal("the refused request reached the server")
+	}
+	// And a user no deny rule names is carried.
+	if got := dial(t, addr).send(request(5, "alice", true)); got == nil || got.Code != wire.CodeAccessAccept {
+		t.Fatalf("the trial rule refused a user nothing denies: %v", got)
+	}
+}
+
 func TestAPacketWithNoDigestIsRefusedAndOneWithABadDigestIsToo(t *testing.T) {
 	t.Parallel()
 	t.Run("no Message-Authenticator at all", func(t *testing.T) {
@@ -391,6 +417,36 @@ func TestAReplyThatGrantsTooMuchPrivilegeIsRefused(t *testing.T) {
 	// cannot treats it as noise and retries.
 	if !got.VerifyResponseAuthenticator([]byte(theSecret), auth16(9^0x5a)) {
 		t.Fatal("the rejection's Response Authenticator does not verify")
+	}
+}
+
+// And the bound holds whichever way the grant is spelled. A Cisco AVPair is a
+// list of pairs, and on several platforms the separator is a NUL -- so the
+// spelling an attacker would choose is the one that used to be unreadable, and
+// an unreadable grant was read as no grant at all.
+func TestAPrivilegeGrantIsBoundedWhateverSeparatesThePairs(t *testing.T) {
+	t.Parallel()
+	for _, av := range []string{
+		"shell:priv-lvl=15\x00",
+		"shell:roles=admin\x00shell:priv-lvl=15",
+		// And a low grant followed by a high one, where which the equipment
+		// takes is the equipment's business and so both are the proxy's.
+		"shell:priv-lvl=1,shell:priv-lvl=15",
+	} {
+		srv := startServer(t, &fakeServer{
+			signMAC: true,
+			reply: func(*wire.Packet) (wire.Code, [][]byte) {
+				return wire.CodeAccessAccept, [][]byte{vsa(wire.VendorCisco, 1, []byte(av)...)}
+			},
+		})
+		s, addr := relay(t, "        default_action: allow\n        max_privilege_level: 1\n", "", srv.addr())
+		got := dial(t, addr).send(request(9, "bob", true))
+		if got == nil || got.Code != wire.CodeAccessReject {
+			t.Errorf("%q: answer = %v, want an access-reject", av, got)
+		}
+		if refusals(s, "privilege_too_high") == 0 {
+			t.Errorf("%q: refusals: %v", av, s.Stats().Refusals["radius"])
+		}
 	}
 }
 

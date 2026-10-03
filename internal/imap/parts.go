@@ -438,6 +438,69 @@ var mailboxArg = map[string]int{
 	"LISTRIGHTS": 0, "MYRIGHTS": 0,
 }
 
+// LiteralArgument reports whether the literal this command's line ends with
+// stands where an argument the policy reads should be.
+//
+// It exists because of what a literal does to the parse. A literal is the last
+// token on the line, so its octets arrive afterwards and the argument list ends
+// where it begins: `SELECT {25+}` parses as SELECT with *no* arguments, and
+// every reader below -- Mailboxes, Login, Mechanism, the sequence set -- then
+// answers "this command names none", which is indistinguishable from a command
+// that really does name none. The mailbox lists, the user list, the rule
+// selectors and the estate's authorization question are all keyed on those
+// answers, so a client could put the name it wanted in a literal and have every
+// one of them decide about nothing while the server received the name intact.
+//
+// The relay refuses such a command rather than guessing. Reading the literal
+// first would mean this proxy answering the client's continuation request
+// instead of the server, which makes it a participant in an exchange it is
+// meant to be relaying; and a mailbox name does not need a literal -- a
+// conformant client may use one, but the ones in use spell names as atoms or
+// quoted strings, and a refusal an operator can see beats a policy that
+// silently decided nothing.
+func LiteralArgument(c *Command) bool {
+	if c.Literal == nil {
+		return false
+	}
+	hi, ok := policyArg(c)
+	return ok && len(c.Args) <= hi
+}
+
+// policyArg is the highest argument position a command has that the policy
+// reads, and whether it has one at all.
+func policyArg(c *Command) (int, bool) {
+	name := c.Effective()
+	shift := 0
+	if c.Name == "UID" {
+		// A UID form puts the sub-command first, so every argument after it
+		// has moved along by one.
+		shift = 1
+	}
+	hi, ok := -1, false
+	if i, isMailbox := mailboxArg[name]; isMailbox {
+		hi, ok = i+shift, true
+		if name == "RENAME" {
+			// Both names are decided about, so the second one counts.
+			hi = 1
+		}
+	}
+	switch name {
+	case "FETCH", "STORE", "COPY", "MOVE":
+		// The sequence set, which is what the collection bounds are read from.
+		if shift > hi {
+			hi = shift
+		}
+		ok = true
+	case "LOGIN", "AUTHENTICATE":
+		// The identity, and the mechanism: the two credential questions.
+		if hi < 0 {
+			hi = 0
+		}
+		ok = true
+	}
+	return hi, ok
+}
+
 // Mailboxes are the mailbox names a command refers to, decoded. RENAME
 // refers to two and both are decided about: a rename is a read of one
 // name and a write of another.

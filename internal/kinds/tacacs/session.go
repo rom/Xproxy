@@ -55,6 +55,46 @@ type sess struct {
 	// backwards or repeats is refused rather than decided twice.
 	lastSeq uint8
 	at      time.Time
+
+	// wmu guards wantUser, which is the one field here the two directions
+	// both touch: the server's goroutine sets it when a reply asks for a
+	// name, and the client's reads it when the next packet carries one.
+	wmu sync.Mutex
+	// wantUser says the server's last answer was GETUSER, so the user_msg of
+	// the next CONTINUE is a user name -- the only circumstance in which this
+	// relay reads that field. It follows the *last* answer rather than any
+	// answer, so an exchange that moves on to GETPASS stops this relay reading
+	// the typed text at all. See RFC 8907 §5.4.2: an ASCII login may name
+	// nobody in its START and let the server prompt, which is the shape that
+	// would otherwise walk past a user list.
+	wantUser bool
+}
+
+// askedForUser records what the server's last answer asked for: a name, or
+// something else.
+//
+// It assigns rather than only setting, and that is the point of taking the
+// argument. A flag that was only ever turned on would stay on through the rest
+// of the exchange: the server answers GETUSER, the client sends an empty
+// answer, the server moves on to GETPASS, and the typed text of *that* packet
+// -- the password -- would be read as a name, decided about as one and written
+// to a log as one. The flag says what the question was, so each answer is read
+// as an answer to the question actually asked.
+func (s *sess) askedForUser(asked bool) {
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
+	s.wantUser = asked
+}
+
+// takeUserPrompt reports whether the next typed answer is a name, and clears
+// the flag: one prompt is one answer, and a second CONTINUE on the same
+// session is answering something else.
+func (s *sess) takeUserPrompt() bool {
+	s.wmu.Lock()
+	defer s.wmu.Unlock()
+	was := s.wantUser
+	s.wantUser = false
+	return was
 }
 
 // conn is one TCP connection carrying one or more sessions.

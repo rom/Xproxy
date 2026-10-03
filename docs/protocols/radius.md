@@ -103,6 +103,13 @@ Cisco av-pair carries and `deny_administrative_replies` refuses `Service-Type =
 Administrative-User`, so a compromised or spoofed server cannot hand out enable
 across an estate of routers through this relay.
 
+Both are read across the whole reply rather than from the first attribute that
+parses: every av-pair, every pair inside one, and every `Service-Type`, with the
+highest grant found being the one bounded. The reason is that which of two
+`priv-lvl` pairs a platform acts on is the platform's business, and the av-pair
+list is NUL-separated on some of them — so a reply spelling the grant the way an
+attacker would was once a reply this relay read as granting nothing at all.
+
 **That an answer belongs to a question.** The pairing is this relay's own: the
 identifier it chose, the server it sent to, and a deadline. An answer with the
 right identifier from the wrong host is refused as `unsolicited_reply`, which

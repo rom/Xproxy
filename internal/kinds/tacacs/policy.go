@@ -43,6 +43,10 @@ type Decision struct {
 	// what the *server* sent, where carrying it to see what would have
 	// happened is the thing being prevented.
 	Hard bool
+	// Observed names the observe rules this request matched. They are
+	// recorded in the access line and decide nothing, which is what lets a
+	// rule be tried on live traffic before it decides anything.
+	Observed []string
 }
 
 // Request is what the policy decides about on the way in.
@@ -280,8 +284,17 @@ func (p *policy) Header(ip netip.Addr, h wire.Header) Decision {
 	return Decision{Allow: true}
 }
 
-// Decide answers one request whose body this listener read.
+// Decide answers one request, and carries the observe rules it matched: they
+// are recorded and they decide nothing, which is what lets a rule be tried on
+// live traffic first.
 func (p *policy) Decide(req Request) Decision {
+	d := p.decide(req)
+	d.Observed = p.observed(req)
+	return d
+}
+
+// decide is the policy itself, in order.
+func (p *policy) decide(req Request) Decision {
 	if len(req.Args) > p.maxArgs {
 		return Decision{Reason: "too_many_arguments", Detail: itoa(len(req.Args))}
 	}
@@ -317,9 +330,6 @@ func (p *policy) Decide(req Request) Decision {
 			d.Reason = "no_rule_matched"
 		}
 		return d
-	}
-	if r.observe {
-		return Decision{Allow: true, Rule: r.name}
 	}
 	if r.action == "deny" {
 		return Decision{Reason: "rule_denied", Rule: r.name}
@@ -379,27 +389,36 @@ func (p *policy) authen(req Request) Decision {
 	return Decision{Allow: true}
 }
 
-// commands applies the command lists: the rule's where it has them, the
-// listener's otherwise, and the deny list first in both cases.
+// commands applies the command lists: both deny lists, then both allow lists.
+//
+// A rule's lists add to the listener's rather than standing in for them, in
+// both directions, and that is the whole of what makes the listener-wide list
+// mean what this file's header says it means. A deny a rule could replace
+// would not be the sentence "no router behind this relay accepts `write
+// erase`": every rule carrying a deny of its own would be a hole in it, and an
+// estate that added `deny_commands: [debug all]` to its network team's rule
+// would have handed that team `reload` by writing a deny. So the deny lists are
+// a union, which can only refuse more, and the allow lists are an intersection,
+// which can only permit less. A rule narrows; it never widens.
 func (p *policy) commands(req Request, r *rule) Decision {
 	if req.Command == "" {
 		return Decision{Allow: true}
 	}
-	deny, allow := p.denyCmds, p.cmds
-	if r != nil {
-		if len(r.denyCmds) > 0 {
-			deny = r.denyCmds
-		}
-		if len(r.cmds) > 0 {
-			allow = r.cmds
-		}
-	}
 	name := ruleName(r)
-	if matchAny(deny, req.Command) {
-		return Decision{Reason: "command_not_allowed", Detail: req.Command, Rule: name}
+	no := Decision{Reason: "command_not_allowed", Detail: req.Command, Rule: name}
+	// The deny lists first, listener then rule, and read as prefixes: see
+	// pattern.reaches for why a deny covers what follows the command it names.
+	if reachesAny(p.denyCmds, req.Command) {
+		return no
 	}
-	if len(allow) > 0 && !matchAny(allow, req.Command) {
-		return Decision{Reason: "command_not_allowed", Detail: req.Command, Rule: name}
+	if r != nil && reachesAny(r.denyCmds, req.Command) {
+		return no
+	}
+	if len(p.cmds) > 0 && !matchAny(p.cmds, req.Command) {
+		return no
+	}
+	if r != nil && len(r.cmds) > 0 && !matchAny(r.cmds, req.Command) {
+		return no
 	}
 	return Decision{Allow: true}
 }
@@ -430,11 +449,33 @@ func (p *policy) Answer(a Answer) Decision {
 // match finds the first rule a request matches, in order.
 func (p *policy) match(req Request) *rule {
 	for _, r := range p.rules {
-		if r.covers(req) {
-			return r
+		if !r.covers(req) {
+			continue
 		}
+		if r.observe {
+			// An observe rule records and the search carries on, which is what
+			// lets a rule be tried on live traffic before it decides anything.
+			// A rule that stopped the search here would *allow* everything it
+			// covered -- so trying out a rule would have been a way to turn
+			// off every deny rule below it, which is the opposite of trying
+			// something out.
+			continue
+		}
+		return r
 	}
 	return nil
+}
+
+// observed names the observe rules a request matches, for the caller's log
+// line: they are recorded and counted, and they decide nothing.
+func (p *policy) observed(req Request) []string {
+	var out []string
+	for _, r := range p.rules {
+		if r.observe && r.covers(req) {
+			out = append(out, r.name)
+		}
+	}
+	return out
 }
 
 func (r *rule) covers(req Request) bool {

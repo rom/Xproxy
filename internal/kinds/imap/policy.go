@@ -488,8 +488,16 @@ func patterns(in []string) ([]pattern, error) {
 // 9051 §5.1 makes case-insensitive; every other name is the server's and
 // is compared as it stands, because a mailbox called `Archive` and one
 // called `archive` are two mailboxes.
+//
+// The fold covers the hierarchy under INBOX as well as the name itself, and
+// has to. A server that puts mail below INBOX -- Dovecot's `INBOX.` or
+// `INBOX/` namespace -- folds that first component case-insensitively too, so
+// `inbox/Finance` and `INBOX/Finance` are one mailbox there and were two
+// different strings here: a deny list naming `INBOX/Finance*` did not match the
+// lowercase spelling, and the command went through to open the mailbox the list
+// existed to keep shut.
 func (p pattern) match(name string) bool {
-	lit, n := p.lit, name
+	lit, n := foldInbox(p.lit), foldInbox(name)
 	if strings.EqualFold(lit, "inbox") && strings.EqualFold(name, "inbox") {
 		return true
 	}
@@ -505,6 +513,27 @@ func (p pattern) match(name string) bool {
 	default:
 		return n == lit
 	}
+}
+
+// foldInbox rewrites a leading INBOX component to the spelling RFC 9051 uses,
+// so the comparison above is made on one form of the only name the standard
+// says is case-insensitive. Everything after that first component is left as it
+// stands, because it is the server's own and `Archive` is not `archive`.
+func foldInbox(name string) string {
+	const inbox = "INBOX"
+	if len(name) < len(inbox) || !strings.EqualFold(name[:len(inbox)], inbox) {
+		return name
+	}
+	if len(name) == len(inbox) {
+		return inbox
+	}
+	// Only when the next character ends the component: a mailbox called
+	// `Inboxes` is not INBOX and must not be folded into it.
+	switch name[len(inbox)] {
+	case '/', '.':
+		return inbox + name[len(inbox):]
+	}
+	return name
 }
 
 func matchAny(ps []pattern, name string) bool {

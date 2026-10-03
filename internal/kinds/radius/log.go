@@ -104,6 +104,12 @@ func (t *server) attrs(ip netip.Addr, p *wire.Packet, d Decision) []any {
 	if d.Rule != "" {
 		out = append(out, "rule", d.Rule)
 	}
+	if len(d.Observed) > 0 {
+		// The rules being tried on live traffic. They decided nothing -- the
+		// rule above did -- and this line is what an operator reads to find
+		// out what one of them would have covered.
+		out = append(out, "observed", strings.Join(d.Observed, ","))
+	}
 	return out
 }
 

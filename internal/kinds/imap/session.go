@@ -64,6 +64,10 @@ type conn struct {
 	authing  bool
 	authTag  string
 	authMech string
+	// authCont says the server has asked for the next step of that exchange
+	// and this relay has not carried an answer to it yet. It is the turn
+	// token that keeps the exchange lock-step: see takeAuthTurn.
+	authCont bool
 	commands int
 	// fetched counts the messages this connection's requests have named,
 	// which is the number the access log reports and the anomaly models
@@ -159,8 +163,41 @@ func (c *conn) isIdling() (bool, time.Time) {
 
 func (c *conn) startAuth(tag, mech string) {
 	c.mu.Lock()
-	c.authing, c.authTag, c.authMech = true, tag, mech
+	c.authing, c.authTag, c.authMech, c.authCont = true, tag, mech, false
 	c.mu.Unlock()
+}
+
+// serverAsked records the server's continuation request, which is the one
+// thing that makes the next client line credential material.
+func (c *conn) serverAsked() {
+	c.mu.Lock()
+	if c.authing {
+		c.authCont = true
+	}
+	c.mu.Unlock()
+}
+
+// takeAuthTurn reports whether a client line is the answer to a continuation
+// request this relay has seen, and consumes it.
+//
+// One request, one answer: that is the whole of the lock-step, and it is what
+// keeps the auth path from being a hole in everything else. While a SASL
+// exchange is open the lines are credential material -- base64, or `*` to
+// cancel -- and they are forwarded without being parsed as commands, which is
+// right and is also an invitation: a client that sent `a1 AUTHENTICATE
+// XNOTAMECH` and then a second line would have had that line forwarded
+// unparsed, past the command lists, the mailbox lists, the user list and the
+// log. The server, having answered the mechanism it does not implement with a
+// tagged NO, reads that line as a command. So a line arrives in auth mode only
+// when the server has asked for one.
+func (c *conn) takeAuthTurn() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.authCont {
+		return false
+	}
+	c.authCont = false
+	return true
 }
 
 // endAuth clears the exchange when the tag is the one that opened it. A
@@ -171,7 +208,7 @@ func (c *conn) endAuth(tag string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.authing && c.authTag == tag {
-		c.authing, c.authTag, c.authMech = false, "", ""
+		c.authing, c.authTag, c.authMech, c.authCont = false, "", "", false
 	}
 }
 
@@ -249,6 +286,17 @@ var errClose = errors.New("imap: close the connection")
 // without that one command is an unbounded conversation.
 func (c *conn) forwardLiteralChain(cmd *wire.Command, req Request) error {
 	lits := 0
+	// The chain's declared octets, added up. The bound is about the command
+	// rather than about one hop of it: ten literals of a megabyte each are a
+	// ten-megabyte APPEND however the client chose to spell it, and a bound
+	// applied per hop is a bound a client divides its way past.
+	total := req.Literal
+	// The rule that decided the command decides its continuations too. Passing
+	// an empty rule here was a bound bypass: the first literal was checked
+	// against the rule's own max_append_bytes and every chained one against the
+	// listener's, so a rule tightening the bound for one user applied to the
+	// mailbox name and not to the message.
+	rl, found := c.t.policy.ruleFor(req)
 	for cmd.Literal != nil {
 		if lits++; lits > c.t.maxLits {
 			c.t.denyConn(c, "too_many_literals", strconv.Itoa(lits))
@@ -263,19 +311,22 @@ func (c *conn) forwardLiteralChain(cmd *wire.Command, req Request) error {
 		}
 		// The continuation is part of the same command, so it is decided
 		// about as such: its own literal gets the same bound, under the
-		// command's own name.
+		// command's own name and the command's own rule.
 		next, perr := wire.ParseCommand([]byte(cmd.Tag + " " + cmd.Name + " " + string(line)))
 		if perr == nil && next.Literal != nil {
-			req.Literal = next.Literal.Size
+			total += next.Literal.Size
+			req.Literal = total
 			req.Command = cmd
-			if d := c.t.policy.boundsCheck(req, cmd.Effective(), rule{}, false); !d.Allow {
+			if d := c.t.policy.boundsCheck(req, cmd.Effective(), rl, found); !d.Allow {
 				c.t.refused(c, &req, d)
 				if c.t.enforcing() || d.Hard {
-					// The client is going to send the octets it announced
-					// whatever it is told, so they are read and dropped:
-					// the alternative is a connection that desynchronises.
-					_ = c.reader().Discard(next.Literal.Size)
-					return c.refuse(cmd.Tag, d)
+					// The command's first octets are already upstream, so
+					// there is no answering this with a tagged refusal and a
+					// live connection: the server is mid-line and whatever
+					// the client sends next would be read as the rest of that
+					// command. The refusal goes out and the connection ends.
+					_ = c.refuse(cmd.Tag, d)
+					return errClose
 				}
 			}
 			cmd.Literal = next.Literal

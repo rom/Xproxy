@@ -298,11 +298,27 @@ func (t *server) read(c *conn, s *sess, h wire.Header, body []byte) (Request, bo
 		}
 	case h.Type == wire.TypeAuthen:
 		// A CONTINUE: the typed answer, whose contents this relay keeps only
-		// the length of. The session says who typed it.
+		// the length of -- with one exception, which is the case where the
+		// server asked for a name. The session says who typed it.
 		var cont wire.AuthenContinue
-		if cont, err = wire.ParseAuthenContinue(plain); err == nil && cont.UserMsgBytes > 0 &&
-			s.authenType.Plaintext() {
-			t.host.Counters().TACACSPlaintextPasswords.Add(1)
+		if cont, err = wire.ParseAuthenContinue(plain); err == nil {
+			switch {
+			case cont.UserMsgBytes > 0 && s.takeUserPrompt():
+				// The ASCII login of RFC 8907 §5.4.2: the START named nobody,
+				// the server answered GETUSER, and the name arrives here. It
+				// is read because the alternative is a user list with a
+				// bypass anybody can take -- leave the START's user field
+				// empty and type the name at the prompt -- and because
+				// everything below this point, the estate's authorization
+				// question included, is keyed on a name.
+				var u string
+				if u, err = wire.ContinueUserMsg(plain); err == nil {
+					s.user, req.User = u, u
+				}
+			case cont.UserMsgBytes > 0 && s.authenType.Plaintext():
+				// Not a name, so on a plaintext type it is the password.
+				t.host.Counters().TACACSPlaintextPasswords.Add(1)
+			}
 		}
 	case h.Type == wire.TypeAuthor:
 		var ar wire.AuthorRequest
@@ -450,6 +466,13 @@ func (t *server) readAnswer(c *conn, s *sess, h wire.Header, body []byte) (Answe
 			a.Status = r.Status.String()
 			a.Follow = r.Status == wire.AuthenFollow
 			a.Pass = r.Status == wire.AuthenPass
+			// Whether the server is prompting for a name. This is the only
+			// thing that makes a CONTINUE's user_msg readable, which is why it
+			// is taken from the reply rather than guessed from the request --
+			// and why it is recorded for every answer rather than only for a
+			// GETUSER: an exchange that has moved on to GETPASS must leave
+			// this relay reading nothing.
+			s.askedForUser(r.Status == wire.AuthenGetUser)
 		}
 	case wire.TypeAuthor:
 		var r wire.AuthorResponse

@@ -106,6 +106,138 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
   corpus actually lives. A generated seed would have been committed by
   `git add -A`.
 
+### Fixed (a security review of the five protocols added in this release)
+
+A review of the SSE guard and the five relay kinds added above (`kkdcp`,
+`radius`, `tacacs`, `imap`, `pop3`) found twenty issues worth fixing. They have
+one shape between them: a control that read a field the attacker writes, or read
+one field where the far end reads another. Each is now decided on what can be
+shown rather than on what was claimed.
+
+**The event stream.**
+
+- The **cursor policy ran only when the client asked for a stream.** What makes
+  a response a stream is its Content-Type, so an application answering a path
+  with `text/event-stream` answers it that way for a client that sent no
+  `Accept` header -- and `allow_last_event_id`, `max_id_bytes` and
+  `last_event_id_pattern` were all skipped for it. The cursor is now decided for
+  every request on a route that has a guard; the `Accept-Encoding` rewrite stays
+  behind the Accept test, because stripping it from a page request is the thing
+  that test exists to prevent.
+- A request carrying **two `Last-Event-ID` headers** had the first checked and
+  both forwarded. Which one an application reads is its framework's business, so
+  a policy that validated one of them validated the wrong one: both are now
+  removed (`sse_last_event_id_repeated`).
+- **`last_event_id_pattern` was anchored at its ends rather than around the
+  whole pattern.** `|` has the lowest precedence in RE2, so
+  `[0-9]{1,19}|[0-9A-HJKMNP-TV-Z]{26}` -- the estate whose identifiers are a
+  counter or a ULID -- compiled to "starts with a digit, or ends with a ULID",
+  which admits `1' UNION SELECT secret FROM audit--`.
+
+**Kerberos over HTTP.**
+
+- **`refuse_weak_etypes` was one integer away from being switched off.** It asked
+  whether every type a request offered was on a list of weak ones, so a number
+  the registry has never assigned counted as a strong offer: `etype = { 23, 9999 }`
+  read as a mixed list, the KDC discarded 9999 and minted the RC4 ticket. It now
+  asks whether the request offers a type this estate is content with. `des-cbc-raw`
+  and `des3-cbc-raw` joined the weak list while there.
+- **`refuse_preauth_exempt` rested on padata the client writes.** This relay holds
+  no key, so three random octets under type 2 read exactly like an encrypted
+  timestamp; one padata item a KDC passes over was enough to make an AS-REP
+  roaster's request look pre-authenticated. The test now pairs the claim with the
+  KDC's answer: a type the KDC must decrypt to act on counts, and a PKINIT claim
+  counts when the reply carries `PA-PK-AS-REP`.
+- **The minted KRB-ERROR named the control that fired**, which made every refusal
+  an oracle -- `preauth_not_required` confirms the account exists and is
+  roastable, a cleaner answer than the AS-REP it was refused. The text now names
+  the proxy and nothing else; the reason stays in the security log and the
+  counters.
+- **S4U2Self was recognised under one of its two names.** MS-SFU defines
+  `PA-S4U-X509-USER` beside `PA-FOR-USER` and a KDC honours either, so
+  `allow_s4u2self: false` had a second door, and the impersonated name was not
+  read -- which meant principal rules were applied to the service asking rather
+  than the user asked for.
+- **The DER reader resolved a field named twice instead of refusing it.** A
+  req-body with two `realm` fields was decided about as one realm and acted on by
+  a KDC as the other, with the audit record wrong in the same direction as the
+  decision. A repeated context tag is now refused; no Kerberos structure uses one
+  twice. `only()` now requires a constructed tag and `derString` checks the
+  universal tag rather than only the class.
+
+**RADIUS and TACACS+.**
+
+- **`max_privilege_level` read the grant through a text-safe accessor**, so a
+  Cisco av-pair with a NUL in it -- the pair separator several platforms use --
+  read as "this reply grants no privilege" and the bound never applied. Every
+  av-pair is now read from its raw octets, every pair inside one, every
+  `Service-Type`, and the highest grant found is the one bounded.
+- **A TACACS+ deny matched only the exact words it named**, so
+  `deny_commands: ["show running-config"]` matched the spelling an operator would
+  type and missed `show running-config | include password`. A deny now covers the
+  command and whatever is appended to it; an allow stays exact, because allowing
+  more than was asked is the unsafe direction.
+- **A TACACS+ rule's command lists replaced the listener's rather than adding to
+  them**, so any rule carrying a `deny_commands` of its own disarmed every
+  estate-wide deny for the traffic it covered. The deny lists are now a union and
+  the allow lists an intersection: a rule narrows and never widens.
+- **The user lists did not see a name typed at the server's prompt.** RFC 8907
+  §5.4.2 lets an ASCII login leave the START's user field empty and supply the
+  name in a CONTINUE, which is the ordinary shape of `telnet` to a router -- and
+  `users`, `deny_users` and the estate's authorization rules never saw it. The
+  name is now read from the CONTINUE that answers a GETUSER, which is the one
+  reading this relay takes of that field.
+
+**The mailbox protocols.**
+
+- **A SASL exchange was a hole in every other control.** Between `AUTHENTICATE`
+  and its tagged answer the client's lines are credential material and are
+  forwarded unparsed -- so `a1 AUTHENTICATE XNOTAMECH` followed by
+  `a2 LOGIN victim Hunter2` had the second line forwarded past the command lists,
+  the mailbox lists, the user list and the log, while the server, having answered
+  the mechanism it does not implement, read it as a command. The exchange is now
+  lock-step: a client line is credential material only in answer to a
+  continuation request this relay saw the server send (`auth_injection`).
+- **An argument sent as a literal was invisible to the policy.** A literal is the
+  last token on the line, so `SELECT {21+}` parses as SELECT naming no mailbox:
+  `mailboxes`, `deny_mailboxes`, the rule selectors, `users` and the estate's
+  authorization question each decided about nothing while the server received the
+  name intact. Such a command is now refused (`literal_argument`).
+- **A refused command's synchronising literal was read anyway.** `Literal.NonSync`
+  was parsed and never consulted, so a refused `{64}` -- which the client is
+  waiting to be asked for and must not send -- made this relay block, and then
+  swallow the next 64 octets it was sent for any other reason. Only a `{n+}` is
+  dropped now, the refusal is written first, and the rest of that line goes with
+  the octets.
+- **An anomaly refusal dropped the command but not its literal**, so a message
+  body became the command stream. It now drops what the client committed, the
+  same as a policy refusal.
+- **A chained literal was checked against the listener's bound rather than the
+  rule's**, so a rule tightening `max_append_bytes` for one account applied to the
+  mailbox name and not to the message. The rule that decided the command now
+  decides its continuations, and the bound is on the chain's total.
+- **`deny_mailboxes` was case-sensitive below INBOX.** RFC 9051 §5.1 makes `INBOX`
+  case-insensitive and a server with mail under it folds that component too, so
+  `inbox/Finance` and `INBOX/Finance` were two patterns here and one mailbox
+  there. The fold now covers the first component; everything below it stays
+  case-sensitive.
+- **A bare POP3 `AUTH` authenticated the session in this relay's view.** It names
+  no mechanism, so neither `require_tls` nor `mechanisms` had anything to decide,
+  and the server's `+OK` moved the state to transaction with nobody logged in --
+  after which `RETR`, `LIST` and `DELE` all passed the state table. It is refused
+  (`auth_no_mechanism`); CAPA is where a client reads the mechanism list.
+
+**And one shared with every kind that has rules.**
+
+- **An `observe` rule decided by allowing what it covered**, which the reference
+  has never said: it promises a rule that records and keeps looking. Placed above
+  a deny rule it switched that rule off, so trying a rule on live traffic was the
+  most dangerous edit in a configuration. In `radius`, `tacacs` and `kkdcp` an
+  observe rule is now recorded in the access line (`observed`) and decides
+  nothing. The same pattern remains in `amqp`, `mysql`, `opcua`, `postgres`,
+  `redis`, `s7` and `tds` and is the next thing to sweep; `bacnet`, `mms`,
+  `modbus`, `iec104` and `snmp` already read it the documented way.
+
 ### Added (the other half of mail: the two mailbox protocols)
 
 - **`kind: imap` is a relay in front of the most complete record an estate

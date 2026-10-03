@@ -687,20 +687,29 @@ func (p *Packet) PasswordBytes() (int, bool) {
 // grant is the server's answer, and it is the thing an estate wants
 // bounded -- a RADIUS server, or anything that can forge its answers,
 // hands out enable on every router with one attribute.
+// It reads every attribute rather than the first that parses, and returns the
+// highest level any of them grants. Both halves of that matter, because a
+// bound applied to a grant the equipment is not the one to act on is not a
+// bound: a reply carrying `priv-lvl=1` and then `priv-lvl=15` is read here as
+// 15 whichever of them a given platform takes, and a reply whose first vendor
+// attribute is unparsable no longer hides the one after it.
 func (p *Packet) PrivilegeLevel() (int, bool) {
+	best, found := 0, false
 	for _, a := range p.Attrs {
 		if a.Vendor != VendorCisco {
 			continue
 		}
-		s, ok := a.Text()
-		if !ok {
-			continue
-		}
-		if n, ok := privLevel(s); ok {
-			return n, true
+		// The raw octets, not Text: the pair list is NUL-separated on some
+		// platforms, Text refuses control characters, and a reader that asked
+		// Text first would answer "this reply grants no privilege" for exactly
+		// the spelling an attacker would choose -- one NUL in the attribute and
+		// the bound would never have been applied. The separators below include
+		// it, so the list is read in every form it arrives in.
+		if n, ok := privLevel(string(a.Value)); ok && (!found || n > best) {
+			best, found = n, true
 		}
 	}
-	return 0, false
+	return best, found
 }
 
 // serviceTypeAdministrative is RFC 2865's Administrative-User.
@@ -709,24 +718,34 @@ const serviceTypeAdministrative uint32 = 6
 // Administrative reports whether a reply carries Service-Type =
 // Administrative-User, which on most equipment is the enable grant
 // written in the standard's own attributes rather than a vendor's.
+// Every occurrence is read, for the same reason PrivilegeLevel reads every
+// vendor attribute: a reply whose first Service-Type is Login and whose second
+// is Administrative-User is a reply that grants the enable prompt on whatever
+// equipment takes the second, and a check that stopped at the first would have
+// called it an ordinary login.
 func (p *Packet) Administrative() bool {
-	a, ok := p.First(AttrServiceType)
-	if !ok {
-		return false
+	for _, a := range p.Attrs {
+		if a.Type != AttrServiceType {
+			continue
+		}
+		if v, ok := a.Uint32(); ok && v == serviceTypeAdministrative {
+			return true
+		}
 	}
-	v, ok := a.Uint32()
-	return ok && v == serviceTypeAdministrative
+	return false
 }
 
-// privLevel reads a priv-lvl out of a vendor attribute's text.
+// privLevel reads a priv-lvl out of a vendor attribute's octets.
+//
+// It takes the value as it arrived rather than a text-safe rendering of it,
+// and the separator set below is why: the attribute is a list of pairs on some
+// platforms and the separator is a comma, a space, a semicolon or a NUL,
+// depending on the platform. A reader that refused the NUL form would be a
+// reader with a hole the shape of one octet.
 func privLevel(s string) (int, bool) {
-	// The attribute is a list of pairs on some platforms, separated by
-	// commas or by NUL -- and the NUL case cannot arrive here, because
-	// Text refuses control characters. Splitting on the separators that
-	// can appear is enough, and a pair this does not recognise is left
-	// for a rule about the attribute's text.
+	best, found := 0, false
 	for _, part := range strings.FieldsFunc(s, func(r rune) bool {
-		return r == ',' || r == ' ' || r == ';'
+		return r == ',' || r == ' ' || r == ';' || r == 0
 	}) {
 		i := strings.IndexAny(part, "=*")
 		if i < 0 {
@@ -739,11 +758,20 @@ func privLevel(s string) (int, bool) {
 		if !strings.EqualFold(key, "priv-lvl") && !strings.EqualFold(key, "priv_lvl") {
 			continue
 		}
-		if n, err := strconv.Atoi(strings.TrimSpace(val)); err == nil && n >= 0 && n <= 15 {
-			return n, true
+		// The protocol's levels are 0 to 15 and the bound is validated in that
+		// range, but a value outside it is still read and returned rather than
+		// ignored: a reply saying `priv-lvl=99` is a reply the policy should
+		// refuse, and a reader that dropped it on the floor would be answering
+		// "this grants nothing" about a grant.
+		// The highest pair wins, for the same reason the highest attribute
+		// does: a list with `priv-lvl=1` before `priv-lvl=15` grants 15 on
+		// whatever equipment reads the last of them, and a bound applied to
+		// the first would be a bound on the wrong number.
+		if n, err := strconv.Atoi(strings.TrimSpace(val)); err == nil && n >= 0 && (!found || n > best) {
+			best, found = n, true
 		}
 	}
-	return 0, false
+	return best, found
 }
 
 // VerifyMessageAuthenticator checks RFC 3579 §3.2's HMAC-MD5 digest.

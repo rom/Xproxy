@@ -227,13 +227,22 @@ func (t *server) decide(c *conn, req Request) Decision {
 			req.User = u
 		}
 	case "AUTH":
-		if mech, _, ok := cmd.Mechanism(); ok {
-			if d := t.policy.Mechanism(mech, c.encrypted); !d.Allow {
-				return d
-			}
-			if !c.encrypted && wire.Plaintext(mech) {
-				t.host.Counters().POP3PlaintextLogins.Add(1)
-			}
+		mech, _, ok := cmd.Mechanism()
+		if !ok {
+			// `AUTH` with no mechanism names nothing, so neither require_tls
+			// nor the mechanism list has anything to decide about -- and the
+			// exchange that follows it used to move this relay's state to
+			// transaction on the server's `+OK`, with no credential behind it
+			// and no user name to attribute anything to. It is refused rather
+			// than guessed at: a client that wants the mechanism list has CAPA
+			// (RFC 2449), which this relay reads and narrows.
+			return Decision{Reason: "auth_no_mechanism", Hard: true}
+		}
+		if d := t.policy.Mechanism(mech, c.encrypted); !d.Allow {
+			return d
+		}
+		if !c.encrypted && wire.Plaintext(mech) {
+			t.host.Counters().POP3PlaintextLogins.Add(1)
 		}
 	}
 	return t.policy.Decide(req)
@@ -420,6 +429,9 @@ func (t *server) authExchange(c *conn, cmd *wire.Command, deadline time.Time) bo
 		}
 		if !r.Continuation() {
 			if r.OK {
+				// The exchange named a mechanism -- a bare AUTH is refused
+				// before it gets here -- so an +OK that ends it is a
+				// credential the server accepted.
 				c.state = wire.StateTransaction
 			} else {
 				t.authFailed(c, cmd.Name)

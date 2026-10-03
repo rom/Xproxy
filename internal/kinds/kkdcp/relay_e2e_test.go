@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -314,6 +315,166 @@ func TestAnASReplyToARequestWithNoPreauthenticationIsRefused(t *testing.T) {
 	}
 }
 
+// "Nothing but weak" is decided by what a request offers that is strong, not by
+// what it offers that is known to be bad. The etype list is integers the client
+// chooses and the registry is longer than any list in this proxy, so under the
+// other reading one unassigned number -- appended to rc4-hmac and discarded by
+// the KDC -- made the list look mixed and turned the Kerberoasting control off.
+func TestAnUnknownEncryptionTypeDoesNotMakeAnRC4OnlyRequestLookMixed(t *testing.T) {
+	t.Parallel()
+	kdc := startKDC(t, &fakeKDC{reply: func(m wire.Message) []byte {
+		return tgsRep(m.Realm, user("svc"), svc("MSSQLSvc", "db.corp.example"),
+			wire.ETypeRC4HMAC)
+	}})
+	s, addr := relay(t, "        realms: [CORP.EXAMPLE]\n        default_action: allow\n",
+		"", kdc.addr())
+	c := dial(t, addr)
+
+	for _, etypes := range [][]wire.EType{
+		{wire.ETypeRC4HMAC, 9999},
+		{wire.ETypeRC4HMAC, 0},
+		{wire.ETypeRC4HMAC, -1},
+		// And the two DES types whose numbers the registry does assign and
+		// which are no stronger for being named.
+		{wire.ETypeRC4HMAC, wire.ETypeDESCBCRaw},
+		{wire.ETypeRC4HMAC, wire.ETypeDES3CBCRaw},
+	} {
+		req := tgsReq("CORP.EXAMPLE", user("svc"), svc("MSSQLSvc", "db.corp.example"), etypes)
+		if _, m := c.post(req, "CORP.EXAMPLE"); m == nil || m.Type != wire.MsgError {
+			t.Errorf("etypes %v: the request was carried: %v", etypes, m)
+		}
+	}
+	if refusals(s, "weak_etype_only") == 0 {
+		t.Fatalf("refusals: %v", s.Stats().Refusals["kkdcp"])
+	}
+	if n := len(kdc.requests()); n != 0 {
+		t.Fatalf("the KDC saw %d requests, want none", n)
+	}
+}
+
+// The exempt-account check reads what the KDC can be seen to have done, not
+// what the request claimed about itself. A request's padata is written by the
+// client and this relay holds no key, so one item a KDC passes over used to be
+// enough to make an AS-REP roaster's request look pre-authenticated.
+func TestOnePadataItemDoesNotTurnTheExemptAccountCheckOff(t *testing.T) {
+	t.Parallel()
+	// A KDC that answers with a ticket, which is what an account exempt from
+	// pre-authentication gets -- and it answers with no PA-PK-AS-REP, because
+	// it has no PKINIT configured and passed over the padata entirely.
+	kdc := startKDC(t, &fakeKDC{reply: func(m wire.Message) []byte {
+		return asRep(m.Realm, user("svcacct"), krbtgt(m.Realm), wire.ETypeAES256SHA1, nil)
+	}})
+	s, addr := relay(t, "        realms: [CORP.EXAMPLE]\n        default_action: allow\n",
+		"", kdc.addr())
+	roast := asReq("CORP.EXAMPLE", user("svcacct"), []wire.EType{wire.ETypeAES256SHA1},
+		withPKINIT())
+	if _, m := dial(t, addr).post(roast, "CORP.EXAMPLE"); m == nil || m.Type != wire.MsgError {
+		t.Fatalf("the reply was carried because the request said it had pre-authenticated: %v", m)
+	}
+	if refusals(s, "preauth_not_required") == 0 {
+		t.Fatalf("refusals: %v", s.Stats().Refusals["kkdcp"])
+	}
+
+	// And a real certificate login is carried, because the KDC's own half of
+	// the exchange is in the reply and a client cannot write that.
+	real0 := startKDC(t, &fakeKDC{reply: func(m wire.Message) []byte {
+		return asRep(m.Realm, user("alice"), krbtgt(m.Realm), wire.ETypeAES256SHA1,
+			[]wire.PAType{wire.PAPKASRep})
+	}})
+	_, addr2 := relay(t, "        realms: [CORP.EXAMPLE]\n        default_action: allow\n",
+		"", real0.addr())
+	good := asReq("CORP.EXAMPLE", user("alice"), []wire.EType{wire.ETypeAES256SHA1}, withPKINIT())
+	if _, m := dial(t, addr2).post(good, "CORP.EXAMPLE"); m == nil || m.Type != wire.MsgASRep {
+		t.Fatalf("a PKINIT login the KDC answered as one was refused: %v", m)
+	}
+}
+
+// Protocol transition has two spellings and a KDC honours both, so a switch
+// that knew only PA-FOR-USER was a switch with a second door beside it.
+func TestProtocolTransitionIsRefusedWhicheverPadataAsksForIt(t *testing.T) {
+	t.Parallel()
+	kdc := startKDC(t, &fakeKDC{reply: func(m wire.Message) []byte {
+		return tgsRep(m.Realm, user("websvc"), svc("cifs", "files.corp.example"),
+			wire.ETypeAES256SHA1)
+	}})
+	s, addr := relay(t, "        realms: [CORP.EXAMPLE]\n        default_action: allow\n",
+		"", kdc.addr())
+	target := user("administrator")
+	for _, opt := range []reqOpt{
+		withForUser(target, "CORP.EXAMPLE"),
+		withS4UX509User(target, "CORP.EXAMPLE"),
+	} {
+		req := tgsReq("CORP.EXAMPLE", user("websvc"), svc("cifs", "files.corp.example"),
+			[]wire.EType{wire.ETypeAES256SHA1}, opt)
+		if _, m := dial(t, addr).post(req, "CORP.EXAMPLE"); m == nil || m.Type != wire.MsgError {
+			t.Errorf("an impersonation request was carried: %v", m)
+		}
+	}
+	if refusals(s, "s4u2self_not_allowed") < 2 {
+		t.Fatalf("refusals: %v", s.Stats().Refusals["kkdcp"])
+	}
+	if s.Stats().KKDCPDelegations < 2 {
+		t.Error("kkdcp_delegations did not count both spellings")
+	}
+	if n := len(kdc.requests()); n != 0 {
+		t.Fatalf("the KDC saw %d requests, want none", n)
+	}
+}
+
+// A request that names a field twice is refused rather than resolved. Every
+// Kerberos field is an explicit context tag and this reader took the last
+// occurrence, so a body naming two realms was a request the policy decided
+// about for one realm and a KDC taking the first would act on for the other --
+// with the audit record wrong in the same direction as the decision.
+func TestARequestThatNamesAFieldTwiceIsRefused(t *testing.T) {
+	t.Parallel()
+	kdc := startKDC(t, &fakeKDC{reply: func(m wire.Message) []byte {
+		return asRep(m.Realm, user("alice"), krbtgt(m.Realm), wire.ETypeAES256SHA1, nil)
+	}})
+	s, addr := relay(t, "        realms: [CORP.EXAMPLE]\n        default_action: allow\n",
+		"", kdc.addr())
+	// FOREIGN.EXAMPLE first and the realm this proxy serves second: the realm
+	// check used to read the second and allow it.
+	req := asReq("FOREIGN.EXAMPLE", user("alice"), []wire.EType{wire.ETypeAES256SHA1},
+		withPreauth(), withExtraRealm("CORP.EXAMPLE"))
+	if _, m := dial(t, addr).post(req, "CORP.EXAMPLE"); m != nil && m.Type != wire.MsgError {
+		t.Fatalf("a request naming two realms was carried: %v", m)
+	}
+	if refusals(s, "malformed_message") == 0 {
+		t.Fatalf("refusals: %v", s.Stats().Refusals["kkdcp"])
+	}
+	if n := len(kdc.requests()); n != 0 {
+		t.Fatalf("the KDC saw %d requests, want none", n)
+	}
+}
+
+// The refusal this proxy mints says which proxy refused and nothing else. On
+// this protocol the name of the control that fired is usually the intelligence
+// the control exists to deny: `preauth_not_required` tells a roaster the
+// account exists and is exempt, which is a cleaner answer than the AS-REP it
+// was refused.
+func TestTheRefusalDoesNotNameTheControlThatFired(t *testing.T) {
+	t.Parallel()
+	kdc := startKDC(t, &fakeKDC{reply: func(m wire.Message) []byte {
+		return asRep(m.Realm, user("svcacct"), krbtgt(m.Realm), wire.ETypeAES256SHA1, nil)
+	}})
+	_, addr := relay(t, "        realms: [CORP.EXAMPLE]\n        default_action: allow\n",
+		"", kdc.addr())
+	bare := asReq("CORP.EXAMPLE", user("svcacct"), []wire.EType{wire.ETypeAES256SHA1})
+	_, m := dial(t, addr).post(bare, "CORP.EXAMPLE")
+	if m == nil || m.Type != wire.MsgError {
+		t.Fatalf("the reply was not refused: %v", m)
+	}
+	if m.ErrorText == "" {
+		t.Fatal("the refusal carries no text at all, so a client cannot tell who refused it")
+	}
+	for _, leak := range []string{"preauth", "not_required", "exempt"} {
+		if strings.Contains(strings.ToLower(m.ErrorText), leak) {
+			t.Errorf("the refusal text %q names the control that fired", m.ErrorText)
+		}
+	}
+}
+
 func TestDelegationIsRefusedUnlessBothHalvesAreAllowed(t *testing.T) {
 	t.Parallel()
 	kdc := startKDC(t, &fakeKDC{reply: func(m wire.Message) []byte {
@@ -352,6 +513,33 @@ func TestDelegationIsRefusedUnlessBothHalvesAreAllowed(t *testing.T) {
 	}
 	if s.Stats().KKDCPDelegations < 2 {
 		t.Fatalf("kkdcp_delegations = %d", s.Stats().KKDCPDelegations)
+	}
+}
+
+// An observe rule records and decides nothing here too, so the deny rule under
+// it still decides.
+func TestAnObserveRuleDoesNotShadowTheDenyRuleBelowIt(t *testing.T) {
+	t.Parallel()
+	kdc := startKDC(t, &fakeKDC{reply: func(m wire.Message) []byte {
+		return asRep(m.Realm, user("alice"), krbtgt(m.Realm), wire.ETypeAES256SHA1, nil)
+	}})
+	section := "        realms: [CORP.EXAMPLE]\n        default_action: allow\n" +
+		"        rules:\n" +
+		"          - {name: trial, action: observe, clients: [127.0.0.1/32]}\n" +
+		"          - {name: lockdown, action: deny, principals: [\"svcacct\"]}\n"
+	s, addr := relay(t, section, "", kdc.addr())
+	c := dial(t, addr)
+
+	denied := asReq("CORP.EXAMPLE", user("svcacct"), []wire.EType{wire.ETypeAES256SHA1}, withPreauth())
+	if _, m := c.post(denied, "CORP.EXAMPLE"); m == nil || m.Type != wire.MsgError {
+		t.Fatalf("a trial rule above the deny rule carried the request: %v", m)
+	}
+	if refusals(s, "rule_denied") == 0 {
+		t.Fatalf("refusals: %v", s.Stats().Refusals["kkdcp"])
+	}
+	allowed := asReq("CORP.EXAMPLE", user("alice"), []wire.EType{wire.ETypeAES256SHA1}, withPreauth())
+	if _, m := c.post(allowed, "CORP.EXAMPLE"); m == nil || m.Type != wire.MsgASRep {
+		t.Fatalf("the trial rule refused a principal nothing denies: %v", m)
 	}
 }
 

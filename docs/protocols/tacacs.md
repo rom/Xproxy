@@ -86,14 +86,40 @@ nothing.
 
 **Which commands may run.** The patterns match the reassembled command line,
 word by word and case-insensitively, with an optional trailing `...` meaning
-"and anything after". `show ...` covers every show command; `show
-running-config` covers exactly that; a wildcard in the middle is refused at
-load, because a pattern whose author and whose reader disagree about what it
-covers is worse than no pattern on a protocol that authorises each command
-separately. `deny_commands` is checked first and no rule overrides it, which is
-how "allow `show ...`, deny `show running-config`" is written. Abbreviations
-are not expanded: a user may type `conf t`, and what reaches the server is what
-the device sends.
+"and anything after". `show ...` covers every show command; a wildcard in the
+middle is refused at load, because a pattern whose author and whose reader
+disagree about what it covers is worse than no pattern on a protocol that
+authorises each command separately. Abbreviations are not expanded: a user may
+type `conf t`, and what reaches the server is what the device sends.
+
+The two lists are read differently, and deliberately. An **allow** pattern
+covers exactly the words it names, so `show version` is not `show version
+detail`: allowing more than was asked for is the unsafe direction, and `...` is
+there for when more is meant. A **deny** pattern covers the command it names and
+whatever is appended to it, because a device's command line takes suffixes — a
+filter, a redirect, an argument — and under the exact reading `deny_commands:
+["show running-config"]` matched the spelling an operator would type and missed
+`show running-config | include password`, which is the spelling that prints the
+device's credentials. Denying more than was asked for is the safe direction on a
+list whose purpose is "no router behind this relay accepts this".
+
+`deny_commands` is checked first and no rule overrides it, which is how "allow
+`show ...`, deny `show running-config`" is written. A rule's own lists **add to**
+the listener's rather than replacing them: both deny lists are checked and both
+allow lists have to be satisfied, so a rule narrows and never widens. The other
+way round, a rule that carried a deny of its own would have disarmed every
+listener-wide deny for the traffic it covered — an estate handing its network
+team `reload` by writing them a deny.
+
+**Who is asking, including when nobody said so at the start.** RFC 8907 §5.4.2
+lets an ASCII login leave the START's user field empty: the server answers
+GETUSER, the device prompts, and the name arrives in the typed text of a
+CONTINUE. That is the ordinary shape of `telnet` to a router, and it is the one
+place this relay reads a CONTINUE's `user_msg` — the field it otherwise keeps
+only the length of, because the typed text is usually a password. Without that
+reading, `users`, `deny_users` and the estate's own authorization rules were a
+control anybody could step around by leaving one field blank and typing the name
+at the prompt.
 
 **Which privilege a reply may grant.** `priv-lvl` in an authorization response
 is a mandatory argument and the device must apply it, so the bound is checked
