@@ -398,13 +398,16 @@ func TestALineTheServerDidNotAskForIsNotCredentialMaterial(t *testing.T) {
 	// Both lines in one write, which is what makes this work against a relay
 	// that reads the second before the server has answered the first.
 	c.raw("a1 AUTHENTICATE XNOTAMECH\r\na2 LOGIN victim@example.com Hunter2\r\n")
-	// The connection ends, and the smuggled command is not forwarded.
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if s.Stats().Refusals["imap"]["auth_injection"] > 0 {
+	// The connection ends, and the smuggled command is not forwarded. Read to
+	// the end of it rather than waiting a fixed time for the counter: the
+	// refusal is counted before the socket is closed, so the close is the
+	// signal, and a timer long enough on an idle machine is not long enough
+	// on a loaded one.
+	_ = c.c.SetDeadline(time.Now().Add(30 * time.Second))
+	for {
+		if _, err := c.br.ReadString('\n'); err != nil {
 			break
 		}
-		time.Sleep(10 * time.Millisecond)
 	}
 	if s.Stats().Refusals["imap"]["auth_injection"] == 0 {
 		t.Errorf("the line was carried as a credential: %v", s.Stats().Refusals["imap"])
