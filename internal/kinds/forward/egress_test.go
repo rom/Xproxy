@@ -412,3 +412,83 @@ func TestACategoryFileIsBounded(t *testing.T) {
 		t.Fatalf("a small file: %v", err)
 	}
 }
+
+// The two dimensions the estate policy above does not use: where the client is
+// rather than who it says it is.
+//
+// They matter on this listener more than on most, because a forward proxy's
+// clients are the estate itself: a rule written about a network is a rule about
+// a floor, a lab or a build farm, and it holds for a host that has no user name
+// at all. `not_networks` is the exception carved out of one -- the lab inside
+// the office range that does not get the office's egress.
+func TestAnEgressRuleIsWrittenAboutWhereTheClientIs(t *testing.T) {
+	p := policy(t, &config.ForwardListener{
+		Rules: []config.ForwardRule{
+			{Name: "not-the-lab", Action: "deny", Networks: []string{"10.1.0.0/16"},
+				NotNetworks: []string{"10.1.9.0/24"}},
+			{Name: "the-lab", Action: "allow", Networks: []string{"10.1.9.0/24"}},
+			// A single host written as an address rather than a /32, which is
+			// what most of these lists are: one jump box.
+			{Name: "jump-box", Action: "allow", Networks: []string{"192.168.5.7"}},
+		},
+	})
+	sub := func(client string) egressSubject {
+		return egressSubject{client: addr(t, client), host: "example.test", port: 443,
+			phase: phaseRequest, method: "GET", path: "/"}
+	}
+	for _, c := range []struct {
+		name, client string
+		allowed      bool
+		rule         string
+	}{
+		{"an office client inside the broad network", "10.1.0.9", false, "not-the-lab"},
+		// The exception: inside the office range, carved out of the deny, and
+		// then allowed by its own rule below.
+		{"a lab client the exception names", "10.1.9.4", true, "the-lab"},
+		{"the one jump box, named as an address", "192.168.5.7", true, "jump-box"},
+		{"a host no rule covers", "172.16.0.1", false, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			d := p.Decide(sub(c.client))
+			if d.Allowed != c.allowed {
+				t.Errorf("allowed=%v want %v (rule %q reason %q)",
+					d.Allowed, c.allowed, d.Rule, d.Reason)
+			}
+			if c.rule != "" && d.Rule != c.rule {
+				t.Errorf("decided by %q, want %q", d.Rule, c.rule)
+			}
+		})
+	}
+	// A network that is not one is a load error rather than a rule that matches
+	// nothing: a rule nobody can read is worse than no rule.
+	for _, bad := range [][]string{{"10.1.0.0/33"}, {"the-office"}, {"10.1.0.0/16", "nonsense"}} {
+		_, err := compileEgress(&config.ForwardListener{
+			Rules: []config.ForwardRule{{Name: "r", Action: "deny", Networks: bad}}})
+		if err == nil || !strings.Contains(err.Error(), "is not an address or CIDR") {
+			t.Errorf("networks %v compiled with error %v", bad, err)
+		}
+	}
+	_, err := compileEgress(&config.ForwardListener{
+		Rules: []config.ForwardRule{{Name: "r", Action: "deny", NotNetworks: []string{"nonsense"}}}})
+	if err == nil {
+		t.Error("an unreadable not_networks compiled")
+	}
+	// And the containment test itself, including the address that is not one:
+	// an invalid address is in no network, which is what keeps a rule about a
+	// network off a connection whose address the relay never learned.
+	nets := []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}
+	if !inAnyPrefix(nets, addr(t, "10.1.2.3")) {
+		t.Error("an address inside the network was not found in it")
+	}
+	if inAnyPrefix(nets, addr(t, "192.0.2.1")) {
+		t.Error("an address outside the network was found in it")
+	}
+	if inAnyPrefix(nets, netip.Addr{}) {
+		t.Error("an invalid address was found in a network")
+	}
+	// A v4-mapped v6 address is the same address, which is what a dual-stack
+	// listener hands to a policy written in v4.
+	if !inAnyPrefix(nets, netip.MustParseAddr("::ffff:10.1.2.3")) {
+		t.Error("a mapped address was not matched against the v4 network it is in")
+	}
+}
