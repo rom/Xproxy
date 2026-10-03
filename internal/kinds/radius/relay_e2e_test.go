@@ -306,8 +306,27 @@ func TestARequestReachesTheServerAndItsAnswerComesBack(t *testing.T) {
 	if err := reqs[0].VerifyMessageAuthenticator([]byte(theSecret), reqs[0].Authenticator); err != nil {
 		t.Fatalf("the forwarded request's digest does not verify: %v", err)
 	}
-	if st := s.Stats(); st.RADIUSRequests != 1 {
-		t.Fatalf("radius_requests = %d, want 1", st.RADIUSRequests)
+	waitRequests(t, s, 1)
+}
+
+// waitRequests waits for the forwarded-request counter to reach n.
+//
+// It is a wait rather than a read because the counter is incremented after the
+// datagram has gone to the server -- which is the right place for a counter
+// that means "requests this listener forwarded" and means the answer can reach
+// the client first: the reply arrives on another goroutine, and under load the
+// forwarding one can be descheduled between the write and the count.
+func waitRequests(t *testing.T, s *proxy.Server, n uint64) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if got := s.Stats().RADIUSRequests; got >= n {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("radius_requests = %d, want %d", s.Stats().RADIUSRequests, n)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 

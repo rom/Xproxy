@@ -4810,7 +4810,7 @@ either.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | string | required | Names the rule in the logs and the counters |
-| `action` | enum | `allow` | `allow`, `deny` or `observe`. `observe` logs and counts and then keeps looking, which is how a rule is tried on live traffic before it decides anything |
+| `action` | enum | `allow` | `allow`, `deny` or `observe`. `observe` records the rule and decides nothing, so the rules below it still decide — and on a listener whose `default_action` is `deny`, the default does. That is what lets a rule be tried on live traffic without the trial changing what happens |
 | `clients` | list of CIDR | `[]` | The networks the connection came from |
 | `application_uris`, `users`, `token_kinds` | list | `[]` | Select by who the traffic is from. A rule naming a user matches only a session that activated as one, which is every session after ActivateSession and none before it |
 | `security_policies`, `security_modes` | list | `[]` | Select by what secures the channel, which is how "this client may write, but only over an encrypted channel" is written |
@@ -13855,7 +13855,7 @@ logged as an `alert` rather than a refusal, since nothing was denied.
 | `name` | string | Names the rule in logs and counters |
 | `clients`, `users`, `databases`, `programs` | lists | Selectors; AND within a rule, OR within one |
 | `schedule` | object | `days`, `from`, `to`, `timezone` |
-| `action` | `allow`, `deny`, `observe` | Default `allow` |
+| `action` | `allow`, `deny`, `observe` | Default `allow`. `observe` records the rule in the log line and decides nothing, so the rules below it still decide — and on a listener whose `default_action` is `deny`, the default does. That is what lets a rule be tried on live traffic without the trial changing what happens; a rule that decided, by allowing what it covers, would make writing one the way to switch off every rule under it |
 | `allow_commands`, `deny_commands`, `allow_statements`, `deny_statements`, `allow_load`, `read_only`, `max_statements` | | The rule's own narrowing. A rule that names a command or a kind **widens** the listener for its own traffic; the deny lists always win |
 
 ### What shadow mode never shadows
@@ -14065,7 +14065,7 @@ cannot do at all:
 | `name` | string | Names the rule in logs and counters |
 | `clients`, `users`, `databases`, `applications` | lists | Selectors. Within a rule they are AND; values within one are OR |
 | `schedule` | object | `days`, `from`, `to`, `timezone` |
-| `action` | `allow`, `deny`, `observe` | Default `allow` |
+| `action` | `allow`, `deny`, `observe` | Default `allow`. `observe` records the rule in the log line and decides nothing, so the rules below it still decide — and on a listener whose `default_action` is `deny`, the default does. That is what lets a rule be tried on live traffic without the trial changing what happens; a rule that decided, by allowing what it covers, would make writing one the way to switch off every rule under it |
 | `allow_statements`, `deny_statements`, `allow_copy`, `read_only`, `max_statements` | | The rule's own narrowing. A rule that names a kind **widens** the listener for its own traffic, which is what makes one listener serve a reporting account that may only select and a migration account that may also change the schema. The deny lists always win, on the rule and the listener both |
 
 ### What shadow mode never shadows
@@ -14348,7 +14348,7 @@ part way through a connection.
 | `name` | string | Names the rule in logs and counters |
 | `clients`, `users`, `databases`, `apps` | lists | Selectors; AND within a rule, OR within one |
 | `schedule` | object | `days`, `from`, `to`, `timezone` |
-| `action` | `allow`, `deny`, `observe` | Default `allow` |
+| `action` | `allow`, `deny`, `observe` | Default `allow`. `observe` records the rule in the log line and decides nothing, so the rules below it still decide — and on a listener whose `default_action` is `deny`, the default does. That is what lets a rule be tried on live traffic without the trial changing what happens; a rule that decided, by allowing what it covers, would make writing one the way to switch off every rule under it |
 | `allow_procedures`, `deny_procedures`, `allow_types`, `deny_types`, `allow_statements`, `deny_statements`, `read_only`, `max_statements` | | The rule's own narrowing. A rule that names a procedure, a type or a kind **widens** the listener for its own traffic; the deny lists always win |
 
 ### What shadow mode never shadows
@@ -14495,7 +14495,7 @@ ordinary commands.
 | `name` | string | Names the rule in logs and counters |
 | `clients`, `users` | lists | Selectors; AND within a rule, OR within one |
 | `schedule` | object | `days`, `from`, `to`, `timezone` |
-| `action` | `allow`, `deny`, `observe` | Default `allow` |
+| `action` | `allow`, `deny`, `observe` | Default `allow`. `observe` records the rule in the log line and decides nothing, so the rules below it still decide — and on a listener whose `default_action` is `deny`, the default does. That is what lets a rule be tried on live traffic without the trial changing what happens; a rule that decided, by allowing what it covers, would make writing one the way to switch off every rule under it |
 | `allow_commands`, `deny_commands`, `allow_subcommands`, `deny_subcommands`, `allow_key_prefixes`, `deny_key_prefixes`, `read_only`, `max_commands` | | The rule's own narrowing. A rule that names commands **widens** the listener for its own traffic; the deny lists always win |
 
 ### What is off by default, and why
@@ -14983,7 +14983,7 @@ that means to allow publishing to a queue by name has to write `""` in
 | `name` | string | Names the rule in logs and counters |
 | `clients`, `users`, `vhosts` | lists | Selectors; AND within a rule, OR within one |
 | `schedule` | object | `days`, `from`, `to`, `timezone` |
-| `action` | `allow`, `deny`, `observe` | Default `allow` |
+| `action` | `allow`, `deny`, `observe` | Default `allow`. `observe` records the rule in the log line and decides nothing, so the rules below it still decide — and on a listener whose `default_action` is `deny`, the default does. That is what lets a rule be tried on live traffic without the trial changing what happens; a rule that decided, by allowing what it covers, would make writing one the way to switch off every rule under it |
 | `allow_methods`, `deny_methods`, `allow_performatives`, `deny_performatives`, `allow_exchanges`, `deny_exchanges`, `allow_queues`, `deny_queues`, `allow_routing_keys`, `deny_routing_keys`, `allow_addresses`, `deny_addresses`, `allow_topology`, `allow_publish`, `allow_consume`, `max_message_bytes`, `max_methods` | | The rule's own narrowing. A rule that names methods **widens** the listener for its own traffic; the deny lists always win |
 
 ### A refusal ends the connection
@@ -15395,7 +15395,7 @@ controller instead, and validation says so at load.
 | Key | Type | Description |
 |-----|------|-------------|
 | `name` | string | Names the rule in logs and counters |
-| `action` | `allow`, `deny`, `observe` | Default `allow` |
+| `action` | `allow`, `deny`, `observe` | Default `allow`. `observe` records the rule in the log line and decides nothing, so the rules below it still decide — and on a listener whose `default_action` is `deny`, the default does. That is what lets a rule be tried on live traffic without the trial changing what happens; a rule that decided, by allowing what it covers, would make writing one the way to switch off every rule under it |
 | `clients`, `racks`, `slots`, `resources` | lists | Selectors; AND within a rule, OR within one |
 | `schedule` | object | `days`, `from`, `to`, `timezone`. This is how "the integrator may download during the shutdown window" is written |
 | `operations`, `deny_operations`, `areas`, `deny_areas`, `dbs`, `addresses`, `write_addresses`, `block_types`, `max_items` | | The rule's own narrowing. A rule that names operations **widens** the listener for its own traffic; the deny lists and `read_only` always win |

@@ -46,6 +46,31 @@ func pdu(t *testing.T, frame []byte) *wire.PDU {
 
 // The default posture: an HMI can do its work, and nothing can change the
 // controller.
+// An observe rule records and decides nothing, so the rules below it still
+// decide. On a plant that matters more than anywhere: a rule being tried must
+// not be the reason a write to a PLC went through.
+func TestAnObserveRuleIsRecordedAndDecidesNothing(t *testing.T) {
+	p := compiled(t, &config.S7Listener{Upstream: "plc", DefaultAction: "deny",
+		Rules: []config.S7Rule{{Name: "trial", Racks: []string{"0"}, Action: "observe"}}})
+	s := sess(0, 2, wire.ResourcePG)
+	d := p.Request(s, pdu(t, readJob(1, item(wire.TransportByte, 4, 1, wire.AreaDB, 0))))
+	if d.Allow {
+		t.Fatalf("a trial rule decided, by allowing: %+v", d)
+	}
+	if len(d.Observed) != 1 || d.Observed[0] != "trial" {
+		t.Errorf("the rule being tried was not recorded: %+v", d.Observed)
+	}
+	p = compiled(t, &config.S7Listener{Upstream: "plc", DefaultAction: "allow",
+		Rules: []config.S7Rule{
+			{Name: "trial", Racks: []string{"0"}, Action: "observe"},
+			{Name: "lockdown", Racks: []string{"0"}, Action: "deny"},
+		}})
+	if d := p.Request(s, pdu(t, readJob(1, item(wire.TransportByte, 4, 1, wire.AreaDB, 0)))); d.Allow ||
+		d.Rule != "lockdown" {
+		t.Errorf("the trial rule shadowed the deny rule: %+v", d)
+	}
+}
+
 func TestTheDefaultReadsAndChangesNothing(t *testing.T) {
 	p := compiled(t, &config.S7Listener{Upstream: "plc", DefaultAction: "allow"})
 	s := sess(0, 2, wire.ResourcePG)

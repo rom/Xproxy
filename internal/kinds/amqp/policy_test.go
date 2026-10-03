@@ -83,6 +83,31 @@ func TestTheDefaultAllowsWorkAndNotTopology(t *testing.T) {
 
 // The destructive methods are refused even in monitor mode: a purge forwarded
 // so that it could be written down is a queue that is empty.
+// An observe rule records and decides nothing, so the rules below it still
+// decide. A rule that allowed what it covered would make trying one out the way
+// to switch off every deny rule under it, which is the opposite of a trial.
+func TestAnObserveRuleIsRecordedAndDecidesNothing(t *testing.T) {
+	p := compiled(t, &config.AMQPListener{Upstream: "mq", DefaultAction: "deny",
+		Rules: []config.AMQPRule{{Name: "trial", Users: []string{"app"}, Action: "observe"}}})
+	s := sess("app", "/")
+	d := p.Method(s, meth(t, wire.ClassBasic, 40, u16(0), sstr("ex"), sstr("rk"), bitsOf(false, false)))
+	if d.Allow {
+		t.Fatalf("a trial rule decided, by allowing: %+v", d)
+	}
+	if len(d.Observed) != 1 || d.Observed[0] != "trial" {
+		t.Errorf("the rule being tried was not recorded: %+v", d.Observed)
+	}
+	// And the deny rule under it decides.
+	p = compiled(t, &config.AMQPListener{Upstream: "mq", DefaultAction: "allow",
+		Rules: []config.AMQPRule{
+			{Name: "trial", Users: []string{"app"}, Action: "observe"},
+			{Name: "lockdown", Users: []string{"app"}, Action: "deny"},
+		}})
+	if d := p.Method(s, meth(t, wire.ClassBasic, 40, u16(0), sstr("ex"), sstr("rk"), bitsOf(false, false))); d.Allow || d.Rule != "lockdown" {
+		t.Errorf("the trial rule shadowed the deny rule: %+v", d)
+	}
+}
+
 func TestTheDestructiveMethodsAreNeverShadowed(t *testing.T) {
 	p := compiled(t, &config.AMQPListener{Upstream: "b", MonitorOnly: true, DefaultAction: "allow"})
 	s := sess("orders", "/")

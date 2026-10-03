@@ -360,11 +360,29 @@ func TestTheScheduleAndTheObservingRule(t *testing.T) {
 		sqlkind.Statement{Kind: sqlkind.KindSelect}, "x"); d.Allow {
 		t.Fatal("outside the window was allowed")
 	}
+	// An observe rule decides nothing, which means the rest of the policy
+	// decides: on a listener that denies by default, the default does. A rule
+	// that allowed what it covered would make a trial the most dangerous edit
+	// in a configuration.
 	p = must(t, &config.MySQLListener{Upstream: "my", DefaultAction: "deny",
 		Rules: []config.MySQLRule{{Name: "watch", Users: []string{"app"}, Action: "observe"}}})
+	d := p.Statement(sess("app", "sales"),
+		sqlkind.Statement{Kind: sqlkind.KindDDL, Writes: true}, "x")
+	if d.Allow {
+		t.Fatalf("an observing rule decided, by allowing: %+v", d)
+	}
+	if len(d.Observed) != 1 || d.Observed[0] != "watch" {
+		t.Errorf("the rule being tried was not recorded: %+v", d.Observed)
+	}
+	// And a deny rule under it still decides.
+	p = must(t, &config.MySQLListener{Upstream: "my", DefaultAction: "allow",
+		Rules: []config.MySQLRule{
+			{Name: "watch", Users: []string{"app"}, Action: "observe"},
+			{Name: "lockdown", Users: []string{"app"}, Action: "deny"},
+		}})
 	if d := p.Statement(sess("app", "sales"),
-		sqlkind.Statement{Kind: sqlkind.KindDDL, Writes: true}, "x"); !d.Allow {
-		t.Fatalf("an observing rule refused: %+v", d)
+		sqlkind.Statement{Kind: sqlkind.KindSelect}, "x"); d.Allow || d.Rule != "lockdown" {
+		t.Errorf("a trial rule above the deny rule decided: %+v", d)
 	}
 }
 

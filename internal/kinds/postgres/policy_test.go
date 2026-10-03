@@ -323,17 +323,44 @@ func TestTheScheduleDecidesWhenARuleApplies(t *testing.T) {
 // An observing rule decides nothing: it is how an operator sees what a rule
 // would match before giving it an action.
 func TestAnObservingRuleDecidesNothing(t *testing.T) {
+	// "Decides nothing" means the rest of the policy decides, which is the
+	// whole point of trying a rule on live traffic: the trial must not change
+	// what happens. The other reading -- an observe rule *allowing* what it
+	// covers -- made writing one the way to switch off every rule below it,
+	// and on a listener that denies by default it turned the default off too.
 	p := must(t, &config.PostgresListener{
 		Upstream: "pg", DefaultAction: "deny",
 		Rules: []config.PostgresRule{{Name: "watch", Users: []string{"alice"}, Action: "observe"}},
 	})
-	if d := p.Statement(sess("alice", "sales"),
-		wire.Statement{Kind: wire.KindDDL, Writes: true}, "x"); !d.Allow {
-		t.Fatalf("an observing rule refused: %+v", d)
+	d := p.Statement(sess("alice", "sales"), wire.Statement{Kind: wire.KindDDL, Writes: true}, "x")
+	if d.Allow {
+		t.Fatalf("an observing rule decided, by allowing: %+v", d)
 	}
-	// And a user it does not match still falls to the default.
-	if d := p.Statement(sess("bob", "sales"), wire.Statement{Kind: wire.KindSelect}, "x"); d.Allow {
-		t.Error("the default action was not applied to unmatched traffic")
+	if d.Reason != "no_rule_matched" {
+		t.Errorf("the default did not decide: %+v", d)
+	}
+	// It is recorded, though, which is what it is for.
+	if len(d.Observed) != 1 || d.Observed[0] != "watch" {
+		t.Errorf("the rule being tried was not recorded: %+v", d.Observed)
+	}
+	// A user it does not match is not recorded and still falls to the default.
+	if d := p.Statement(sess("bob", "sales"), wire.Statement{Kind: wire.KindSelect}, "x"); d.Allow ||
+		len(d.Observed) != 0 {
+		t.Errorf("unmatched traffic: %+v", d)
+	}
+	// And a deny rule under the trial still decides, rather than being shadowed
+	// by it.
+	p = must(t, &config.PostgresListener{
+		Upstream: "pg", DefaultAction: "allow",
+		Rules: []config.PostgresRule{
+			{Name: "watch", Users: []string{"alice"}, Action: "observe"},
+			{Name: "lockdown", Users: []string{"alice"}, Action: "deny"},
+		},
+	})
+	if d := p.Statement(sess("alice", "sales"), wire.Statement{Kind: wire.KindSelect}, "x"); d.Allow {
+		t.Error("a trial rule above the deny rule carried the statement")
+	} else if d.Rule != "lockdown" {
+		t.Errorf("the deny rule did not decide: %+v", d)
 	}
 }
 

@@ -45,6 +45,29 @@ func boolp(v bool) *bool { return &v }
 // The default allow list is what an application does to a cache, and the absences
 // are the value. On this protocol the distance between an administrative command
 // and a shell is one command.
+// An observe rule records and decides nothing, so the rules below it still
+// decide -- and on a listener that denies by default, the default does.
+func TestAnObserveRuleIsRecordedAndDecidesNothing(t *testing.T) {
+	p := mustCompile(t, &config.RedisListener{Upstream: "r", DefaultAction: "deny",
+		Rules: []config.RedisRule{{Name: "trial", Users: []string{"app"}, Action: "observe"}}})
+	s := sess("app")
+	d := p.Command(s, cmd(t, "GET", "k"))
+	if d.Allow {
+		t.Fatalf("a trial rule decided, by allowing: %+v", d)
+	}
+	if len(d.Observed) != 1 || d.Observed[0] != "trial" {
+		t.Errorf("the rule being tried was not recorded: %+v", d.Observed)
+	}
+	p = mustCompile(t, &config.RedisListener{Upstream: "r", DefaultAction: "allow",
+		Rules: []config.RedisRule{
+			{Name: "trial", Users: []string{"app"}, Action: "observe"},
+			{Name: "lockdown", Users: []string{"app"}, Action: "deny"},
+		}})
+	if d := p.Command(s, cmd(t, "GET", "k")); d.Allow || d.Rule != "lockdown" {
+		t.Errorf("the trial rule shadowed the deny rule: %+v", d)
+	}
+}
+
 func TestTheDefaultListIsWhatAnApplicationDoes(t *testing.T) {
 	p := mustCompile(t, &config.RedisListener{Upstream: "u", DefaultAction: "allow"})
 	s := sess("app")

@@ -232,11 +232,25 @@ shown rather than on what was claimed.
 - **An `observe` rule decided by allowing what it covered**, which the reference
   has never said: it promises a rule that records and keeps looking. Placed above
   a deny rule it switched that rule off, so trying a rule on live traffic was the
-  most dangerous edit in a configuration. In `radius`, `tacacs` and `kkdcp` an
-  observe rule is now recorded in the access line (`observed`) and decides
-  nothing. The same pattern remains in `amqp`, `mysql`, `opcua`, `postgres`,
-  `redis`, `s7` and `tds` and is the next thing to sweep; `bacnet`, `mms`,
-  `modbus`, `iec104` and `snmp` already read it the documented way.
+  most dangerous edit in a configuration -- and on a listener whose
+  `default_action` is `deny`, a trial rule turned the default off too.
+
+  Fixed in every kind that had it: `radius`, `tacacs` and `kkdcp` first, then
+  `amqp`, `mysql`, `postgres`, `redis`, `s7` and `tds`. An observe rule is now
+  recorded on the decision (`observed` in the log line) and decides nothing, and
+  one piece of code per kind chooses both the rule that decides and the rules
+  that are only recorded, so the two cannot drift apart. `bacnet`, `mms`,
+  `modbus`, `iec104`, `snmp` and `opcua` already read it the documented way --
+  `opcua`'s `match` skips an observe rule with the comment this sweep went on to
+  copy -- and the reference rows for all of them now describe the behaviour in
+  the same words, including what happens under a deny default, which none of
+  them said before.
+
+  Two tests had asserted the old reading, one in `mysql` and one in `postgres`,
+  both named "an observing rule decides nothing" while checking that it
+  *allowed* the traffic. They now check what the name says: the trial decides
+  nothing, the default or the deny rule below it decides, and the rule's name is
+  in `Observed` either way.
 
 ### Added (the other half of mail: the two mailbox protocols)
 
