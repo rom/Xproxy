@@ -62,6 +62,22 @@ written in each protocol's own terms.
 | TDS 7.x for SQL Server | [tds](tds.md) | 1433 |
 | Redis, RESP2 and RESP3 | [redis](redis.md) | 6379 |
 
+### The mailbox protocols
+
+[SMTP](smtp.md) above is a message on its way out, and can be decided about one
+message at a time. These two are the other half of mail: a client with a
+credential asking for everything that ever arrived, where the access is
+legitimate and the *volume* is the signal.
+
+| Protocol | Page | Usual port |
+|----------|------|------------|
+| IMAP4rev2 and IMAP4rev1, with STARTTLS | [imap](imap.md) | 143, 993 |
+| POP3, with STLS | [pop3](pop3.md) | 110, 995 |
+
+This is where `max_fetch_messages` and `max_retr_bytes` live: the settings that
+tell a mail client's first synchronisation apart from an emptied account, which
+nothing in a mail server's own log does.
+
 ### Authentication, authorisation and accounting
 
 The protocols that decide who may get onto the network and who may change the

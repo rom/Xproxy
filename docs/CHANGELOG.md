@@ -6,6 +6,130 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (the other half of mail: the two mailbox protocols)
+
+- **`kind: imap` is a relay in front of the most complete record an estate
+  has.** A mailbox holds every decision, every negotiation, every password
+  reset and every attachment somebody sent "just so you have a copy", and IMAP
+  is the protocol for reading all of it with one credential, from anywhere, as
+  many times as you like. That makes it a different problem from the submission
+  relay next door: a proxy in front of SMTP sees one message on its way out and
+  can decide about it, and a proxy in front of IMAP sees a client that has
+  already authenticated asking for everything that ever arrived. The request
+  worth stopping is not malformed, oversized or strange — it is
+  `UID FETCH 1:* (BODY[])`, which is what a mail client's first synchronisation
+  and an emptied account look like character for character.
+
+  So the bound is on **how much a request names**. `max_fetch_messages` counts
+  the messages in a sequence set on the command line — not what comes back —
+  and refuses before the mail server has read anything; a set is counted
+  without being expanded, so refusing `1:20000` costs nothing. An open-ended
+  set (`1:*`, `*`) is refused outright rather than counted, because the size of
+  that request belongs to the mailbox and not to the client, and
+  `allow_open_sets` plus a `rules` entry for the one account that legitimately
+  synchronises everything are the two ways to write the exception down.
+  `max_append_bytes` is checked against a literal's **declared** size, because
+  RFC 7888's LITERAL+ sends the octets without waiting for anybody to agree —
+  and a refused command's octets are then read and dropped rather than left to
+  desynchronise the connection, since the client announced them and is going to
+  send them whatever it is told. [AMR-054](AMR.md) is the reasoning.
+
+  The rest of the policy is the shape its siblings use, with two details the
+  protocol forces. The command set is checked against **RFC 9051 §3's state
+  table**, which is the relay's own, so a `FETCH` that arrives before a
+  `SELECT` is answered here and the mailbox never sees it; and a mailbox name
+  is compared **decoded**, because RFC 3501 §5.1.3 spells a non-ASCII name in a
+  modified UTF-7 — `~peter/mail/&U,BTFw-` and `~peter/mail/台北` are one mailbox
+  — and a policy that compared the spelling would compare nothing. `*` matches
+  across the hierarchy and `%` within one level, exactly as IMAP's own `LIST`
+  does, so `Shared/%` admits `Shared/HR` and not `Shared/HR/Payroll`. `UID
+  FETCH` is the command it qualifies, so it is not a way to spell something the
+  policy refuses.
+
+  Three refusals are about what the *server* said. The **capability list is
+  narrowed**: a mechanism `mechanisms` will refuse is removed and
+  `LOGINDISABLED` added where `LOGIN` would be refused, which RFC 3501 §6.2.3
+  makes the way a server says so — a client that reads it asks for something it
+  can use instead of sending a password into a refusal. `COMPRESS=DEFLATE` (RFC
+  4978) is removed and refused, because a deflated connection cannot be
+  inspected and advertising it would be an offer to stop. And a **`PREAUTH`
+  greeting** is refused: it says the connection is authenticated before anybody
+  claimed an identity, which would make every later decision here about a name
+  this relay never saw.
+
+- **`kind: pop3` is the same five questions, in the shape a protocol with one
+  mailbox allows.** POP3 is what IMAP replaced and it is still configured on
+  the things nobody revisits — the script that pulls invoices off a mailbox,
+  the multifunction printer that mails scans, the integration written before
+  anybody asked which protocol it used — and it is the protocol whose whole
+  purpose is to move a mailbox somewhere else.
+
+  There is no sequence set here, so the bound is a **running total**, counted as
+  the octets pass and enforced *mid-transfer*: `max_retr_bytes` and
+  `max_messages` against what this connection has already taken. A bound
+  applied only before a command is one a client walks past one message at a
+  time, and a single `RETR` of a very large message is a mailbox copy by
+  itself. Reaching the message bound is a refusal the connection survives;
+  crossing the byte bound inside a message ends the connection, because a
+  truncated message presented as whole would be worse.
+
+  Two smaller things are where a relay on this protocol goes wrong. **Whether a
+  reply is one line or many depends on the command *and its argument*:** `LIST`
+  lists the mailbox and `LIST 3` answers one line about message 3, `UIDL` the
+  same, and a relay that guesses reads the next reply as part of this one —
+  after which a client is shown somebody else's mail or none of its own. And
+  the **greeting is carried unchanged**, because the `<1896.697170952@mail>` in
+  it is what an APOP digest is computed over; a relay that minted its own
+  greeting would make every APOP digest unverifiable at the server that has to
+  check it. §3's dot-stuffing is handled as SMTP's is, and the server's line is
+  forwarded verbatim rather than stuffed a second time.
+
+  `read_only` refuses `DELE` and `RSET`, which is what the things that still
+  speak POP3 here should be doing anyway and is also what makes the server's
+  copy the audit trail.
+
+- **Both kinds refuse a credential on a transport that cannot carry it, and
+  neither refusal is shadowable.** `require_tls` defaults on and refuses
+  `LOGIN`, `AUTHENTICATE` with a plaintext mechanism, `USER`/`PASS` and `APOP`
+  on an unencrypted connection — in `monitor_only` too, because by the time a
+  policy could be consulted the password has travelled and observing it does
+  not un-send it. On 143 and 110, `tls_mode: starttls` has the relay terminate
+  the RFC 2595 upgrade itself rather than forwarding it, which is how the
+  devices and scripts nobody can reconfigure get TLS anyway; anything pipelined
+  behind the upgrade ends the session, the same reasoning (and the same CVE
+  class) as the smtp kind's.
+
+- **Fifteen counters, six refusal families and the ATT&CK mappings.**
+  `imap_connections`, `imap_commands`, `imap_auth_failures`,
+  `imap_fetched_messages`, `imap_append_bytes`, `imap_plaintext_logins`,
+  `imap_capabilities_stripped`, `imap_preauth_refused`; `pop3_connections`,
+  `pop3_commands`, `pop3_auth_failures`, `pop3_retrieved_bytes`,
+  `pop3_deletes`, `pop3_plaintext_logins`, `pop3_capabilities_stripped`. Every
+  refusal is bannable — `imap_denied`, `imap_auth_failed`, `imap_anomaly`,
+  `pop3_denied`, `pop3_auth_failed`, `pop3_anomaly` — and carries its
+  Enterprise ATT&CK technique: **T1114 (Email Collection)** and **T1114.002
+  (Remote Email Collection)** on every bound refusal, which is what these kinds
+  are for; T1071.003 (Mail Protocols) on an unknown command or one in the wrong
+  state, because a relay that carries what it cannot name is a tunnel; T1556 on
+  the PREAUTH greeting, T1562 on the refused compression, T1557 on an upgrade
+  injection, and T1110 on the credential bursts the ban ladder acts on. The
+  behavioural models get the account, the mailbox, the command and the number
+  of messages named, and unlike the TACACS+ kind's a finding here reaches the
+  ban ladder — these clients are people's mail applications, and the cost of
+  being wrong is a client that reconnects.
+
+- **Documentation and examples.** Two sections in [CONFIG.md](CONFIG.md), two
+  protocol pages under [docs/protocols](protocols/README.md) with a new "The
+  mailbox protocols" group in the index, [`examples/mail/mailbox.yaml`](../examples/mail/mailbox.yaml)
+  (IMAPS, IMAP with the upgrade terminated here, and a read-only POP3S, with
+  the archiver's exemption written as a rule and two ban triggers), the two
+  kinds in [README.md](../README.md), [ARCHITECTURE.md](ARCHITECTURE.md) and
+  [USAGE.md](USAGE.md), a "Mailboxes" section in [RFC.md](RFC.md) for the
+  seventeen specifications they implement and the one they refuse, five rows in
+  [THREAT_MODEL.md](THREAT_MODEL.md), and [AMR-054](AMR.md) for the decision
+  that on a mailbox the bound is on what a request names — and that two of
+  these refusals are deliberately outside shadow mode.
+
 ### Added (the three authentication protocols an estate's own equipment uses: RADIUS, TACACS+ and Kerberos over HTTP)
 
 - **`kind: radius` is a relay in front of the protocol whose integrity check is

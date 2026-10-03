@@ -12,7 +12,7 @@ configuration patterns and reading the logs. Installation is covered in
 |--------|---------|
 | `xproxy` | The edge data plane: `http`, `forward`, `tcp`, `udp` and `dns` listeners, and `kkdcp`, the Kerberos KDC proxy, which it shares with `xrelay` |
 | `xgate` | The gate: `ssh`, `telnet`, `vnc` and `rdp` listeners — the bastion and the remote access gateways, their policy, second factor and session recording |
-| `xrelay` | The relay: `smtp`, `ftp`, `ldap`, `postgres`, `mysql`, `tds`, `redis` and `amqp` listeners, `kkdcp` where the KDC proxy stands inside the network, and the ten it shares with `xot` |
+| `xrelay` | The relay: `smtp`, `imap`, `pop3`, `ftp`, `ldap`, `postgres`, `mysql`, `tds`, `redis` and `amqp` listeners, `kkdcp` where the KDC proxy stands inside the network, and the ten it shares with `xot` |
 | `xot` | The OT daemon: `modbus`, `iec104`, `s7`, `mms`, `bacnet`, `opcua` and `coap` listeners, and the shared `mqtt`, `syslog`, `snmp`, `tftp`, `dhcp`, `dhcp6`, `ntp`, `ntske`, `radius` and `tacacs` — the binary for level 3.5, with none of the relay's own protocols in it |
 | `xproxyctl` | Control tool talking to a daemon's Unix socket |
 | `xproxy-admin` | Web GUI: a separate process serving a browser interface over the same socket |
@@ -2912,6 +2912,102 @@ the default command set because they answer whether an address exists.
 
 `examples/mail/submission.yaml` has both listeners, the ban trigger and
 the upstream TLS.
+
+### Mailboxes (IMAP and POP3)
+
+Submission is a message on its way out, decided one message at a time.
+A mailbox is the opposite problem: a client that already has a
+credential, asking for everything that ever arrived.
+
+```yaml
+server:
+  listeners:
+    - name: imaps
+      address: "0.0.0.0:993"
+      kind: imap
+      tls: {certificates: [{cert_file: /etc/xproxy/certs/mail.pem, key_file: /etc/xproxy/certs/mail-key.pem}]}
+      imap:
+        upstream: mailboxes
+        tls_mode: implicit
+        mechanisms: [login, plain, oauthbearer]
+        max_fetch_messages: 200      # messages a sequence set may NAME
+        max_append_bytes: 26214400   # the literal's DECLARED size
+        mailboxes: [INBOX, "INBOX/*", Sent, Drafts, Trash, "Shared/%"]
+        rules:
+          - name: archiver           # the one account that really does sync it all
+            users: [archive-service]
+            clients: [10.0.9.7/32]
+            max_fetch_messages: 50000
+        log_fetches: true
+
+    - name: pop3s
+      address: "0.0.0.0:995"
+      kind: pop3
+      tls: {certificates: [{cert_file: /etc/xproxy/certs/mail.pem, key_file: /etc/xproxy/certs/mail-key.pem}]}
+      pop3:
+        upstream: mailboxes
+        tls_mode: implicit
+        mechanisms: [user, apop, plain]
+        read_only: true              # refuses DELE and RSET
+        max_messages: 500            # a running total, per connection
+        max_retr_bytes: 209715200
+```
+
+Nothing here catches a malformed request, because an emptied mailbox is
+not malformed: it is `UID FETCH 1:* (BODY[])`, which is also what a mail
+client does the first time it syncs. The bounds are what tell those two
+apart.
+
+- **`max_fetch_messages` counts what a sequence set *names*,** not what
+  comes back, and refuses before the mail server reads anything. An
+  open-ended set (`1:*`, `*`) is refused outright once the bound is set,
+  because the size of that request is the mailbox's rather than the
+  client's — `allow_open_sets: true` is the exemption, and a `rules`
+  entry naming the account that legitimately synchronises everything is
+  the better way to write it.
+- **`max_append_bytes` is checked against the *declared* size** of a
+  literal. RFC 7888's LITERAL+ lets a client write `{310+}` and send the
+  octets without waiting for anybody to agree, so a bound applied to
+  what arrived would be applied too late. A refused command's octets are
+  then read and dropped rather than left to desynchronise the
+  connection.
+- **On POP3 the bound is a running total,** counted as the octets pass
+  and enforced *mid-transfer*. A bound that only applied to the next
+  command is one a client walks past one message at a time, and a single
+  `RETR` of a very large message is a mailbox copy by itself. Reaching
+  `max_messages` is a refusal the connection survives; reaching
+  `max_retr_bytes` inside a message ends it, because a truncated message
+  presented as whole would be worse.
+- **A credential never crosses a transport that cannot carry it.**
+  `require_tls` defaults on and refuses `LOGIN`, `AUTHENTICATE PLAIN`,
+  `USER`/`PASS` and `APOP` in the clear. The refusal is **not
+  shadowable**: by the time a policy could be consulted the password has
+  travelled. On 143 or 110, `tls_mode: starttls` has this relay
+  terminate the RFC 2595 upgrade itself rather than forwarding it, which
+  is how a device nobody can reconfigure gets TLS anyway — and anything
+  pipelined behind the upgrade ends the session, the same reasoning as
+  SMTP's.
+- **What the server says it can do is narrowed.** A mechanism
+  `mechanisms` does not name is removed from the capability list as well
+  as refused, so a client asks for something it can use instead of
+  sending a password into a refusal; `LOGINDISABLED` is added where
+  `LOGIN` would be refused, which RFC 3501 §6.2.3 makes the way a server
+  says so; and `COMPRESS=DEFLATE` goes, because a deflated connection
+  cannot be inspected.
+- **A `mailboxes` entry is compared on the decoded name.** RFC 3501
+  §5.1.3 spells a non-ASCII mailbox in a modified UTF-7, so
+  `~peter/mail/&U,BTFw-` and `~peter/mail/台北` are one mailbox; a policy
+  that compared the spelling would compare nothing. `*` crosses the
+  hierarchy and `%` stays within one level, exactly as IMAP's own `LIST`
+  does, so `Shared/%` admits `Shared/HR` and not `Shared/HR/Payroll`.
+- **A PREAUTH greeting is refused.** It says the connection is
+  authenticated before anybody claimed an identity, which would make
+  every later decision here about a name this relay never saw.
+
+`examples/mail/mailbox.yaml` has three listeners — IMAPS, IMAP with the
+upgrade terminated here, and a read-only POP3S for the scripts and
+printers — with the rules, the behavioural blocks and the two ban
+triggers.
 
 ### MQTT for a device fleet
 

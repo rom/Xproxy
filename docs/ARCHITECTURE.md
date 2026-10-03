@@ -21,10 +21,11 @@ flows and the reasoning behind the shape. Decision records are in [AMR.md](AMR.m
             | accept             | accept           | accept         | accept
  +----------v--------+  +--------v--------+  +-------v------+  +-----v------+
  |      xproxy       |  |      xgate      |  |    xrelay    |  |    xot     |
- |  http tcp udp     |  |   ssh telnet    |  | smtp ftp     |  | modbus s7  |
- |  forward dns      |  |   vnc rdp       |  | ldap amqp    |  | iec104 mms |
- |  kkdcp            |  |                 |  | postgres     |  | bacnet     |
- |                   |  |                 |  | mysql tds    |  | opcua coap |
+ |  http tcp udp     |  |   ssh telnet    |  | smtp imap    |  | modbus s7  |
+ |  forward dns      |  |   vnc rdp       |  | pop3 ftp     |  | iec104 mms |
+ |  kkdcp            |  |                 |  | ldap amqp    |  | bacnet     |
+ |                   |  |                 |  | postgres     |  | opcua coap |
+ |                   |  |                 |  | mysql tds    |  |            |
  |                   |  |                 |  | redis kkdcp  |  |            |
  |                   |  |                 |  | mqtt syslog  |  | mqtt syslog|
  |                   |  |                 |  | snmp tftp    |  | snmp tftp  |
@@ -108,10 +109,10 @@ authority a cluster peer has by design.
 cmd/xproxy          edge daemon: links the http, forward, tcp, udp and dns
                     kinds, and kkdcp, which it shares with xrelay
 cmd/xgate           gate daemon: links the ssh, telnet, vnc and rdp kinds
-cmd/xrelay          relay daemon: links the smtp, ftp, ldap, postgres, mysql,
-                    tds, redis and amqp kinds, kkdcp, and the ten it shares
-                    with xot: mqtt, syslog, snmp, tftp, dhcp, dhcp6, ntp,
-                    ntske, radius, tacacs
+cmd/xrelay          relay daemon: links the smtp, imap, pop3, ftp, ldap,
+                    postgres, mysql, tds, redis and amqp kinds, kkdcp, and the
+                    ten it shares with xot: mqtt, syslog, snmp, tftp, dhcp,
+                    dhcp6, ntp, ntske, radius, tacacs
 cmd/xot             OT daemon: links the modbus, iec104, s7, mms, bacnet,
                     opcua and coap kinds, and the same shared ten. Nothing
                     from the relay's own list is in this binary
@@ -133,6 +134,11 @@ internal/kinds/dns     kind: dns -- resolver, cache, block list, DoT/DoH/DoQ
 internal/kinds/forward kind: forward -- CONNECT, SOCKS5, MASQUE, interception
 internal/kinds/ssh     kind: ssh -- bastion, policy, SFTP mediation, recording
 internal/kinds/smtp    kind: smtp -- mail and submission with STARTTLS
+internal/kinds/imap    kind: imap -- the mailbox: the state table, the
+                       decoded mailbox name, and the bound on how many
+                       messages one sequence set may name
+internal/kinds/pop3    kind: pop3 -- the other mailbox protocol, where the
+                       bound is a running total counted mid-transfer
 internal/kinds/mqtt    kind: mqtt -- broker front end with a topic policy
 internal/kinds/ftp     kind: ftp -- control and data channel mediation
 internal/kinds/syslog  kind: syslog -- RFC 5424 and RFC 3164 relay
@@ -248,7 +254,8 @@ internal/tracing    W3C trace context, spans, OTLP trace export
 internal/geoip      MaxMind DB reader and CSV prefix table
 internal/cache      in-memory response cache (LRU, byte bound, Vary)
 internal/dns        DNS wire codec, cache, block list, resolver, servers
-internal/smtp internal/mqtt internal/ftp internal/syslog internal/sftp
+internal/smtp internal/imap internal/pop3 internal/mqtt internal/ftp
+internal/syslog internal/sftp
 internal/modbus internal/iec104 internal/snmp internal/ntp internal/tftp
 internal/dhcp internal/radius internal/tacacs internal/kerberos
 internal/ldap       the LDAP wire format, shared: the client the identity
@@ -309,7 +316,7 @@ cmd/xot    ─┘             metrics, ingress, listener, paths, version}
     │
     └─ blank imports of its own kinds, and nothing else:
          kinds/{http,tcp,udp,dns,forward} | kinds/{ssh,telnet,vnc,rdp} |
-         kinds/{smtp,ftp,ldap,postgres,mysql,tds,redis,amqp} |
+         kinds/{smtp,imap,pop3,ftp,ldap,postgres,mysql,tds,redis,amqp} |
          kinds/{modbus,iec104,s7,mms,bacnet,opcua,coap}
        and, in both of the last two, the shared
          kinds/{mqtt,syslog,snmp,tftp,dhcp,dhcp6,ntp,ntske,radius,tacacs}
@@ -349,7 +356,7 @@ So the binary is split by who is on the other end of the socket:
 |--------|-------|----------------|
 | `xproxy` | the open internet | `http`, `forward`, `tcp`, `udp`, `dns` |
 | `xgate` | people | `ssh`, `telnet`, `vnc`, `rdp` |
-| `xrelay` | services | `smtp`, `ftp`, `ldap`, `postgres`, `mysql`, `tds`, `redis`, `amqp` |
+| `xrelay` | services | `smtp`, `imap`, `pop3`, `ftp`, `ldap`, `postgres`, `mysql`, `tds`, `redis`, `amqp` |
 | `xot` | the plant | `modbus`, `iec104`, `s7`, `mms`, `bacnet`, `opcua`, `coap` |
 | `xrelay` **and** `xot` | both estates run them | `mqtt`, `syslog`, `snmp`, `tftp`, `dhcp`, `dhcp6`, `ntp`, `ntske`, `radius`, `tacacs` |
 | `xproxy` **and** `xrelay` | a KDC proxy stands at either edge | `kkdcp` |
@@ -1189,7 +1196,7 @@ and size, and a second factor can be demanded after the key.
 
 ### The relay: SMTP, MQTT, FTP, syslog, Modbus, IEC 104, SNMP, LDAP, PostgreSQL, MySQL, NTP and NTS, RADIUS, TACACS+ and Kerberos
 
-The relay kinds (`internal/kinds/{smtp,mqtt,ftp,syslog,modbus,iec104,snmp,ldap,tftp,dhcp,postgres,mysql,tds,redis,ntp,ntske,radius,tacacs,kkdcp}`)
+The relay kinds (`internal/kinds/{smtp,imap,pop3,mqtt,ftp,syslog,modbus,iec104,snmp,ldap,tftp,dhcp,postgres,mysql,tds,redis,ntp,ntske,radius,tacacs,kkdcp}`)
 share a shape:
 each parses its protocol rather than forwarding bytes, holds a policy in
 that protocol's own terms, and bounds what a peer may say.
@@ -1200,6 +1207,21 @@ that protocol's own terms, and bounds what a peer may say.
   and XCLIENT so the server still sees the real client. Deciding the
   framing once is the point — SMTP smuggling is two readings of where a
   message ends.
+- `imap` and `pop3` are the other half of mail, and a different problem
+  from the one above. Submission is a message on its way out and can be
+  decided about one message at a time; a mailbox is a client that already
+  has a credential asking for everything that ever arrived, and the
+  request worth stopping is not malformed. So the policy's centre of
+  gravity is a bound on *how much a request names*: on IMAP the number of
+  messages in a sequence set, counted before the server reads anything,
+  with an open-ended `1:*` refused outright; on POP3 a running total of
+  octets and messages, enforced mid-transfer because one `RETR` is a
+  mailbox copy by itself. Both check their command against the
+  protocol's own state table, compare a mailbox name **decoded** from RFC
+  3501's modified UTF-7, refuse a credential that would cross in the
+  clear without consulting a policy first, terminate the RFC 2595 upgrade
+  rather than forwarding it, and narrow the capability list the client
+  reads so a mechanism the policy will refuse is never offered.
 - `mqtt` fronts a broker with a topic policy: which topics a client id
   may publish and subscribe to, whether `$SYS` is reachable, whether
   retained messages are allowed, and a pattern the client id must match.

@@ -30,6 +30,7 @@ did not build it" and "it does not apply" are different promises again.
 - [TLS and certificates](#tls-and-certificates)
 - [DNS](#dns)
 - [Mail](#mail)
+- [Mailboxes](#mailboxes)
 - [Messaging](#messaging)
 - [Industrial control](#industrial-control)
 - [Network management](#network-management)
@@ -186,12 +187,38 @@ named here so nobody has to guess:
 | 5322 | Internet Message Format | Partial | Line structure only. The proxy does not parse headers or rewrite a message; it decides where lines and messages end |
 | 6409 | Message Submission for Mail | Full | The submission listener |
 | 3207 | SMTP Service Extension for Secure SMTP over TLS | Full | Including the refusal of anything pipelined behind `STARTTLS` (CVE-2011-0411) and the reset of session state afterwards |
-| 8314 | Cleartext Considered Obsolete: Use of TLS for Email Submission and Access | Full | Implicit TLS on 465 |
+| 8314 | Cleartext Considered Obsolete: Use of TLS for Email Submission and Access | Full | Implicit TLS on 465, and on 993 and 995 for the mailbox listeners below |
 | 1870 | SMTP Service Extension for Message Size Declaration | Full | `SIZE` advertised and enforced |
 | 4954 | SMTP Service Extension for Authentication | Full | Relayed, including multi-round challenges; the credentials are never held or logged |
 | 2920 | SMTP Service Extension for Command Pipelining | Full | Except behind `STARTTLS`, where it is a refusal |
 | 3463 | Enhanced Mail System Status Codes | Full | On every reply the proxy writes itself |
 | 3030 | SMTP Service Extensions for Transmission of Large and Binary MIME Messages | Refused | `CHUNKING` and `BDAT` are never advertised or relayed: BDAT frames a message with a length instead of a terminator, which would put the framing decision back in two places |
+
+## Mailboxes
+
+Submission is one section up. These are the protocols a mail *client*
+speaks, where the request worth deciding about is well-formed and the
+question is how much of a mailbox it names.
+
+| RFC | Title | Status | Notes |
+|-----|-------|--------|-------|
+| 9051 | Internet Message Access Protocol (IMAP) — Version 4rev2 | Partial | Read as a relay: the command set and the four states of §3, the tagged, untagged and continuation response forms, the literal, the sequence set, and the response codes a policy reads. Message bodies are counted and copied, never parsed — this is not an IMAP server |
+| 3501 | Internet Message Access Protocol — Version 4rev1 | Partial | What the installed base actually speaks, so the state table and command set cover both revisions. §5.1.3's modified UTF-7 is decoded, because a policy that compared the encoded spelling of a mailbox name would compare nothing; §6.2.3's `LOGINDISABLED` is added to the capability list where `LOGIN` would be refused, which is how a server says so and how a client is told to ask for something else |
+| 7888 | IMAP4 Non-synchronizing Literals | Full | `LITERAL+` and `LITERAL-`. A bound on an `APPEND` is checked against the literal's **declared** size, because a non-synchronising literal sends its octets without waiting for a continuation request; a refused command's octets are then read and dropped rather than left to desynchronise the connection |
+| 4959 | IMAP Extension for SASL Initial Client Response | Full | An initial response on the `AUTHENTICATE` line, recognised as credential material: carried, not parsed, never logged |
+| 2177 | IMAP4 IDLE command | Full | Carried, with the parked connection bounded by `max_idle_duration` and `allow_idle` deciding whether it is offered at all |
+| 6851 | Internet Message Access Protocol (IMAP) — MOVE Extension | Full | Decided about as a write *and* as a collection, since a MOVE names a sequence set |
+| 3691 | IMAP UNSELECT command | Full | Returns the connection to the authenticated state, which the state table tracks |
+| 2342 | IMAP4 Namespace | Full | Carried; the namespace prefixes a server reports are not rewritten |
+| 2971 | IMAP4 ID extension | Full | Carried. The client's own `ID` string is a client's claim about itself, logged and never acted on |
+| 4314 | IMAP4 Access Control List (ACL) Extension | Full | `SETACL` and `DELETEACL` are writes, and are the commands a `read_only` listener and a `deny_commands` list are usually written to stop |
+| 9208 | IMAP QUOTA Extension | Full | The quota commands, with `SETQUOTA` a write |
+| 4978 | The IMAP COMPRESS Extension | Refused | `COMPRESS=DEFLATE` is removed from the capability list and refused as a command: a deflated connection cannot be inspected, so advertising it would be an offer to stop deciding |
+| 2595 | Using TLS with IMAP, POP3 and ACAP | Full | `STARTTLS` on 143 and `STLS` on 110, **terminated by this relay** rather than forwarded, with anything pipelined behind the upgrade refused — the same reasoning as RFC 3207's above, and the same CVE class |
+| 1939 | Post Office Protocol — Version 3 | Full | The three states, the command set, both reply forms — and which of the two a command takes, which for `LIST` and `UIDL` depends on whether an argument is present — and §3's dot-stuffing, so the terminator cannot appear inside a message. The `APOP` digest is carried with the server's own greeting timestamp, because a relay that invented a greeting would make every digest unverifiable |
+| 2449 | POP3 Extension Mechanism | Full | The `CAPA` list, read and narrowed to what the policy will admit |
+| 5034 | The POP3 Simple Authentication and Security Layer (SASL) Authentication Mechanism | Full | The `AUTH` command and its exchange, carried as credential material without being parsed |
+| 4616 | The PLAIN Simple Authentication and Security Layer (SASL) Mechanism | Recognised | Named by both kinds as a mechanism that carries the password, which is what makes it refusable on an unencrypted connection and strippable from an advertised list |
 
 ## Messaging
 

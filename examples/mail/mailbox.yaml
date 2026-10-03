@@ -1,0 +1,171 @@
+# IMAP and POP3: the other half of mail.
+#
+# examples/mail/submission.yaml is a message on its way out, which can be
+# decided about one message at a time. This file is the opposite problem: a
+# client that has a credential, asking for everything that ever arrived.
+#
+# Three facts shape it.
+#
+#   The access is legitimate and the volume is the signal. Nothing here
+#   catches a malformed request, because an emptied mailbox is not malformed:
+#   it is `UID FETCH 1:* (BODY[])`, which is also what a mail client does the
+#   first time it syncs. max_fetch_messages on the imap listener and
+#   max_retr_bytes on the pop3 one are what tell those two apart, and the
+#   rules below are how the one account that really does synchronise
+#   everything is written down rather than the bound being turned off.
+#
+#   The password is the mailbox. require_tls defaults on and is not
+#   shadowable; both listeners here also terminate the STARTTLS upgrade on
+#   the plaintext port, which is how the devices and scripts nobody can
+#   reconfigure get TLS anyway.
+#
+#   What the client is told the server can do is narrowed. A mechanism
+#   `mechanisms` does not name is removed from the advertised capabilities as
+#   well as refused, so a client asks for something it can use instead of
+#   sending a password into a refusal; COMPRESS=DEFLATE is removed always,
+#   because a deflated connection cannot be inspected.
+#
+# Validate with: xproxyctl -config examples/mail/mailbox.yaml validate
+version: 1
+
+logging:
+  directory: /var/log/xproxy
+  access: {file: access.log}
+  security: {file: security.log}
+
+server:
+  listeners:
+    # IMAPS, which is what every current mail client uses.
+    - name: imaps
+      address: "0.0.0.0:993"
+      kind: imap
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/certs/mail.pem, key_file: /etc/xproxy/certs/mail-key.pem}
+        min_version: "1.2"
+      imap:
+        upstream: mailboxes
+        tls_mode: implicit
+        require_tls: true
+        # PLAIN over TLS is what the installed base authenticates with, and
+        # OAUTHBEARER is what the clients that have moved on use. Naming them
+        # removes everything else from the advertised list.
+        mechanisms: [login, plain, oauthbearer]
+        # The bound that is the point of this listener. A mail client's
+        # steady-state fetch is a handful of messages; 200 is generous for a
+        # resynchronisation and far short of a mailbox.
+        max_fetch_messages: 200
+        # A message written into a mailbox is an upload: 25 MiB matches the
+        # submission listener's own message bound.
+        max_append_bytes: 26214400
+        # The mailboxes this listener admits. `*` crosses the hierarchy and
+        # `%` stays within one level, exactly as IMAP's own LIST does -- so
+        # Shared/% admits Shared/HR and not Shared/HR/Payroll.
+        mailboxes: [INBOX, "INBOX/*", Sent, Drafts, Trash, Archive, "Archive/*", "Shared/%"]
+        rules:
+          # The archiver is the exception that makes the bound usable: one
+          # account, from one address, that really does read everything.
+          - name: archiver
+            users: [archive-service]
+            clients: [10.0.9.7/32]
+            max_fetch_messages: 50000
+            commands: [CAPABILITY, LOGIN, LOGOUT, NOOP, SELECT, EXAMINE, LIST, STATUS, FETCH, SEARCH, UID]
+          # Everybody else reads their own mail and does not write into
+          # somebody's shared folder from a mail client.
+          - name: people
+            deny_commands: [SETACL, DELETEACL, SETQUOTA]
+        # The behavioural half. A week of settling, which is the longest
+        # this setting admits and the shortest span that contains a mailbox's
+        # ordinary rhythm -- the Monday somebody comes back from leave
+        # included. `alert` rather than `refuse`, because a mail client that
+        # is refused silently becomes a support ticket about mail being
+        # broken.
+        anomaly:
+          enabled: true
+          action: alert
+          settle: 168h
+          novelty: {symbols: true, write_points: true}
+        log_fetches: true
+
+    # IMAP on 143, where this relay terminates the upgrade itself. A client
+    # that does not ask for it is refused when it tries to log in, and the
+    # capability list it reads says LOGINDISABLED so that it asks.
+    - name: imap-starttls
+      address: "0.0.0.0:143"
+      kind: imap
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/certs/mail.pem, key_file: /etc/xproxy/certs/mail-key.pem}
+      imap:
+        upstream: mailboxes
+        tls_mode: starttls
+        require_tls: true
+        mechanisms: [login, plain]
+        max_fetch_messages: 200
+        max_append_bytes: 26214400
+        upstream_tls_mode: implicit
+        upstream_tls: {server_name: imap.internal, ca_file: /etc/xproxy/certs/internal-ca.pem, min_version: "1.2"}
+
+    # POP3S for the scripts, the printers and the integrations. read_only is
+    # on because the things that still use POP3 here collect mail and have no
+    # business deleting it -- which is also what makes the server's copy the
+    # audit trail.
+    - name: pop3s
+      address: "0.0.0.0:995"
+      kind: pop3
+      tls:
+        certificates:
+          - {cert_file: /etc/xproxy/certs/mail.pem, key_file: /etc/xproxy/certs/mail-key.pem}
+        min_version: "1.2"
+      pop3:
+        upstream: mailboxes
+        tls_mode: implicit
+        require_tls: true
+        # APOP is a digest rather than a password, and it works here because
+        # the server's greeting is carried unchanged. `user` is the USER and
+        # PASS pair, which only travels because the transport is TLS.
+        mechanisms: [user, apop, plain]
+        commands: [USER, PASS, APOP, AUTH, CAPA, STAT, LIST, UIDL, RETR, TOP, NOOP, QUIT]
+        read_only: true
+        # On this protocol the bound is a running total, counted as the
+        # message passes: 500 messages or 200 MiB in one connection, whichever
+        # comes first.
+        max_messages: 500
+        max_retr_bytes: 209715200
+        rules:
+          - name: invoices
+            users: [invoices]
+            clients: [10.0.9.0/24]
+            max_messages: 2000
+        anomaly:
+          enabled: true
+          action: alert
+          settle: 168h
+          novelty: {symbols: true, write_points: true}
+
+upstreams:
+  - name: mailboxes
+    endpoints:
+      - {address: "10.0.0.30:993"}
+      - {address: "10.0.0.31:993"}
+    balancer: least_conn
+    timeouts: {connect: 5s}
+
+bans:
+  triggers:
+    # A client that keeps being refused a credential is guessing one: a
+    # mailbox password is the credential on an estate most worth guessing,
+    # and the mail server's own lockout protects the account rather than the
+    # estate.
+    - name: mailbox-credentials
+      reasons: [imap_auth_failed, pop3_auth_failed]
+      threshold: 10
+      window: 10m
+      duration: 1h
+    # A client that keeps asking for more of a mailbox than the policy allows
+    # has stopped being a mail client.
+    - name: mailbox-collection
+      reasons: [imap_denied, pop3_denied]
+      threshold: 5
+      window: 10m
+      duration: 6h
