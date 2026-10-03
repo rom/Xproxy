@@ -128,8 +128,9 @@ gate.** The core packages together are at 86.0 % of 108466 statements, up from
 table: radius 66 % to 80 %, kkdcp 69 % to 82 %, pop3 67 % to 75 %, imap 74 % to
 78 %, tacacs 74 % to 84 %. Alongside them smtp 67 % to 74 %, the MMS wire reader
 67 % to 74 %, the two OT kinds to 84 % each, and kerberos 79 % to 81 %. The
-lowest core package is now `internal/daemon` at 70 %, which is the signal-handling
-and rollback path of a whole daemon. One figure went the other way: the
+lowest core package at that point was `internal/daemon` at 70 %, the
+signal-handling and rollback path of a whole daemon, which the work below then
+took to 78 %. One figure went the other way: the
 `cmd/xproxyctl` row claimed 82 % from its own tests and a measurement now gives
 68 %, so the row was stale -- the package sits outside the gate, which is exactly
 how a figure in a document drifts from the code without anything failing. What the
@@ -183,6 +184,13 @@ figure in `docs/TESTS.md` that nothing checked. It read 82 % and measured 67 %.
 `test/covergate` now has a `gated` list that overrides the `cmd/` rule, the
 Makefile instruments the package alongside `internal/...`, and the number is in
 the table with the others where it cannot drift.
+
+The table is regenerated from the gate that passes on all of this: 85.6 % of
+111237 statements, nothing below the 60 % floor. The total is 0.4 points below
+the last one because xproxyctl's 2764 statements enter the denominator at 68 %,
+which is the point of putting it in -- and it is now the lowest gated package
+rather than a figure in a document, so the next person to work on those views has
+a floor under them.
 
 ### Added (the event stream: a policy for text/event-stream)
 
