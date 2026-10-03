@@ -10830,7 +10830,7 @@ enum
 T}	T{
 \fBallow\fR
 T}	T{
-\fBallow\fR,\: \fBdeny\fR or \fBobserve\fR. \fBobserve\fR logs and counts and then keeps looking,\: which is how a rule is tried on live traffic before it decides anything
+\fBallow\fR,\: \fBdeny\fR or \fBobserve\fR. \fBobserve\fR records the rule and decides nothing,\: so the rules below it still decide \[u2014] and on a listener whose \fBdefault_\:action\fR is \fBdeny\fR,\: the default does. That is what lets a rule be tried on live traffic without the trial changing what happens
 T}
 T{
 \fBclients\fR
@@ -33794,7 +33794,7 @@ T{
 T}	T{
 \fBallow\fR,\: \fBdeny\fR,\: \fBobserve\fR
 T}	T{
-Default \fBallow\fR
+Default \fBallow\fR. \fBobserve\fR records the rule in the log line and decides nothing,\: so the rules below it still decide \[u2014] and on a listener whose \fBdefault_\:action\fR is \fBdeny\fR,\: the default does. That is what lets a rule be tried on live traffic without the trial changing what happens;\: a rule that decided,\: by allowing what it covers,\: would make writing one the way to switch off every rule under it
 T}
 T{
 \fBallow_\:commands\fR,\: \fBdeny_\:commands\fR,\: \fBallow_\:statements\fR,\: \fBdeny_\:statements\fR,\: \fBallow_\:load\fR,\: \fBread_\:only\fR,\: \fBmax_\:statements\fR
@@ -34362,7 +34362,7 @@ T{
 T}	T{
 \fBallow\fR,\: \fBdeny\fR,\: \fBobserve\fR
 T}	T{
-Default \fBallow\fR
+Default \fBallow\fR. \fBobserve\fR records the rule in the log line and decides nothing,\: so the rules below it still decide \[u2014] and on a listener whose \fBdefault_\:action\fR is \fBdeny\fR,\: the default does. That is what lets a rule be tried on live traffic without the trial changing what happens;\: a rule that decided,\: by allowing what it covers,\: would make writing one the way to switch off every rule under it
 T}
 T{
 \fBallow_\:statements\fR,\: \fBdeny_\:statements\fR,\: \fBallow_\:copy\fR,\: \fBread_\:only\fR,\: \fBmax_\:statements\fR
@@ -34986,7 +34986,7 @@ T{
 T}	T{
 \fBallow\fR,\: \fBdeny\fR,\: \fBobserve\fR
 T}	T{
-Default \fBallow\fR
+Default \fBallow\fR. \fBobserve\fR records the rule in the log line and decides nothing,\: so the rules below it still decide \[u2014] and on a listener whose \fBdefault_\:action\fR is \fBdeny\fR,\: the default does. That is what lets a rule be tried on live traffic without the trial changing what happens;\: a rule that decided,\: by allowing what it covers,\: would make writing one the way to switch off every rule under it
 T}
 T{
 \fBallow_\:procedures\fR,\: \fBdeny_\:procedures\fR,\: \fBallow_\:types\fR,\: \fBdeny_\:types\fR,\: \fBallow_\:statements\fR,\: \fBdeny_\:statements\fR,\: \fBread_\:only\fR,\: \fBmax_\:statements\fR
@@ -35420,7 +35420,7 @@ T{
 T}	T{
 \fBallow\fR,\: \fBdeny\fR,\: \fBobserve\fR
 T}	T{
-Default \fBallow\fR
+Default \fBallow\fR. \fBobserve\fR records the rule in the log line and decides nothing,\: so the rules below it still decide \[u2014] and on a listener whose \fBdefault_\:action\fR is \fBdeny\fR,\: the default does. That is what lets a rule be tried on live traffic without the trial changing what happens;\: a rule that decided,\: by allowing what it covers,\: would make writing one the way to switch off every rule under it
 T}
 T{
 \fBallow_\:commands\fR,\: \fBdeny_\:commands\fR,\: \fBallow_\:subcommands\fR,\: \fBdeny_\:subcommands\fR,\: \fBallow_\:key_\:prefixes\fR,\: \fBdeny_\:key_\:prefixes\fR,\: \fBread_\:only\fR,\: \fBmax_\:commands\fR
@@ -36834,7 +36834,7 @@ T{
 T}	T{
 \fBallow\fR,\: \fBdeny\fR,\: \fBobserve\fR
 T}	T{
-Default \fBallow\fR
+Default \fBallow\fR. \fBobserve\fR records the rule in the log line and decides nothing,\: so the rules below it still decide \[u2014] and on a listener whose \fBdefault_\:action\fR is \fBdeny\fR,\: the default does. That is what lets a rule be tried on live traffic without the trial changing what happens;\: a rule that decided,\: by allowing what it covers,\: would make writing one the way to switch off every rule under it
 T}
 T{
 \fBallow_\:methods\fR,\: \fBdeny_\:methods\fR,\: \fBallow_\:performatives\fR,\: \fBdeny_\:performatives\fR,\: \fBallow_\:exchanges\fR,\: \fBdeny_\:exchanges\fR,\: \fBallow_\:queues\fR,\: \fBdeny_\:queues\fR,\: \fBallow_\:routing_\:keys\fR,\: \fBdeny_\:routing_\:keys\fR,\: \fBallow_\:addresses\fR,\: \fBdeny_\:addresses\fR,\: \fBallow_\:topology\fR,\: \fBallow_\:publish\fR,\: \fBallow_\:consume\fR,\: \fBmax_\:message_\:bytes\fR,\: \fBmax_\:methods\fR
@@ -37770,7 +37770,7 @@ T{
 T}	T{
 \fBallow\fR,\: \fBdeny\fR,\: \fBobserve\fR
 T}	T{
-Default \fBallow\fR
+Default \fBallow\fR. \fBobserve\fR records the rule in the log line and decides nothing,\: so the rules below it still decide \[u2014] and on a listener whose \fBdefault_\:action\fR is \fBdeny\fR,\: the default does. That is what lets a rule be tried on live traffic without the trial changing what happens;\: a rule that decided,\: by allowing what it covers,\: would make writing one the way to switch off every rule under it
 T}
 T{
 \fBclients\fR,\: \fBracks\fR,\: \fBslots\fR,\: \fBresources\fR
