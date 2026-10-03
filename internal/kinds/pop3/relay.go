@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"strconv"
 	"strings"
 	"time"
 
@@ -69,7 +70,7 @@ func (t *server) handle(client net.Conn) {
 	defer t.gate.Leave(ip)
 
 	_, isTLS := client.(*tls.Conn)
-	up, err := t.dial(ip)
+	up, greeted, err := t.dial(ip)
 	if err != nil {
 		t.host.Counters().Refuse("pop3", "upstream_failed")
 		t.host.Logs().Error.Warn("pop3 upstream dial failed", "listener", t.name,
@@ -85,7 +86,7 @@ func (t *server) handle(client net.Conn) {
 		sr:        wire.NewReader(up, t.maxResp),
 		encrypted: isTLS,
 	}
-	if !t.greeting(c) {
+	if !t.greeting(c, greeted) {
 		return
 	}
 	t.loop(c)
@@ -97,13 +98,20 @@ func (t *server) handle(client net.Conn) {
 // is computed over, so a relay that invented its own greeting would have to
 // refuse APOP outright. This one keeps the server's, which means a digest
 // the client computes verifies at the server that issued the challenge.
-func (t *server) greeting(c *conn) bool {
-	_ = c.up.SetReadDeadline(time.Now().Add(t.idle))
-	line, err := c.sr.ReadLine()
-	_ = c.up.SetReadDeadline(time.Time{})
-	if err != nil {
-		t.host.Counters().Refuse("pop3", "upstream_failed")
-		return false
+// line is the greeting dial already read, which is how a leg this relay
+// upgraded itself still has one: RFC 2595 leaves the server in the
+// AUTHORIZATION state it was already in and does not have it greet again, so
+// the only +OK that connection will ever send arrived before the handshake.
+func (t *server) greeting(c *conn, line []byte) bool {
+	if line == nil {
+		_ = c.up.SetReadDeadline(time.Now().Add(t.idle))
+		var err error
+		line, err = c.sr.ReadLine()
+		_ = c.up.SetReadDeadline(time.Time{})
+		if err != nil {
+			t.host.Counters().Refuse("pop3", "upstream_failed")
+			return false
+		}
 	}
 	r, perr := wire.ParseReply(line)
 	if perr != nil || !r.OK {
@@ -500,24 +508,26 @@ func (c *conn) writeServer(b []byte) error {
 
 func (c *conn) reply(s string) error { return c.write([]byte(s + "\r\n")) }
 
-// dial opens the connection to a mailbox server.
-func (t *server) dial(client netip.Addr) (net.Conn, error) {
+// dial opens the connection to a mailbox server. The second result is the
+// greeting, when the upgrade below had to read it to get there; nil means the
+// caller reads it itself.
+func (t *server) dial(client netip.Addr) (net.Conn, []byte, error) {
 	pool := t.host.Pool(t.c.Upstream)
 	if pool == nil {
-		return nil, errNoUpstream
+		return nil, nil, errNoUpstream
 	}
 	e, _ := pool.Pick(client.String(), "", nil, upstream.CanaryAny)
 	if e == nil {
-		return nil, errNoUpstream
+		return nil, nil, errNoUpstream
 	}
 	const dialTimeout = 10 * time.Second
 	d := net.Dialer{Timeout: dialTimeout}
 	c, err := d.Dial("tcp", e.Address)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if t.upTLSMode == "disable" || t.upTLSCfg == nil {
-		return c, nil
+		return c, nil, nil
 	}
 	cfg := t.upTLSCfg.Clone()
 	if cfg.ServerName == "" && !cfg.InsecureSkipVerify {
@@ -527,10 +537,12 @@ func (t *server) dial(client netip.Addr) (net.Conn, error) {
 		}
 		cfg.ServerName = host
 	}
+	var greeting []byte
 	if t.upTLSMode == "starttls" {
-		if err := stlsUpstream(c, t.maxResp, dialTimeout); err != nil {
+		greeting, err = stlsUpstream(c, t.maxResp, dialTimeout)
+		if err != nil {
 			_ = c.Close()
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	tc := tls.Client(c, cfg)
@@ -538,35 +550,47 @@ func (t *server) dial(client netip.Addr) (net.Conn, error) {
 	defer cancel()
 	if err := tc.HandshakeContext(ctx); err != nil {
 		_ = c.Close()
-		return nil, err
+		return nil, nil, err
 	}
-	return tc, nil
+	return tc, greeting, nil
 }
 
 // stlsUpstream performs the upgrade towards the server on this relay's own
 // behalf: read the greeting, ask, and require the +OK before handshaking.
-func stlsUpstream(up net.Conn, max int, timeout time.Duration) error {
+//
+// The greeting comes back rather than being discarded, because it is the only
+// one this connection sends -- RFC 2595 leaves the server in AUTHORIZATION and
+// does not have it greet again -- and on POP3 it is also the APOP challenge.
+func stlsUpstream(up net.Conn, max int, timeout time.Duration) ([]byte, error) {
 	_ = up.SetDeadline(time.Now().Add(timeout))
 	defer func() { _ = up.SetDeadline(time.Time{}) }()
 	rd := wire.NewReader(up, max)
-	if _, err := rd.ReadLine(); err != nil {
-		return err
+	greeting, err := rd.ReadLine()
+	if err != nil {
+		return nil, err
 	}
 	if _, err := up.Write([]byte("STLS\r\n")); err != nil {
-		return err
+		return nil, err
 	}
 	line, err := rd.ReadLine()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	r, perr := wire.ParseReply(line)
 	if perr != nil {
-		return perr
+		return nil, perr
 	}
 	if !r.OK {
-		return errors.New("pop3: the server refused STLS: " + r.Text)
+		return nil, errors.New("pop3: the server refused STLS: " + r.Text)
 	}
-	return nil
+	// Anything behind the +OK was sent in clear and would be read as though
+	// it had arrived inside the session: the client leg's injection check,
+	// pointed the other way. Nothing legitimate is there to lose, because the
+	// server has nothing more to say until this relay speaks.
+	if n := rd.Buffered(); n > 0 {
+		return nil, errors.New("pop3: the server pipelined " + strconv.Itoa(n) + " octets behind its STLS answer")
+	}
+	return greeting, nil
 }
 
 // admitClient is what this relay asks about an address before it carries

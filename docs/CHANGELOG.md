@@ -136,6 +136,54 @@ how a figure in a document drifts from the code without anything failing. What t
 remainder is has not changed: the formatting of views whose subsystems need a
 live peer, authority, resolver or scanner behind them.
 
+### Fixed (POP3: the upstream upgrade never worked)
+
+- **A pop3 listener with `upstream_tls_mode: starttls` could not carry a
+  session.** The relay upgrades the server's leg on its own behalf, which means
+  reading the server's greeting to get to the STLS exchange -- and it threw that
+  line away. It then waited for a greeting the server will never send, because
+  RFC 2595 leaves the connection in AUTHORIZATION and does not have it greet
+  again: every session hung until the idle timeout and was counted as
+  `upstream_failed`. On POP3 the same line is also the APOP challenge, so the
+  listener would have lost that mechanism even if the session had survived. The
+  greeting now comes back from the upgrade and is the one the client gets.
+
+  This was the one path in the kind with no test at all -- `stlsUpstream` was at
+  0 % -- which is what the coverage work above was for, and it is the argument
+  for measuring a package rather than reading it: the code looks right.
+
+- **Anything the server pipelines behind its `+OK` to STLS is now refused.**
+  It travelled in clear and would have been read as part of the encrypted
+  session: the client leg's injection check, pointed the other way. Nothing
+  legitimate is lost, because the server has nothing to say until the relay
+  speaks.
+
+**`internal/daemon` and `internal/kinds/pop3`, the two lowest packages left
+in the table.** On the daemon, the branches that only run when something about
+the deployment is unusual: advice said at every start rather than only by
+`-validate`, the three failures after the listeners are bound that have to take
+the process down with them (an address taken, a metrics address taken, a
+listener kind this binary did not link), a history directory that cannot be
+written and every action that then has to answer honestly rather than look like
+an empty history, the dry run that reads the file without moving the
+generation, and the diff that names which of `from` and `to` it could not
+resolve. 69.8 % to 78.3 % of the package's own statements. On pop3, the
+transport: the client's STLS answered here with this listener's certificate, a
+command pipelined behind it refused (CVE-2011-0411 in POP3's spelling), a
+handshake that fails ending the connection because the `+OK` has already gone,
+and the policy asked about the address before a mailbox server is dialled and
+about the name a USER claims before it reaches a server that would check it.
+73.6 % to 84.2 %.
+
+**`cmd/xproxyctl` is in the gate.** It was outside it because every `main`
+package is, and that rule is right for a flag parse over a package gated on its
+own -- but xproxyctl is the operator interface, nearly three thousand
+statements of views and their formatting, and what stood in for a gate was a
+figure in `docs/TESTS.md` that nothing checked. It read 82 % and measured 67 %.
+`test/covergate` now has a `gated` list that overrides the `cmd/` rule, the
+Makefile instruments the package alongside `internal/...`, and the number is in
+the table with the others where it cannot drift.
+
 ### Added (the event stream: a policy for text/event-stream)
 
 - **`sse_guard` on a route is a policy for Server-Sent Events**, which is the

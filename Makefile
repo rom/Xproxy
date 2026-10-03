@@ -92,8 +92,13 @@ test-race:
 # is the same reason the package is outside the gate, and `make test`
 # and `make test-race` run it in full.
 TESTPKGS = $$($(GO) list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' ./... | grep -v '/internal/sandbox$$')
+# cmd/xproxyctl is instrumented alongside internal/... because it is in the
+# gate: it is the operator interface rather than a flag parse over a package
+# that is gated on its own. Every other main package is excluded in
+# test/covergate, which is also where that exception is written down.
+COVERPKGS = ./internal/...,./cmd/xproxyctl
 cover:
-	$(GO) test -count=1 -race -coverpkg=./internal/... -coverprofile=coverage.out -covermode=atomic $(TESTPKGS)
+	$(GO) test -count=1 -race -coverpkg=$(COVERPKGS) -coverprofile=coverage.out -covermode=atomic $(TESTPKGS)
 	$(GO) tool cover -func=coverage.out | tail -1
 
 # Gate: core packages together at least COVER_MIN percent, no package

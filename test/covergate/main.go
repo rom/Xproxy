@@ -26,6 +26,18 @@ import (
 // a flag parse and an error print over a package that is gated on its
 // own, and listing each one is a list that goes stale silently — the
 // gate simply stops failing to mention the newest generator.
+//
+// gated names the main packages that are not that. A binary belongs here
+// once it holds behaviour of its own rather than a call into a package
+// with its own floor, and the reason to put it in the gate rather than in
+// a document is that a figure in a document goes stale without anything
+// failing: the xproxyctl row in docs/TESTS.md read 82 % for long enough
+// that measuring it found 67 %. The Makefile instruments these alongside
+// internal/..., so adding a name here means adding it to COVERPKGS too.
+var gated = []string{
+	"github.com/rom/xproxy/cmd/xproxyctl",
+}
+
 var excluded = []string{
 	// The sandbox applies Landlock and seccomp to a confined child process
 	// in its tests; the profile of the parent cannot see that code run.
@@ -140,6 +152,11 @@ func run(profile string, minTotal, floor float64) int {
 }
 
 func isExcluded(pkg string) bool {
+	for _, g := range gated {
+		if pkg == g {
+			return false
+		}
+	}
 	// A main package: cmd/ at the top level or beside what it generates.
 	if strings.HasPrefix(pkg, "github.com/rom/xproxy/cmd/") || strings.Contains(pkg, "/cmd/") {
 		return true
