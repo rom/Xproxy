@@ -152,6 +152,30 @@ func TestNTSKERelaysAnNTSClient(t *testing.T) {
 	}
 }
 
+// refused waits for a refusal reason to reach want, and returns the whole map
+// for a test that wants to say more about it.
+//
+// Every refusal on this port is counted after the answer -- after the error
+// record is written, or after the handshake the client has already seen fail --
+// so a client that has read its refusal has not waited for the counter. Read
+// once, these assertions fail under load with output that prints a map already
+// holding the count it has just reported missing, which is the signature of an
+// assertion racing the thing it measures rather than of a relay that did not
+// refuse.
+func refused(t *testing.T, s *proxy.Server, reason string, want uint64) map[string]uint64 {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		got := s.Stats().Refusals["ntske"]
+		if got[reason] >= want {
+			return got
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s reached %d, want %d: %+v", reason, got[reason], want, got)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // A connection to 4460 that does not offer the NTS application protocol
 // is not an NTS client, and that is knowable from the handshake alone --
 // which is the one check a relay that does not terminate TLS can make.
@@ -166,8 +190,8 @@ func TestNTSKERefusesWhatIsNotAnNTSClient(t *testing.T) {
 		_ = c.Close()
 		t.Fatal("a connection offering the wrong application protocol got through")
 	}
-	if got := s.Stats().Refusals["ntske"]["alpn_not_offered"]; got != 1 {
-		t.Fatalf("refusals: %+v", s.Stats().Refusals["ntske"])
+	if got := refused(t, s, "alpn_not_offered", 1); got["alpn_not_offered"] != 1 {
+		t.Fatalf("refusals: %+v", got)
 	}
 	if s.Stats().NTSKENotNTS != 1 {
 		t.Errorf("not-NTS counter: %d", s.Stats().NTSKENotNTS)
@@ -205,8 +229,8 @@ func TestNTSKEServerNameList(t *testing.T) {
 		_ = c.Close()
 		t.Fatal("a server name outside the list got through")
 	}
-	if got := s.Stats().Refusals["ntske"]["server_name_not_allowed"]; got != 1 {
-		t.Fatalf("refusals: %+v", s.Stats().Refusals["ntske"])
+	if got := refused(t, s, "server_name_not_allowed", 1); got["server_name_not_allowed"] != 1 {
+		t.Fatalf("refusals: %+v", got)
 	}
 }
 
@@ -231,8 +255,8 @@ func TestNTSKERefusesWhatIsNotTLS(t *testing.T) {
 	if n, err := c.Read(buf); err == nil && n > 0 {
 		t.Fatalf("something was answered: %q", buf[:n])
 	}
-	if got := s.Stats().Refusals["ntske"]["not_tls"]; got != 1 {
-		t.Fatalf("refusals: %+v", s.Stats().Refusals["ntske"])
+	if got := refused(t, s, "not_tls", 1); got["not_tls"] != 1 {
+		t.Fatalf("refusals: %+v", got)
 	}
 	if up.sessions.Load() != 0 {
 		t.Fatal("the scan reached the server")
@@ -251,8 +275,8 @@ func TestNTSKEClientList(t *testing.T) {
 		_ = c.Close()
 		t.Fatal("a client outside the allow list got through")
 	}
-	if got := s.Stats().Refusals["ntske"]["client_not_allowed"]; got != 1 {
-		t.Fatalf("refusals: %+v", s.Stats().Refusals["ntske"])
+	if got := refused(t, s, "client_not_allowed", 1); got["client_not_allowed"] != 1 {
+		t.Fatalf("refusals: %+v", got)
 	}
 }
 
@@ -305,9 +329,7 @@ func TestNTSKEBoundsTheHandshakesInFlight(t *testing.T) {
 	case <-time.After(6 * time.Second):
 		t.Fatal("the second handshake neither completed nor was refused")
 	}
-	if got := s.Stats().Refusals["ntske"]["handshake_limit"]; got == 0 {
-		t.Fatalf("refusals: %+v", s.Stats().Refusals["ntske"])
-	}
+	refused(t, s, "handshake_limit", 1)
 	if s.Stats().NTSKEHandshakeLimited == 0 {
 		t.Error("the bound was not counted")
 	}
@@ -344,9 +366,7 @@ func TestNTSKEMaxConnections(t *testing.T) {
 	if _, err := second.Read(buf); err == nil {
 		t.Fatal("the connection past the bound was not closed")
 	}
-	if got := s.Stats().Refusals["ntske"]["max_connections"]; got == 0 {
-		t.Fatalf("refusals: %+v", s.Stats().Refusals["ntske"])
-	}
+	refused(t, s, "max_connections", 1)
 	if s.Stats().NTSKERejected == 0 {
 		t.Error("the rejected connection was not counted")
 	}

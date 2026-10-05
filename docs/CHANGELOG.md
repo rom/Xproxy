@@ -137,6 +137,126 @@ how a figure in a document drifts from the code without anything failing. What t
 remainder is has not changed: the formatting of views whose subsystems need a
 live peer, authority, resolver or scanner behind them.
 
+### Fixed (an NTS-KE refusal counter read before it was written)
+
+The coverage run failed `TestTerminatingRefusesTermsItCannotMeet` with
+`refusals: map[no_terms:1]` after two clients had each been refused. The two
+counters on that path are written on either side of the answer: `NTSKENoTerms`
+before the error record goes out, and the reason string after the connection is
+done with -- so a client that has read its refusal has seen the first and not
+necessarily the second. Read once, the assertion was racing the thing it
+measured, and it printed a map that was about to hold the count it had just
+called missing.
+
+Four assertions in `terminate_test.go` already polled for exactly this reason,
+with a comment saying so. That loop is now a `refused` helper, and the seven
+places that still read a refusal count once -- the no-terms test and six in
+`ntske_test.go`: the application protocol, the server name on both sides, the
+plaintext scan, the client list, the handshake bound and the connection bound --
+go through it. Where the old assertion said a count was exactly one it still
+does, after the wait rather than instead of it.
+
+The relay is unchanged: writing the answer before counting the refusal is the
+right order, because the client should not wait on this process's bookkeeping.
+Verified by making the terms always negotiable, which leaves the counter at zero
+and fails the wait rather than passing it.
+
+### Fixed (eight assertions that could only ever pass)
+
+A sweep of all 878 test files for assertions that cannot fail turned up one
+shape in three packages: a test sends something a listener should refuse,
+sleeps for a fixed interval, and then asserts that nothing arrived. The sleep is
+not synchronisation. It ends where it ends, and on a loaded machine it can end
+before the listener has read the datagram at all -- at which point the
+collector, the device or the counter is empty for the trivial reason that
+nothing has happened yet, and the assertion holds whether the listener refuses
+the message or forwards it a moment later. Every one of them would have passed
+against a relay with the refusal taken out.
+
+What makes the absence mean something is already in the process: the refusal
+counter the listener writes on the path that returns without forwarding. So the
+wait is on that counter, and the absence is asserted after it has moved, when
+the decision is made and the upstream's emptiness is the answer rather than a
+snapshot of work in progress. That deletes the timer in the process -- these
+tests are now faster as well as sound.
+
+- **bacnet, nine refusal tests through one helper.** `device.nothingReached`
+  slept 150 ms before looking at what reached the fake controller; it now sums
+  the listener's `bacnet` refusal reasons and waits for the total to move. Two
+  more in the same file -- the shadow-mode test, which asserts a bound still
+  holds when the policy is shadowed, and the routed-network test -- wait on the
+  one reason that applies, through a new `waitRefusal`.
+- **syslog, four.** The facility and severity filters, the sender policy on both
+  the stream and the datagram listener, and the per-sender rate limit all slept
+  and then read a counter. They now wait for the counter first: the same two
+  lines in the other order, which is strictly stronger, and in two of them the
+  counter check the sleep was standing in for is now the wait itself.
+- **coap, the client-certificate requirement.** It recorded what the device had
+  received, drove a handshake with no certificate, and compared -- with nothing
+  between the two reads. It now waits for `coap_handshake_failed` to move.
+
+Each was verified by mutation rather than by passing: the refusal was removed
+from the relay -- forwarded after being counted, which is exactly the leak the
+assertion exists to catch -- and every test failed, naming the message that got
+through. For syslog's sender policy that took removing both layers, because the
+listener checks the sender at the connection and again at each message; a
+defence in depth worth recording.
+
+The bacnet routed-network test also turned out to be refusing the wrong thing.
+It rewrote two octets to aim the second request at a network the configuration
+does not name, and the second of those two is the destination address *length* --
+so every field behind it moved and the relay was refusing a message it could not
+parse. It still refused, for a reason that happened to match, which is why
+nobody noticed. One octet now, and the mutation check that found this is what
+proves the test reads the policy rather than the parser.
+
+### Fixed (an RDP dynamic-channel assertion counted bytes it was racing)
+
+- **`TestDataFromTheClientOnARefusedDynamicChannelIsDropped` snapshotted a byte
+  count on the wrong side of a write.** It waited for the refusal to be *counted*
+  and then recorded how much the desktop had received -- but the refusal the
+  relay sends to the desktop is counted before it is written, so the snapshot
+  raced it. When those fourteen octets landed afterwards the count had grown, and
+  the failure read "the desktop received 14 more bytes on drdynvc": a test
+  reporting that the client's data had been forwarded when what arrived was the
+  relay's own refusal.
+
+  The client's payload is now a distinctive string and the assertion is that the
+  desktop never saw it, which is the property the test is named for and does not
+  depend on when anything else arrives. The failure output shows the smuggled
+  bytes rather than a number. Verified twenty runs under the race detector, and
+  with the drop removed from the relay the test fails and prints the payload.
+
+### Fixed (the IMAP injection test was betting on a goroutine order)
+
+- **`TestALineTheServerDidNotAskForIsNotCredentialMaterial` raced the response
+  reader.** A SASL exchange is open from the client's AUTHENTICATE until the
+  server's tagged answer, and the injected line has to arrive inside it; the fake
+  server answered immediately, so the window was however long it took the
+  goroutine reading the server to call `endAuth`. The assertion was really a bet
+  on the client's second line being read first. It usually was, and on a loaded
+  machine it was not -- and losing the bet reads as `the line was carried as a
+  credential`, which is a test saying credential smuggling was not refused when
+  what happened is that the test could not hold the window open.
+
+  The fake server now takes a `silent` set and does not answer the AUTHENTICATE
+  at all, which holds the window open for as long as the test needs: a server
+  that has not answered yet is exactly the state the check exists for. Verified
+  twenty runs under the race detector, and verified the other way too -- with the
+  turn check removed from the relay the test fails, so it was made deterministic
+  rather than weakened.
+
+### Fixed (a load-sensitive assertion in the terminal interface test)
+
+- **`internal/tui` `TestRunOverAPseudoTerminal` read a frame too early.** It
+  failed in a coverage run, which is the same suite under instrumentation and so
+  slower: `press` returns on the first frame that arrives after a key, and a
+  frame still in flight from the action before it satisfies that, so three
+  assertions were reading a snapshot one frame behind the key they were about.
+  They now wait for the frame that shows what they assert, which is what the
+  second half of the same test already did. No product change: the keys were
+  acted on, the test looked too soon.
+
 ### Fixed (IMAP: the same upstream upgrade, and two xproxyctl commands)
 
 - **An imap listener with `upstream_tls_mode: starttls` could not carry a
@@ -211,6 +331,39 @@ and the policy asked about the address before a mailbox server is dialled and
 about the name a USER claims before it reaches a server that would check it.
 73.6 % to 84.2 %.
 
+**The RDP legacy encryption seam, driven one unit at a time.** The end-to-end
+test puts a client, this gateway and a desktop that speaks the protocol's own
+encryption together, and proves the three fit. What it cannot do is reach one
+direction at a time: `open` is only ever called on what a desktop sends, and a
+fake desktop that sends the awkward cases is a fake desktop nobody would write
+-- so `open` sat at 0 % while the session it belongs to was covered. The pair is
+now driven directly, with keys derived the way the session derives them, and the
+asymmetries are what the cases are about: a security header goes back only on
+the packet kinds that have one, the encrypt bit never survives the decryption, a
+packet the desktop did not encrypt is passed through while one that does not
+decrypt ends the session, and fast path input before the key exchange is refused
+because it carries keystrokes. `TestWhichUnitsHaveToWaitForTheKeys` is the one
+with a wrong answer in each direction -- too eager stalls every connection at
+the gateway, too lax sends session traffic before there is a key for it.
+73.8 % to 77.0 % of the package's own statements.
+
+**The MMS answer side, which was the half nothing read.** The request readers
+had the tests, because requests are what a relay decides about -- so the
+answers, where the reports come from, were at 0 % function by function:
+`readInvokeOnly`, `readError`, `readNames`, `readDefineList` and
+`associationInformation` were never called. A response is now asserted to be
+read for its invoke identifier and nothing else (the body is values and this
+package keeps none), a device's own refusal as a class and a code, because
+"the relay refused" and "the IED refused" are two findings about two pieces of
+equipment. The association reads the same thing twice over, and both ways are
+now covered: the initiate PDU rides inside an EXTERNAL whose single-ASN1-type
+and octet-aligned arms carry it identically, and a title or qualifier arrives
+explicitly tagged by the standard and implicitly tagged by some equipment.
+Then the fail-closed rule, one case per field: a title, a qualifier or a result
+that does not parse is an error and not an absent field, because an association
+reported with no title is one a title rule cannot refuse. 69.7 % to 82.7 % of
+the package's own statements.
+
 **The three `xproxyctl` command groups that had no test at all.** `ech`, `mfa`
 and `access` were between them a fifth of the package and none of them was
 reached by a test, which is how the four defects above survived. Each is now
@@ -232,12 +385,12 @@ figure in `docs/TESTS.md` that nothing checked. It read 82 % and measured 67 %.
 Makefile instruments the package alongside `internal/...`, and the number is in
 the table with the others where it cannot drift.
 
-The table is regenerated from the gate that passes on all of this: 85.6 % of
-111237 statements, nothing below the 60 % floor. The total is 0.4 points below
-the last one because xproxyctl's 2764 statements enter the denominator at 68 %,
-which is the point of putting it in -- and it is now the lowest gated package
-rather than a figure in a document, so the next person to work on those views has
-a floor under them.
+The table is regenerated from the gate that passes on all of this: 86.0 % of
+111255 statements, nothing below the 60 % floor. Putting xproxyctl in cost 0.4
+points when its 2764 statements entered the denominator at 68 %, and testing the
+three command groups has given them back: it reads 78 % now, and the lowest gated
+package is `internal/proxytest` at 71 % -- fifty-one statements of test harness.
+The lowest one that is not a harness is `internal/kinds/rdp` at 74 %.
 
 ### Added (the event stream: a policy for text/event-stream)
 
