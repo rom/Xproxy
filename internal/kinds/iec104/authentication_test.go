@@ -39,6 +39,16 @@ func expectTypeFrom(t *testing.T, c *centre, ty wire.Type, what string) *wire.Fr
 	return nil
 }
 
+func authenticate(t *testing.T, c *centre, st *station) {
+	t.Helper()
+	st.send <- secureASDU(wire.SChNA1, 1)
+	expectTypeFrom(t, c, wire.SChNA1, "the authentication challenge")
+	c.ask(secureASDU(wire.SRpNA1, 1))
+	if f := expectTypeFrom(t, c, wire.SRpNA1, "the authentication confirmation"); f.ASDU.Negative {
+		t.Fatalf("the authentication reply was refused: %+v", f.ASDU)
+	}
+}
+
 const authRules = `        upstream: substation
         rules:
           - {name: telemetry, action: allow, class: [monitoring]}
@@ -55,7 +65,7 @@ func TestTheAuthenticationExchangeIsCarried(t *testing.T) {
 
 	c := dialCentre(t, addr)
 	c.startdt()
-	c.ask(secureASDU(wire.SRpNA1, 1))
+	authenticate(t, c, st)
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) && len(st.saw(wire.SRpNA1)) == 0 {
 		time.Sleep(5 * time.Millisecond)
@@ -107,14 +117,33 @@ func TestAnUnauthenticatedCommandIsRefused(t *testing.T) {
 	}, "the unauthenticated command")
 }
 
-// And after the exchange, the same command goes through.
-func TestAnAuthenticatedCommandIsCarried(t *testing.T) {
+// An unsolicited reply is not an exchange: without a station challenge and
+// positive result it must not grant command authority.
+func TestAnUnsolicitedAuthenticationReplyDoesNotAuthenticate(t *testing.T) {
 	st := startStation(t, &station{})
 	_, addr := iec104Server(t, authRules+`        authentication: {require: true}`, st)
 
 	c := dialCentre(t, addr)
 	c.startdt()
 	c.ask(secureASDU(wire.SRpNA1, 1))
+	expectTypeFrom(t, c, wire.SRpNA1, "the unsolicited reply confirmation")
+	c.ask(command(1, 4321, false, true))
+	if f := expectTypeFrom(t, c, wire.CScNA1, "the command refusal"); !f.ASDU.Negative {
+		t.Fatalf("an unsolicited authentication reply authorised a command: %+v", f.ASDU)
+	}
+	if got := st.saw(wire.CScNA1); len(got) != 0 {
+		t.Fatalf("the station saw %d unauthenticated commands", len(got))
+	}
+}
+
+// And after a complete exchange, the same command goes through.
+func TestAnAuthenticatedCommandIsCarried(t *testing.T) {
+	st := startStation(t, &station{})
+	_, addr := iec104Server(t, authRules+`        authentication: {require: true}`, st)
+
+	c := dialCentre(t, addr)
+	c.startdt()
+	authenticate(t, c, st)
 	c.ask(command(1, 4321, false, true))
 	if f := expectTypeFrom(t, c, wire.CScNA1, "the command confirmation"); f.ASDU.Negative {
 		t.Fatalf("an authenticated command was refused: %+v", f.ASDU)
@@ -135,7 +164,7 @@ func TestAnAuthenticationDoesNotCrossAssociations(t *testing.T) {
 	// The first association authenticates and commands.
 	one := dialCentre(t, addr)
 	one.startdt()
-	one.ask(secureASDU(wire.SRpNA1, 1))
+	authenticate(t, one, st)
 	one.ask(command(1, 4321, false, true))
 	if f := expectTypeFrom(t, one, wire.CScNA1, "the first confirmation"); f.ASDU.Negative {
 		t.Fatalf("the authenticated command was refused: %+v", f.ASDU)
@@ -222,8 +251,7 @@ func TestAnAuthenticationOutsideTheWindowDoesNotCount(t *testing.T) {
 
 	c := dialCentre(t, addr)
 	c.startdt()
-	c.ask(secureASDU(wire.SRpNA1, 1))
-	expectTypeFrom(t, c, wire.SRpNA1, "the authentication confirmation")
+	authenticate(t, c, st)
 	c.ask(command(1, 4321, false, true))
 	if f := expectTypeFrom(t, c, wire.CScNA1, "the command confirmation"); !f.ASDU.Negative {
 		t.Fatalf("a command outside the window was carried: %+v", f.ASDU)
