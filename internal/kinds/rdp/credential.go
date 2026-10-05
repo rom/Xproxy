@@ -92,6 +92,7 @@ func (se *session) checkFactor(info *rdp.ClientInfo) string {
 	}
 	// The code never reaches the desktop.
 	info.Password = pass
+	se.identityVerified = true
 	t.engine.Counters().RDPMFAOK.Add(1)
 	t.engine.Logs().SecurityEvent(context.Background(), "allow", "rdp_mfa",
 		"listener", t.cfg.Name, "client_ip", se.ip.String(), "user", textsafe.Clip64(se.user))
@@ -155,11 +156,19 @@ func splitCode(arg string) (pass, code string) {
 // this session actually got.
 func (se *session) admitByPolicy() string {
 	t := se.t
+	user := se.user
+	// When the gateway substitutes its own credential, the desktop will not
+	// authenticate the name the client supplied. Do not let that unverified
+	// claim satisfy a user rule. With no substituted credential the desktop
+	// still proves the original credential; successful MFA proves it here.
+	if t.upUser != "" && !se.identityVerified {
+		user = ""
+	}
 	return t.engine.Authorization().Ask(authorization.Subject{
 		Listener: t.cfg.Name,
 		Kind:     "rdp",
 		Client:   se.ip,
-		User:     se.user,
+		User:     user,
 		Target:   t.v.Upstream,
 		Action:   authorization.ActionConnect,
 	}, textsafe.Clip64(se.user), t.authzGate(se.ip))

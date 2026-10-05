@@ -326,6 +326,9 @@ type session struct {
 	upProtocol     uint32
 	// user and domain are who the credential said was connecting.
 	user, domain string
+	// identityVerified says MFA proved that the client controls user. A name
+	// from the client-info packet alone is only a claim.
+	identityVerified bool
 	// grant is the access grant this session was admitted under. On this
 	// protocol the credential arrives after the desktop has been dialled,
 	// so the grant is checked against the machine already reached rather
