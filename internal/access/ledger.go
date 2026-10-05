@@ -31,6 +31,14 @@ const (
 	// under whose approval" is a question an audit asks a year later, and the
 	// answer has to be one nobody could quietly edit.
 	kindEngineering = "engineering"
+	// kindWorkOrder is a change reference somebody filed against a device, and
+	// kindWorkOrderClosed is somebody closing it before its window ran out.
+	// They are in this file because "was that download filed, and by whom" is
+	// the same question as "was it approved, and by whom", asked of an estate
+	// that has not got as far as approvals -- and an answer somebody could
+	// edit afterwards would be worth nothing in either case.
+	kindWorkOrder       = "work_order"
+	kindWorkOrderClosed = "work_order_closed"
 )
 
 // maxRecords bounds a replay. A ledger is an audit trail and grows without
@@ -75,6 +83,12 @@ type record struct {
 	Proto    string `json:"proto,omitempty"`
 	Class    string `json:"class,omitempty"`
 	Refusal  string `json:"refusal,omitempty"`
+	// Order is carried by a work order record, and Work by an engineering
+	// record: the reference the operation happened under, where one was on
+	// file. Both are omitted when absent, so a trail written before work
+	// orders existed hashes to exactly what it hashed to before.
+	Order *WorkOrder `json:"work_order,omitempty"`
+	Work  string     `json:"work_order_ref,omitempty"`
 	// Prev is the previous record's Hash, and Hash covers this record with
 	// Hash itself empty.
 	Prev string `json:"prev"`
@@ -91,6 +105,14 @@ type Stats struct {
 	// Engineering counts the engineering operations written to this trail,
 	// which is the number an audit starts from.
 	Engineering uint64 `json:"engineering"`
+	// EngineeringFiled is the subset that happened under a work order on file.
+	// The difference between the two is the list somebody works through.
+	EngineeringFiled uint64 `json:"engineering_filed"`
+	// WorkOrders counts the filings, WorkOrdersClosed the ones somebody closed
+	// early. A reference filed twice counts twice: extending a window is an
+	// act, and the trail records acts.
+	WorkOrders       uint64 `json:"work_orders"`
+	WorkOrdersClosed uint64 `json:"work_orders_closed"`
 	// Refusals counts sessions turned away, by reason.
 	Refusals map[string]uint64 `json:"refusals,omitempty"`
 }
@@ -112,11 +134,16 @@ type Ledger struct {
 	mu    sync.Mutex
 	byID  map[string]*Grant
 	order []string
-	f     *os.File
-	w     *bufio.Writer
-	seq   int64
-	prev  string
-	stats Stats
+	// orders are the work orders by reference, orderRefs the order they were
+	// first filed in. A reference filed again replaces the record and keeps
+	// its place, because extending a work order is not a new work order.
+	orders    map[string]*WorkOrder
+	orderRefs []string
+	f         *os.File
+	w         *bufio.Writer
+	seq       int64
+	prev      string
+	stats     Stats
 
 	// now is the clock, replaced in tests.
 	now func() time.Time
@@ -225,11 +252,17 @@ func (l *Ledger) apply(r record) error {
 		l.stats.Requests++
 		return nil
 	}
+	if r.Kind == kindWorkOrder || r.Kind == kindWorkOrderClosed {
+		return l.applyWorkOrder(r)
+	}
 	if r.Kind == kindEngineering {
 		// An engineering record names a grant only when one was open, and
 		// stands on its own when none was: the operation happened either way,
 		// and that is exactly what the trail is for.
 		l.stats.Engineering++
+		if r.Work != "" {
+			l.stats.EngineeringFiled++
+		}
 		return nil
 	}
 	g := l.byID[r.ID]
@@ -572,6 +605,10 @@ type EngineeringRecord struct {
 	// "this happened outside every approved window" is the fact, and what was
 	// done about it is the listener's configuration.
 	Refusal string
+	// WorkOrder is the reference on file for the device at the time, empty
+	// when there was none. It is not an approval and does not change the
+	// refusal; it is the answer to "was anybody expecting this".
+	WorkOrder string
 }
 
 // Engineering writes one engineering operation to the trail.
@@ -593,7 +630,7 @@ func (l *Ledger) Engineering(e EngineeringRecord) error {
 	}
 	return l.append(record{At: at, Kind: kindEngineering, ID: e.Grant,
 		Actor: e.Subject, Note: e.Detail, Listener: e.Listener,
-		Proto: e.Kind, Class: e.Class, Refusal: e.Refusal})
+		Proto: e.Kind, Class: e.Class, Refusal: e.Refusal, Work: e.WorkOrder})
 }
 
 // Deadline is when a session opened under this grant must end. A gate sets it

@@ -30,10 +30,12 @@ did not build it" and "it does not apply" are different promises again.
 - [TLS and certificates](#tls-and-certificates)
 - [DNS](#dns)
 - [Mail](#mail)
+- [Mailboxes](#mailboxes)
 - [Messaging](#messaging)
 - [Industrial control](#industrial-control)
 - [Network management](#network-management)
 - [Directory](#directory)
+- [Authentication, authorisation and accounting](#authentication-authorisation-and-accounting)
 - [Provisioning](#provisioning)
 - [Addressing](#addressing)
 - [Time](#time)
@@ -91,10 +93,32 @@ did not build it" and "it does not apply" are different promises again.
 | RFC | Title | Status | Notes |
 |-----|-------|--------|-------|
 | 6455 | The WebSocket Protocol | Full | Framing parsed in both directions by `websocket_guard`: reserved bits and opcodes, masking, control frame size and fragmentation, continuation state, close codes and UTF-8 validity |
-| 7692 | Compression Extensions for WebSocket | Refused | No extension is negotiated on an inspected route, and a frame arriving with a reserved bit set — which is what `permessage-deflate` uses — closes the connection with a protocol error. A compressed frame cannot be inspected, so accepting it would turn every check off silently |
+| 7692 | Compression Extensions for WebSocket | Refused | On an inspected route the client's offer is **stripped from the upgrade request**, so no extension is negotiated anywhere on the path and both endpoints fall back to uncompressed frames — which is what the extension is designed to do when it is not agreed, and what keeps a browser (every one of which offers it by default) working. An origin that claims an extension regardless is refused at the 101 with `502`, and a frame arriving with a reserved bit set closes the connection with a protocol error, which now genuinely means a misbehaving peer. A compressed frame cannot be inspected, so accepting one would turn every check off silently |
 | 9297 | HTTP Datagrams and the Capsule Protocol | Full | Under CONNECT-UDP and CONNECT-IP |
 | 9298 | Proxying UDP in HTTP | Full | One socket per session, pinned to the target it was opened for |
 | 9484 | Proxying IP in HTTP | Partial | ADDRESS_ASSIGN and ROUTE_ADVERTISEMENT with per-packet anti-spoofing; the tunnel device is created by the operator, and the proxy refuses to start a session without `ip_assign` and `ip_routes` |
+
+
+**Why the extension is not decompressed instead, and what would change that.**
+Inspecting a compressed frame means running DEFLATE over bytes a peer chose,
+which is the one thing the rest of this guard is built to avoid: its stated
+design rule is that the proxy's memory must not be a function of what a client
+sends, which is why an oversize message is checked to a bound and forwarded
+rather than buffered. A DEFLATE stream inverts that — a small frame expands to
+an arbitrary one, `permessage-deflate` keeps its dictionary *across* messages
+so the state is per connection and cannot be dropped between frames, and
+`client_max_window_bits` lets the peer pick how much of that state the proxy
+must hold. A bounded implementation is possible (a hard ceiling on the
+decompressed size per message and on the window, the connection closed on
+either) but it is a resource-exhaustion surface bought deliberately, per route,
+for the bandwidth of one extension.
+
+So the decision is: **not by default, and not implicitly.** If it is added it
+is an explicit per-route opt-in with its own bounds, sitting beside the message
+schemas and per-type limits rather than arriving as a side effect of a client's
+offer, and the route that turns it on accepts the cost in writing. Until then
+the honest arrangement is the one above: no negotiation, uncompressed frames,
+every check working.
 
 ## TLS and certificates
 
@@ -163,12 +187,38 @@ named here so nobody has to guess:
 | 5322 | Internet Message Format | Partial | Line structure only. The proxy does not parse headers or rewrite a message; it decides where lines and messages end |
 | 6409 | Message Submission for Mail | Full | The submission listener |
 | 3207 | SMTP Service Extension for Secure SMTP over TLS | Full | Including the refusal of anything pipelined behind `STARTTLS` (CVE-2011-0411) and the reset of session state afterwards |
-| 8314 | Cleartext Considered Obsolete: Use of TLS for Email Submission and Access | Full | Implicit TLS on 465 |
+| 8314 | Cleartext Considered Obsolete: Use of TLS for Email Submission and Access | Full | Implicit TLS on 465, and on 993 and 995 for the mailbox listeners below |
 | 1870 | SMTP Service Extension for Message Size Declaration | Full | `SIZE` advertised and enforced |
 | 4954 | SMTP Service Extension for Authentication | Full | Relayed, including multi-round challenges; the credentials are never held or logged |
 | 2920 | SMTP Service Extension for Command Pipelining | Full | Except behind `STARTTLS`, where it is a refusal |
 | 3463 | Enhanced Mail System Status Codes | Full | On every reply the proxy writes itself |
 | 3030 | SMTP Service Extensions for Transmission of Large and Binary MIME Messages | Refused | `CHUNKING` and `BDAT` are never advertised or relayed: BDAT frames a message with a length instead of a terminator, which would put the framing decision back in two places |
+
+## Mailboxes
+
+Submission is one section up. These are the protocols a mail *client*
+speaks, where the request worth deciding about is well-formed and the
+question is how much of a mailbox it names.
+
+| RFC | Title | Status | Notes |
+|-----|-------|--------|-------|
+| 9051 | Internet Message Access Protocol (IMAP) — Version 4rev2 | Partial | Read as a relay: the command set and the four states of §3, the tagged, untagged and continuation response forms, the literal, the sequence set, and the response codes a policy reads. Message bodies are counted and copied, never parsed — this is not an IMAP server |
+| 3501 | Internet Message Access Protocol — Version 4rev1 | Partial | What the installed base actually speaks, so the state table and command set cover both revisions. §5.1.3's modified UTF-7 is decoded, because a policy that compared the encoded spelling of a mailbox name would compare nothing; §6.2.3's `LOGINDISABLED` is added to the capability list where `LOGIN` would be refused, which is how a server says so and how a client is told to ask for something else |
+| 7888 | IMAP4 Non-synchronizing Literals | Full | `LITERAL+` and `LITERAL-`. A bound on an `APPEND` is checked against the literal's **declared** size, because a non-synchronising literal sends its octets without waiting for a continuation request; a refused command's octets are then read and dropped rather than left to desynchronise the connection |
+| 4959 | IMAP Extension for SASL Initial Client Response | Full | An initial response on the `AUTHENTICATE` line, recognised as credential material: carried, not parsed, never logged |
+| 2177 | IMAP4 IDLE command | Full | Carried, with the parked connection bounded by `max_idle_duration` and `allow_idle` deciding whether it is offered at all |
+| 6851 | Internet Message Access Protocol (IMAP) — MOVE Extension | Full | Decided about as a write *and* as a collection, since a MOVE names a sequence set |
+| 3691 | IMAP UNSELECT command | Full | Returns the connection to the authenticated state, which the state table tracks |
+| 2342 | IMAP4 Namespace | Full | Carried; the namespace prefixes a server reports are not rewritten |
+| 2971 | IMAP4 ID extension | Full | Carried. The client's own `ID` string is a client's claim about itself, logged and never acted on |
+| 4314 | IMAP4 Access Control List (ACL) Extension | Full | `SETACL` and `DELETEACL` are writes, and are the commands a `read_only` listener and a `deny_commands` list are usually written to stop |
+| 9208 | IMAP QUOTA Extension | Full | The quota commands, with `SETQUOTA` a write |
+| 4978 | The IMAP COMPRESS Extension | Refused | `COMPRESS=DEFLATE` is removed from the capability list and refused as a command: a deflated connection cannot be inspected, so advertising it would be an offer to stop deciding |
+| 2595 | Using TLS with IMAP, POP3 and ACAP | Full | `STARTTLS` on 143 and `STLS` on 110, **terminated by this relay** rather than forwarded, with anything pipelined behind the upgrade refused — the same reasoning as RFC 3207's above, and the same CVE class |
+| 1939 | Post Office Protocol — Version 3 | Full | The three states, the command set, both reply forms — and which of the two a command takes, which for `LIST` and `UIDL` depends on whether an argument is present — and §3's dot-stuffing, so the terminator cannot appear inside a message. The `APOP` digest is carried with the server's own greeting timestamp, because a relay that invented a greeting would make every digest unverifiable |
+| 2449 | POP3 Extension Mechanism | Full | The `CAPA` list, read and narrowed to what the policy will admit |
+| 5034 | The POP3 Simple Authentication and Security Layer (SASL) Authentication Mechanism | Full | The `AUTH` command and its exchange, carried as credential material without being parsed |
+| 4616 | The PLAIN Simple Authentication and Security Layer (SASL) Mechanism | Recognised | Named by both kinds as a mechanism that carries the password, which is what makes it refusable on an unencrypted connection and strippable from an advertised list |
 
 ## Messaging
 
@@ -279,6 +329,32 @@ search that reaches the relay's entry bound is completed with
 `sizeLimitExceeded` (4), which is exactly what a directory with an
 administrative limit sends: the client knows it has part of an answer, rather
 than hanging on a connection that will say nothing more.
+
+## Authentication, authorisation and accounting
+
+The three protocols an estate's own equipment authenticates against,
+rather than the ones its web applications use: RADIUS and TACACS+ for
+the network gear, and Kerberos where the directory is Active Directory.
+None of them is cryptographically sound by current standards and all
+three carry credentials, which is the argument for a proxy in front of
+them.
+
+| RFC | Title | Status | Notes |
+|-----|-------|--------|-------|
+| 2865 | Remote Authentication Dial In User Service (RADIUS) | Partial | The packet, every attribute of the base dictionary, the Response Authenticator verified on the way back and recomputed for the client, and the User-Password obfuscation recognised but never undone. The relay does not authenticate anybody itself: it decides about requests and replies and carries them |
+| 2866 | RADIUS Accounting | Partial | Accounting-Request and Accounting-Response are carried and counted; the Request Authenticator of an accounting packet is a digest rather than a nonce, so it is verified as one |
+| 2869 | RADIUS Extensions | Partial | The attributes that matter to a policy: EAP-Message, Message-Authenticator and the tunnel attributes a reply grants with |
+| 3579 | RADIUS Support For Extensible Authentication Protocol | Full | The keyed Message-Authenticator, verified on both legs and recomputed when a packet is renumbered. `require_message_authenticator` makes it mandatory, which is the protocol's own mitigation for CVE-2024-3596 |
+| 3748 | Extensible Authentication Protocol (EAP) | Partial | The header, the method, an identity, and a Nak's list of methods the client would accept instead -- enough for a policy about which methods may be negotiated. No EAP method is implemented: this is not an authenticator |
+| 6929 | RADIUS Protocol Extensions | Partial | The extended attribute types (241 to 246) are read as what they are, so a rule names one by its extended number rather than by the octet it shares with 245 others |
+| 2548 | Microsoft Vendor-specific RADIUS Attributes | Partial | Vendor-specific attributes are unwrapped where the inner length agrees with the outer, which is how a privilege grant is found: the four vendor spaces an estate's equipment actually uses have names, and the rest are readable by number |
+| 5176 | Dynamic Authorization Extensions to RADIUS | Refused | A Change-of-Authorization or Disconnect-Request is an unsolicited packet that logs a session out or rewrites its authorisation, sent to a client that may accept it from any address with the right secret. It is recognised, counted and refused rather than relayed; an estate that needs it has a path that does not run through a security proxy |
+| 8907 | The TACACS+ Protocol | Partial | The header, the authentication, authorization and accounting bodies, the argument list, and the obfuscation of section 5.2 -- implemented as the keyed MD5 pad it is, which section 10.3 itself calls "not cryptographically sound". Single-connection mode is read, so several sessions on one connection are kept apart. A `FOLLOW` reply is refused rather than carried, because it redirects the device to another server with another key |
+| 4120 | The Kerberos Network Authentication Service (V5) | Partial | AS-REQ, AS-REP, TGS-REQ, TGS-REP, AP-REQ and KRB-ERROR are read down to what a policy decides about: the realm, the client and server principals, the requested options, the encryption types offered, the pre-authentication types present and the ticket lifetime. No Kerberos cryptography is performed and no key is held: an encrypted part is recognised and its encryption type read, never decrypted |
+| 4556 | Public Key Cryptography for Initial Authentication in Kerberos (PKINIT) | Partial | Its pre-authentication types are recognised as pre-authentication, so a certificate-based logon is not mistaken for an exemption. The certificate itself is not validated here |
+| 6113 | A Generalized Framework for Kerberos Pre-Authentication | Partial | An FX-FAST armoured request is recognised as pre-authenticated; what is inside the armour is not read |
+| 8009 | AES Encryption with HMAC-SHA2 for Kerberos 5 | Partial | The two encryption types, as names a policy allows or requires |
+| 4757 | The RC4-HMAC Kerberos Encryption Types | Partial | Recognised and nameable, because a request offering nothing but RC4 is what Kerberoasting looks like. An estate can refuse it outright with `refuse_weak_etypes` |
 
 ## Provisioning
 
@@ -500,6 +576,7 @@ not mistaken for an omission:
 | Specification | Where | Notes |
 |---------------|-------|-------|
 | PROXY protocol v1 and v2 | HAProxy | Inbound from trusted peers, outbound to upstreams |
+| Kerberos KDC Proxy Protocol (MS-KKDCP) | Microsoft | The `kkdcp` listener kind: the KDC-PROXY-MESSAGE envelope, its length-prefixed inner message and its optional realm and flags, over HTTPS and one path. The `dclocator-hint` field is carried to the KDC and never acted on by the proxy, because a domain controller hint from a client is a client's opinion about where its credentials should go |
 | MQTT 3.1.1 and 5.0 | OASIS (3.1.1 also ISO/IEC 20922) | |
 | Modbus Application Protocol v1.1b3 | Modbus Organization | The `modbus` listener kind |
 | Modbus over Serial Line v1.02 | Modbus Organization | RTU and ASCII framing, tunnelled over TCP the way every Modbus gateway does it |
@@ -542,7 +619,7 @@ the peer behind it.
 | A bare LF ending an SMTP line | SMTP | It ends the line for a permissive parser and not for a strict one, which is the whole of SMTP smuggling. Refused, or repaired to CRLF and re-emitted, never passed through |
 | `CHUNKING` / `BDAT` | SMTP | A length-framed message would put the end-of-message decision back in two places |
 | Data pipelined behind `STARTTLS` | SMTP | Written before the client could see the `220`: plaintext for one side, ciphertext for the other |
-| `permessage-deflate` | WebSocket | A compressed frame cannot be inspected; accepting the extension would disable every check silently |
+| `permessage-deflate` | WebSocket | A compressed frame cannot be inspected; accepting the extension would disable every check silently. The offer is stripped from an inspected upgrade rather than left to the endpoints, so a client that asks for it gets an uncompressed connection rather than a broken one |
 | A non-shortest MQTT remaining length | MQTT | Two spellings of one length are two readings of one packet |
 | An MQTT version the proxy cannot parse | MQTT | A packet it cannot check is a packet it cannot allow |
 | An SFTP version above 3 | SFTP | Packets this cannot be trusted to read; the policy would be guesswork |
@@ -550,6 +627,10 @@ the peer behind it.
 | SOCKS4, SOCKS4a, SOCKS `BIND` | SOCKS | No authentication, no names, and `BIND` asks the proxy to open a listening socket on a client's say-so |
 | YARA modules, `at`, `for`, unbounded jumps, `@a` | YARA | Refused at load with the line number. A rule that silently matched nothing would be worse than one that will not start |
 | An upstream reply the proxy cannot parse | SMTP, MQTT | Never passed on: it is exactly the reply the client would read differently |
+| A `FOLLOW` reply | TACACS+ | It hands the device another server's address, port and key, so a server that has been taken can move every later authentication somewhere this proxy does not see. Refused, in shadow mode too |
+| A Change-of-Authorization or Disconnect-Request | RADIUS | An unsolicited packet that ends somebody's session, authenticated by a shared secret and nothing else. Counted and dropped |
+| A body sent with the unencrypted flag | TACACS+ | The obfuscation is weak and is still the only confidentiality the protocol has; a body in the clear is a password on the wire |
+| A Kerberos message a KDC proxy does not carry | KKDCP | Only the AS and TGS exchanges and their errors belong in a KDC-PROXY-MESSAGE. Anything else is refused rather than forwarded, because a proxy that carries what it cannot name is a tunnel |
 
 ## Keeping this honest
 

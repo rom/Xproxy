@@ -1,9 +1,9 @@
 # Configuration reference
 
 Four daemons read this format: **xproxy** (the edge: `http`, `forward`,
-`tcp`, `dns`), **xgate** (the gate: `ssh`), **xrelay** (the relay:
-`smtp`, `ftp`, the databases) and **xot** (the plant: `modbus`,
-`iec104`, `s7`, `mms`, `bacnet`, `opcua`, `coap`). Every one of them
+`tcp`, `dns`, `kkdcp`), **xgate** (the gate: `ssh`), **xrelay** (the relay:
+`smtp`, `ftp`, the databases, `radius`, `tacacs`) and **xot** (the plant:
+`modbus`, `iec104`, `s7`, `mms`, `bacnet`, `opcua`, `coap`). Every one of them
 validates the whole file — a listener kind a sibling serves is checked as
 carefully here as at home — and binds only the listeners it owns, saying
 in the log which it left to whom. That is what lets an estate keep its
@@ -150,9 +150,9 @@ off) logs a warning and lists them under `mismatched_peers`.
 | `h3` | object | defaults when `h3` is listed | QUIC tuning; see below |
 | `h2c` | bool | `false` | Accept HTTP/2 without TLS (prior knowledge and Upgrade) on a plaintext listener, for gRPC clients inside a trusted network |
 | `tls` | object | none | TLS termination; see below |
-| `proxy_protocol` | bool | `false` | Read a PROXY protocol v1 or v2 header at the start of every connection from a peer in `trusted_proxies`: the client address it carries becomes the peer for limits, bans, ACLs, logs and forwarding headers, and the per address connection count moves to it. A trusted peer that sends no header, or a malformed one, is dropped without a response (`drop_connection` with reason `proxy_protocol`, counted in `rejected_connections`); `LOCAL` headers keep the balancer's address; connections from other peers are served unchanged, so a client cannot choose its own address. Requires `trusted_proxies`; read on `kind:` `http`, `forward`, `ssh`, `telnet`, `vnc`, `rdp`, `smtp`, `mqtt`, `ftp`, `syslog` and `modbus`, and not on `tcp` (which reads the first bytes itself to route by server name, and forwards a header instead), `dns`, `udp`, `ntp`, `ntske`, `dhcp` or `dhcp6` -- the datagram kinds have no connection to put a header at the start of, and the key establishment relay reads the ClientHello. |
-| `kind` | `http`, `tcp`, `udp`, `forward`, `dns`, `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `ntp`, `ntske`, `dhcp`, `dhcp6`, `ssh`, `telnet`, `vnc`, `rdp` | `http` | `tcp` is a layer 4 stream listener and `udp` its datagram counterpart, `forward` an explicit proxy for clients, `dns` a DNS proxy, `smtp` a protocol-aware SMTP and submission proxy, `mqtt` an MQTT proxy, `ftp` an FTP proxy, `syslog` a syslog relay, `modbus` a Modbus relay, `ntp` an NTP and NTS time gateway with `ntske` its key establishment relay, and `ssh`, `telnet`, `vnc` and `rdp` the access gateways; see below. The kind also decides which daemon serves the listener: `http`, `forward`, `tcp`, `udp` and `dns` are xproxy's; `ssh`, `telnet`, `vnc` and `rdp` are xgate's; `smtp`, `ftp`, `ldap`, `postgres`, `mysql`, `tds`, `redis` and `amqp` are xrelay's; `modbus`, `iec104`, `s7`, `mms`, `bacnet`, `opcua` and `coap` are xot's; and `mqtt`, `syslog`, `snmp`, `tftp`, `dhcp`, `dhcp6`, `ntp` and `ntske` are served by both relays, xrelay's unless the listener's `daemon` says otherwise. A daemon handed a listener of another kind validates it and leaves it alone; it is never served by the wrong data plane |
-| `daemon` | `xproxy`, `xgate`, `xrelay`, `xot` | the kind's own | Which program binds this listener, for the eight kinds both relays serve (`mqtt`, `syslog`, `snmp`, `tftp`, `dhcp`, `dhcp6`, `ntp`, `ntske`). Naming a daemon that does not carry that kind's code is a load error, because the alternative is a port nobody binds and a policy nobody enforces. Naming the only daemon that serves a kind is allowed and warned about. Left unset, the eight are xrelay's and every other kind belongs to the one daemon that serves it. MQTT is in that set because Sparkplug B telemetry is a plant's own and the device inventory collects what one daemon saw, so an estate whose device births arrive over MQTT wants that listener on the daemon serving its control protocols |
+| `proxy_protocol` | bool | `false` | Read a PROXY protocol v1 or v2 header at the start of every connection from a peer in `trusted_proxies`: the client address it carries becomes the peer for limits, bans, ACLs, logs and forwarding headers, and the per address connection count moves to it. A trusted peer that sends no header, or a malformed one, is dropped without a response (`drop_connection` with reason `proxy_protocol`, counted in `rejected_connections`); `LOCAL` headers keep the balancer's address; connections from other peers are served unchanged, so a client cannot choose its own address. Requires `trusted_proxies`; read on `kind:` `http`, `forward`, `ssh`, `telnet`, `vnc`, `rdp`, `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `tacacs` and `kkdcp`, and not on `tcp` (which reads the first bytes itself to route by server name, and forwards a header instead), `dns`, `udp`, `ntp`, `ntske`, `dhcp`, `dhcp6` or `radius` -- the datagram kinds have no connection to put a header at the start of, and the key establishment relay reads the ClientHello. |
+| `kind` | `http`, `tcp`, `udp`, `forward`, `dns`, `kkdcp`, `smtp`, `mqtt`, `ftp`, `syslog`, `modbus`, `ntp`, `ntske`, `dhcp`, `dhcp6`, `radius`, `tacacs`, `ssh`, `telnet`, `vnc`, `rdp` | `http` | `tcp` is a layer 4 stream listener and `udp` its datagram counterpart, `forward` an explicit proxy for clients, `dns` a DNS proxy, `smtp` a protocol-aware SMTP and submission proxy, `mqtt` an MQTT proxy, `ftp` an FTP proxy, `syslog` a syslog relay, `modbus` a Modbus relay, `ntp` an NTP and NTS time gateway with `ntske` its key establishment relay, `radius` and `tacacs` the two protocols that authenticate network equipment, `kkdcp` a Kerberos KDC proxy over HTTPS, and `ssh`, `telnet`, `vnc` and `rdp` the access gateways; see below. The kind also decides which daemon serves the listener: `http`, `forward`, `tcp`, `udp` and `dns` are xproxy's; `ssh`, `telnet`, `vnc` and `rdp` are xgate's; `smtp`, `ftp`, `ldap`, `postgres`, `mysql`, `tds`, `redis` and `amqp` are xrelay's; `modbus`, `iec104`, `s7`, `mms`, `bacnet`, `opcua` and `coap` are xot's; `kkdcp` is xproxy's and xrelay's; and `mqtt`, `syslog`, `snmp`, `tftp`, `dhcp`, `dhcp6`, `ntp`, `ntske`, `radius` and `tacacs` are served by both relays, xrelay's unless the listener's `daemon` says otherwise. A daemon handed a listener of another kind validates it and leaves it alone; it is never served by the wrong data plane |
+| `daemon` | `xproxy`, `xgate`, `xrelay`, `xot` | the kind's own | Which program binds this listener, for the eleven kinds more than one daemon serves (`mqtt`, `syslog`, `snmp`, `tftp`, `dhcp`, `dhcp6`, `ntp`, `ntske`, `radius`, `tacacs` -- xrelay's by default, and xot's where a plant's own network equipment is behind them -- and `kkdcp`, which is xproxy's by default because MS-KKDCP exists so that a client outside the network can reach a KDC inside it). Naming a daemon that does not carry that kind's code is a load error, because the alternative is a port nobody binds and a policy nobody enforces. Naming the only daemon that serves a kind is allowed and warned about. Left unset, those ten are xrelay's, `kkdcp` is xproxy's, and every other kind belongs to the one daemon that serves it. MQTT is in that set because Sparkplug B telemetry is a plant's own and the device inventory collects what one daemon saw, so an estate whose device births arrive over MQTT wants that listener on the daemon serving its control protocols |
 | `redirect_to_https` | bool | `false` | Answer every request with 308 to `https://host/path?query`. Plaintext listeners only. |
 | `connection_rate` | object | none | `{per_second, burst}`: how fast this listener accepts, replacing `server.limits.connection_rate` for it. See below |
 | `connection_rate_per_source` | object | none | `{per_second, burst, ipv4_prefix, ipv6_prefix, max_sources}`: how fast one source network may connect to this listener |
@@ -212,7 +212,9 @@ a peer; the access log's `closed` field says which), `tcp_bytes_in`,
 flows are keyed by client address, so a client that migrates to a new
 address starts a new flow (its first packet is not an Initial and is
 dropped; the client falls back or retries); QUIC versions other than 1
-are dropped. Changing a tcp listener needs a restart.
+are dropped. A tcp listener's settings reload like any other; with
+`quic: true` a change on the same address needs a restart instead,
+because the flows are state inside the socket's transport.
 
 #### Transparent interception
 
@@ -422,6 +424,10 @@ connection limits and the header timeouts apply as on every listener.
 | `auth` | object | none | Require `Proxy-Authorization: Basic` credentials; without it the listener is open to every client the bans and limits admit |
 | `auth.users_file` | path | required | `name:hash` lines from `xproxyctl htpasswd`; re-read on reload and a bad file fails the reload; verified credentials are cached for five minutes and the cache is dropped on reload |
 | `auth.realm` | string | `proxy` | Sent in `Proxy-Authenticate` with 407 |
+| `auth.groups` | map | none | Group name to member names, so a rule is written about the build agents rather than about eleven accounts; also what the estate's `authorization` section compares its `groups` selector against on this listener |
+| `sni` | enum | `observe` | What to do when a tunnel this listener is *not* intercepting carries a TLS handshake whose server name is not the destination the CONNECT asked for: `enforce` refuses it, `observe` records it and relays it, `off` does not look. See below |
+| `categories` | list | `[]` | Named sets of destinations an egress rule can talk about; see below |
+| `rules` | list | `[]` | The egress policy: who may send what, where and when; see below |
 | `connect_timeout` | duration | `10s` | Name resolution and dial bound per destination; at most 5m |
 | `idle_timeout` | duration | `10m` | Close a tunnel after no bytes in either direction; at most 24h |
 | `max_tunnels` | int | `10000` | Open CONNECT tunnels on this listener; over it CONNECT answers 503 |
@@ -430,6 +436,160 @@ connection limits and the header timeouts apply as on every listener.
 | `socks_udp` | bool | `false` | Allow SOCKS5 `UDP ASSOCIATE` (requires `socks5`) |
 | `masque` | object | none | UDP and IP proxying over extended CONNECT (RFC 9298, RFC 9484); see below |
 | `intercept` | object | none | Terminate TLS inside a CONNECT tunnel and read what passes through it; see below |
+
+#### Egress rules: who may send what, where, and when
+
+`allow` and `deny` answer whether a destination exists for this listener at
+all. `rules` answer the question after that, which is the one an estate running
+a forward proxy actually has: the build agents may reach the package mirrors and
+nothing else, nobody may POST to file sharing, the vendor's support portal is
+reachable during the change window.
+
+```yaml
+forward:
+  auth:
+    users_file: /etc/xproxy/proxy.htpasswd
+    groups:
+      agents: [build1, build2, build3]
+      staff: [alice, bob]
+  categories:
+    - name: mirrors
+      hosts: ["*.debian.org", "proxy.golang.org", "registry.npmjs.org"]
+    - name: file-sharing
+      file: /etc/xproxy/categories/file-sharing.txt   # one pattern per line
+  rules:
+    # The denials come first. First match decides, so a broad deny written
+    # underneath an allow is a deny the allow has already decided for.
+    - name: no-uploads-to-file-sharing
+      action: deny
+      categories: [file-sharing]
+      methods: [POST, PUT, PATCH]
+      comment: "change 2026-41"
+    - name: no-executables-back
+      action: deny
+      response_types: ["application/octet-stream", "application/x-dosexec"]
+    - name: no-large-uploads
+      action: deny
+      request_bytes_over: 10485760
+
+    - name: agents-to-mirrors
+      action: allow
+      groups: [agents]
+      categories: [mirrors]
+    - name: staff-reads
+      action: allow
+      groups: [staff]
+      methods: [GET, HEAD, CONNECT]
+    - name: vendor-in-the-change-window
+      action: allow
+      hosts: ["support.vendor.example"]
+      schedule: {days: [tue], from: "02:00", to: "04:00", timezone: Europe/Stockholm}
+      comment: "CR-2026-118"
+
+    # Nothing else is permitted. This rule only makes that visible in the
+    # report; without it the refusal is the same, under the reason no_rule.
+    - name: everything-else
+      action: observe
+```
+
+**First match decides, and a destination no rule matched is refused**, under the
+reason `no_rule` — the same shape the OT relays use, for the same reason: a
+policy that permits what nobody wrote a rule for is a policy whose gaps are
+invisible. A `rules` list therefore needs a rule that allows, or the listener
+refuses everything.
+
+An `allow` rule means this policy has nothing to object to; it does not skip
+what comes after it. The imported threat lists and the estate's own
+`authorization` section still decide, so a listener's rule can narrow the
+estate's policy and never widen it.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `categories[].name` | string | required | What a rule names; compared without case and never globbed, so a typo is refused by validation rather than becoming a rule about nothing |
+| `categories[].hosts` | list | `[]` | Destination patterns in the `allow`/`deny` spelling: an exact name, `*.suffix`, an address or a CIDR |
+| `categories[].file` | path | none | Further patterns, one per line, `#` for a comment; absolute, read at start and on reload, and a file that cannot be read fails the load |
+| `rules[].name` | string | required | What the security event, the shadow ledger and the report call this rule |
+| `rules[].action` | enum | `deny` | `allow`, `deny` or `observe`; `observe` records a match and keeps looking |
+| `rules[].users`, `not_users` | list | `[]` | The name the proxy authenticated, compared without case |
+| `rules[].groups`, `not_groups` | list | `[]` | Groups from `auth.groups` |
+| `rules[].networks`, `not_networks` | list | `[]` | Client addresses or CIDRs |
+| `rules[].categories`, `not_categories` | list | `[]` | Category names this listener defines |
+| `rules[].hosts`, `not_hosts` | list | `[]` | Destination patterns, as for a category |
+| `rules[].ports` | list of int | `[]` | Destination ports |
+| `rules[].methods` | list | `[]` | HTTP methods, upper case |
+| `rules[].paths` | list | `[]` | Request path globs: `*` within one segment, `**` across segments |
+| `rules[].request_types` | list | `[]` | Request media types; `type/*` for a whole tree. The parameters are dropped, so `text/html; charset=utf-8` is `text/html`, and a header that is not a media type matches nothing |
+| `rules[].response_types` | list | `[]` | Response media types, decided when the response head arrives |
+| `rules[].request_bytes_over` | int | `0` | Match a request body larger than this |
+| `rules[].response_bytes_over` | int | `0` | Match a response body larger than this |
+| `rules[].schedule` | object | none | Hours the rule is in force, in the spelling [`modbus`](#modbus) uses; outside them the rule does not match |
+| `rules[].comment` | string | none | Carried into the event and the ledger, which is where a change number belongs |
+
+##### What a rule can be decided from
+
+A forward proxy sees two different things, and this is the limit to understand
+before writing a policy here.
+
+A **plain request** through the proxy carries its method, its path, its content
+type and usually its length, so every selector above can be decided about it.
+
+A **CONNECT tunnel** carries a destination and nothing else. The method and the
+content types are inside TLS. So a rule naming `methods`, `paths`,
+`request_types`, `response_types` or a byte bound **decides nothing for a
+destination reached through a tunnel, unless this listener is reading inside
+it** — which is `intercept` with `http` left at its default, and is where those
+rules are worth what they look like they are worth. The messages in a tunnel
+that is being decrypted are ordinary HTTP, and the same rules decide about them
+in the same phases, so a policy means one thing on port 80 and the same thing on
+port 443. [Reading HTTP inside the tunnel](#reading-http-inside-the-tunnel) is
+what that path does and does not cover.
+
+Without interception the limit stands, and it is not left to be discovered.
+Validation names the rules in that position — including on a listener that
+intercepts with `http: off`, which is the same silence written differently —
+`xproxyctl listeners` shows the listener's rule count, and `GET /v1/listeners`
+carries an `egress` section with how many of them need a visible request and
+whether this listener reads inside its tunnels.
+
+The three honest limits of the rest:
+
+- A **response** rule is decided when the response head arrives, which is after
+  the destination was contacted. A body nobody is allowed to receive still does
+  not have to arrive, but the request did leave.
+- A **byte bound** on a body whose length was declared is decided before
+  anything is sent. On a body with no declared length — a chunked upload — the
+  bytes are counted as they travel and the connection is cut past the bound.
+  What has already gone cannot be recalled, which is why a size rule is worth
+  less on egress than a destination rule.
+- A rule about **users or groups** on a listener with no `auth` matches nobody,
+  because there is no name. Validation warns rather than guessing.
+
+#### The server name inside a tunnel
+
+A client allowed to reach `cdn.example.com` can open a tunnel there and then
+handshake for anything else that address serves — which on a shared CDN is a
+great many things, and is how domain fronting works. The destination policy then
+decided about a name nobody used.
+
+`sni` is the check that closes it, and it needs no interception: the first bytes
+of the tunnel are a ClientHello the client was going to send anyway, and the
+name in it either is the destination or is not.
+
+- `enforce` refuses a mismatch (`forward_sni_mismatch`, reason `sni_mismatch`,
+  and the client address observed for a ban).
+- `observe`, the default, records it and relays it. A name that disagrees is
+  almost always fronting and occasionally a client with a stale DNS answer, so
+  an estate reads its own traffic before this refuses any of it.
+- `off` does not look.
+
+A handshake with **no** server name is not a mismatch and is never refused by
+this: that is what Encrypted Client Hello looks like from here, and refusing it
+would be refusing a client for using a privacy feature. A tunnel opened to an
+address rather than a name is not a mismatch either — there the policy checked
+the address, and the bytes go to that address whatever the handshake says.
+
+`intercept` has carried this check for its own tunnels since it was written;
+`sni` is the same check for the tunnels nothing is decrypting.
 
 #### TLS interception on a forward listener
 
@@ -458,6 +618,7 @@ things follow from that, and none of them is optional.
 | `leaf_ttl` | duration | `24h` | Validity of an issued certificate; at most 720h |
 | `max_cache` | int | `1024` | Issued certificates kept in memory; the oldest are dropped |
 | `alpn` | list | `["http/1.1"]` | Offered to the destination and accepted from the client; `h2` warns |
+| `http` | enum | `auto` | Read the plaintext as HTTP, so that a rule about a method, a path, a content type or a body size decides inside the tunnel too: `auto` does it when the listener has such a rule, `on` always, `off` never. See below |
 | `yara` | object | none | Rules over the decrypted stream, with the same keys as everywhere else |
 
 **The destination is verified first, and only then is a certificate
@@ -510,6 +671,71 @@ the client, user, destination, negotiated ALPN and the TLS version
 reached upstream. Counters: `forward_intercepted`,
 `forward_intercept_refused`, `forward_intercept_passed` and
 `forward_intercept_bytes`.
+
+##### Reading HTTP inside the tunnel
+
+Decrypting a tunnel is what makes the rest of this listener's policy
+possible; reading it as HTTP is what makes [the egress
+rules](#egress-rules-who-may-send-what-where-and-when) decide in there. `http` says whether to:
+
+- `auto`, the default, reads when there is something to decide — when
+  the listener has at least one rule naming a method, a path, a content
+  type or a body size. A policy that is only about destinations gains
+  nothing from parsing, and an estate that upgrades does not get a
+  behaviour it did not ask for.
+- `on` reads every intercepted tunnel, which is what to set while
+  writing those rules so that the access log carries the requests before
+  any rule refuses one.
+- `off` never reads, and the tunnel is relayed as bytes to YARA and the
+  rest exactly as before. Validation warns if rules that need a request
+  are written on a listener set this way, because that combination is a
+  policy that cannot fire.
+
+What is read is **HTTP/1.1**, which is what `alpn` offers. Three things
+are relayed as bytes instead, and each is counted, so "nothing was read"
+is never a silent answer:
+
+- a tunnel that negotiated **h2**, because this reads HTTP/1 and a proxy
+  guessing at HTTP/2 framing is a proxy that breaks sites;
+- a tunnel whose first bytes are **not a request line**, because SSH, a
+  database session and a line protocol inside TLS all happen, and
+  answering one with a 400 breaks it for no reason. The decision is the
+  version at the end of the line rather than a list of methods, so
+  `PROPFIND` and anything else an extension invented is still HTTP;
+- everything **after a 101**, because the connection has stopped being
+  request-and-response. A WebSocket through an intercepting proxy is
+  ordinary traffic and is relayed as such — what its messages carry is
+  the [WebSocket guard](#routeswebsocket_guard)'s question rather than this one.
+
+Those two counters are `forward_intercept_requests`, the requests read,
+and `forward_intercept_bytes_only`, the tunnels relayed without being
+read.
+
+**A refusal is an HTTP response on the client's own connection**: 403
+with the reason, and then the connection closes, because keeping it
+alive would mean reading the rest of a body nobody is allowed to send.
+The access line is `forward_intercept_request` with the method, the
+destination and the status — the method and not the path, because this
+listener logs destinations rather than URLs everywhere else, and an
+intercepted connection is the last place to start writing down more of
+what somebody asked for.
+
+**Requests are relayed as they arrived.** Nothing is added: no `Via`, no
+forwarded headers, because the point of interception here is that the
+destination sees what the client sent and judges the message the client
+wrote. What the parse does refuse is framing it cannot agree with — a
+request carrying both a length and a chunked encoding is the
+request-smuggling shape, and it is answered with 400, counted as
+`bad_request`, and logged as `forward_tunnel_bad_request` rather than
+being passed on for the destination to disagree about.
+
+**The `Host` a request names has to be the host the tunnel was opened
+to**, under the same `sni` setting and for the same reason: otherwise a
+client permitted to reach one name uses the connection to that name's
+address to ask for another. `enforce` answers 403 with reason
+`host_mismatch`, `observe` records `forward_tunnel_host_mismatch` and
+relays it, `off` does not look; a tunnel opened to an address is the
+same exception as it is for `sni`.
 
 ```yaml
 - name: egress
@@ -625,9 +851,13 @@ Counters: `forward_requests`, `forward_tunnels`, `forward_tunnels_open`,
 `forward_socks`, `forward_udp_associations`, `forward_udp_open`,
 `forward_udp_dropped`, `forward_intercepted`,
 `forward_intercept_refused`, `forward_intercept_passed`,
-`forward_intercept_bytes`;
-`xproxy_forward_*` metrics. The policy and the users file reload; the
-address and TLS settings need a restart like every listener.
+`forward_intercept_bytes`, `forward_intercept_requests`,
+`forward_intercept_bytes_only`;
+`xproxy_forward_*` metrics. The policy and the users file apply in place,
+without touching a connection; the TLS settings and the address reload
+too, by rebuilding the listener on the socket it already holds (or
+binding the new address and draining the old one), so neither needs a
+restart.
 
 ### server.listeners[].dns (kind: dns)
 
@@ -646,7 +876,12 @@ NOTIMP otherwise); responses arriving as queries and packets from
 banned clients are dropped. A dns listener takes `address`, `dns` and
 optionally `tls`; bans and the global connection limits apply to TCP
 clients as on every listener. The policy, upstreams and cache bounds
-reload (the cache is kept); the address needs a restart.
+apply in place and the cache is kept. Anything else about the listener
+reloads by rebuilding it on the datagram socket it already holds, which
+is handed from one generation to the next: no query is lost and no
+restart is needed. With `doq` that handover is not possible -- a QUIC
+connection is state inside the transport -- so a change on the same
+address asks for a restart.
 
 With `tls` (certificates only, no ACME) the listener is encrypted: no
 plain UDP is bound, the TCP port serves DNS over TLS (RFC 7858, ALPN
@@ -2310,14 +2545,33 @@ step every estate takes before it starts refusing. `action: alert` keeps
 `require_grant`'s bookkeeping and drops its refusal, which is how to run the
 policy for a fortnight and read the report before it can stop a commissioning.
 
-**A grant is a work order.** It is requested and approved through the same
+`engineering_ungranted` is **not** a refusal and is not counted as one. The
+operation was carried — that is the whole difference between the two reasons —
+so it has a counter of its own, `xproxy_engineering_outside_window_total`,
+beside `xproxy_engineering_total`. The refusals stay in
+`xproxy_refusals_total`, where `engineering_no_grant` is the only engineering
+reason that belongs. The ATT&CK technique is observed either way: an operation
+outside every window is a detection whether or not anybody refused it.
+
+**The grant is the approval.** It is requested and approved through the same
 `/v1/access` machinery and `xproxyctl access` as a bastion session, against this
-listener's name, and its reason is the change reference. The reason goes into the
-security event as `work_order` and into the ledger beside the operation, so "who
-downloaded what, when, under which work order" has an answer that is not a
+listener's name, and its reason says what the change is. The event carries
+`grant` and `grant_reason`, and the ledger records them beside the operation, so
+"who downloaded what, when, under whose approval" has an answer that is not a
 person's memory. A listener with `require_grant: true` on a daemon with no
 ledger **fails closed at startup** rather than at four in the afternoon, the same
 way the gate kinds do.
+
+**The work order is a different thing, and is not an approval.** A
+[work order](#a-work-order-is-not-a-grant) is the change reference somebody
+filed against the device — nobody approves it and it permits nothing. Where one
+is open, every engineering event on that device carries `work_order` and
+`work_order_by`, its `severity` is `notice` rather than `warning`, and the
+operation counts under `xproxy_engineering_filed_total` as well as
+`xproxy_engineering_total`. Where none is, the event says `severity: warning`
+and names no reference. That is the whole of what a work order does: a listener
+with `require_grant: true` refuses an operation with no grant whatever work
+orders are open.
 
 **The refusal is the protocol's own.** It answers the way that kind answers a
 refused request — a Modbus exception, an S7 error class, an OPC UA service fault
@@ -4556,7 +4810,7 @@ either.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | string | required | Names the rule in the logs and the counters |
-| `action` | enum | `allow` | `allow`, `deny` or `observe`. `observe` logs and counts and then keeps looking, which is how a rule is tried on live traffic before it decides anything |
+| `action` | enum | `allow` | `allow`, `deny` or `observe`. `observe` records the rule and decides nothing, so the rules below it still decide — and on a listener whose `default_action` is `deny`, the default does. That is what lets a rule be tried on live traffic without the trial changing what happens |
 | `clients` | list of CIDR | `[]` | The networks the connection came from |
 | `application_uris`, `users`, `token_kinds` | list | `[]` | Select by who the traffic is from. A rule naming a user matches only a session that activated as one, which is every session after ActivateSession and none before it |
 | `security_policies`, `security_modes` | list | `[]` | Select by what secures the channel, which is how "this client may write, but only over an encrypted channel" is written |
@@ -4806,6 +5060,539 @@ the refusal counters: `client_not_allowed`, `client_denied`,
 `not_selected`, `selection_expired`, `file_denied`, `file_not_allowed`,
 `file_unreadable`, `too_many_names`, `too_many_requests`, `rate_limited`,
 `unreadable_frame`, `upstream_unavailable`.
+
+### server.listeners[].radius (kind: radius)
+
+RADIUS on UDP 1812 and 1813: what authenticates most of the network
+equipment in most estates — every 802.1X switch port, every VPN
+concentrator, every wireless controller, and on the routers that do not run
+TACACS+ the administrative logins too.
+
+**This listener's value is that it holds the shared secret.** Without one it
+can read a packet's code, identifier and attributes — all of that is in the
+clear — but it cannot tell a packet the server will accept from one it will
+not. With one, every arriving packet's integrity is checked before anything
+is forwarded, which is the difference between a relay that filters and a
+relay that filters *and* authenticates. So `secret_file` is not optional in
+any deployment worth the name, and the validator warns when it is missing.
+
+**`require_message_authenticator` defaults on, and that is the Blast-RADIUS
+answer.** The Response Authenticator is MD5 over the reply with the request's
+authenticator spliced in and the secret appended; a chosen-prefix MD5
+collision turns an Access-Reject into an Access-Accept on the wire, which is
+CVE-2024-3596. RFC 3579's Message-Authenticator is a keyed HMAC over the
+whole packet and the attack does not reach it. Every current server and NAS
+can send one; requiring it is the published mitigation.
+
+**The reply leg is where privilege is granted.** A client asks for access by
+logging in; the *server's* answer is what says this login gets the enable
+prompt — `Service-Type = Administrative-User`, or `shell:priv-lvl=15` in a
+Cisco av-pair. So `max_privilege_level` and `deny_administrative_replies` are
+checks on what comes back, and they are the ones that bound what a
+compromised or spoofed RADIUS server can hand out across a whole estate of
+routers.
+
+**A password is read, never recovered.** `User-Password` is XORed with
+MD5(secret ‖ authenticator), so anybody holding the secret can recover it —
+including this relay. It does not: it records that a request carried one and
+how long it was. `refuse_plaintext_passwords` defaults off for the same
+reason the knob on the `mms` listener does: PAP is most of the installed
+base, refusing it removes the only authentication a lot of equipment has,
+and counting it does not.
+
+**This listener takes no `tls` section.** RADIUS is UDP and has no transport
+security of any kind. RadSec (RFC 6614) puts it inside TLS on TCP 2083,
+which is a different transport with a different trust model rather than a
+flag on this one.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstream` | string | required | The RADIUS server pool |
+| `accounting_upstream` | string | `""` | The pool `Accounting-Request` goes to, where an estate separates them. Empty sends accounting to `upstream` |
+| `secret_file` | absolute path | none (warned about) | The shared secret, one line, readable only by its owner — a file rather than a value here, because a secret written in this section is a secret in the configuration management, the backups and every review of the change that added it |
+| `upstream_secret_file` | absolute path | `""` | The secret towards the servers, where it differs. Setting it makes this listener a secret boundary: the equipment's secret never reaches the server and the server's never reaches the equipment. The cost is that the obfuscated `User-Password` has to be re-obfuscated under the new secret, which means this relay recovers it in memory for the length of one packet; a listener that does not set this never does |
+| `allow_clients`, `deny_clients` | list of CIDR | `[]` | The networks a client may send from; deny is evaluated first. On a protocol where the client is a switch at a fixed address this is the cheapest line in the section |
+| `codes`, `deny_codes` | list | the four a client sends | The packet codes carried, by name (`access-request`, `accounting-request`, `status-server`) or number. Empty allows authentication, accounting and the two status queries — and not the dynamic authorization codes |
+| `require_message_authenticator` | bool | `true` | Refuse a packet with no valid RFC 3579 digest. Turning it off on a listener that has a secret means accepting replies whose only integrity check is a collidable MD5; name the equipment too old to send one in a rule instead |
+| `verify_response_authenticator` | bool | `true` | Check RFC 2865's own authenticator on a reply. It is the weaker of the two — it is what the collision forges — and still worth running: it catches a mismatched secret, a corrupted packet and an answer from the wrong server |
+| `allow_dynamic_authorization` | bool | `false` | Carry RFC 5176's `Disconnect-Request` and `CoA-Request`. Each ends or re-authorises a live user's session from one datagram, and they run from the server towards the equipment rather than the other way |
+| `auth_types` | list | any | The credential shapes carried: `pap`, `chap`, `mschap`, `eap`, `none` |
+| `refuse_plaintext_passwords` | bool | `false` | Refuse an `Access-Request` carrying `User-Password`; see above for why it defaults off |
+| `eap_types`, `deny_eap_types` | list | any not weak | The EAP methods carried, by name (`peap`, `tls`, `ttls`, `mschapv2`) or number |
+| `refuse_weak_eap` | bool | `true` | Refuse the methods with no server authentication and no key material, crackable offline from one observed exchange: EAP-MD5, LEAP, and the bare one-time-password and token-card types. A client that Naks its way down to EAP-MD5 has downgraded the estate's authentication to a hash somebody can crack on a laptop |
+| `users`, `deny_users` | list | `[]` | The `User-Name` values carried, matched case-insensitively on the whole name |
+| `realms`, `deny_realms` | list | `[]` | The realms a name may carry, in all three forms the installed base uses: `user@realm`, `realm\user` and `realm/user`. A realm is routing — a server proxies by it — so an allow list here is a say in where a credential goes |
+| `require_realm` | bool | `false` | Refuse a user name with no realm in it, which is where a misconfigured supplicant and a hand-typed login both land |
+| `nas_identifiers` | list | `[]` | The `NAS-Identifier` values carried. It is a claim rather than a fact, so it is worth pairing with `allow_clients` rather than trusting alone |
+| `max_privilege_level` | int | `15` (no bound) | The administrative privilege a *reply* may grant, 0 to 15, read from a Cisco av-pair's `priv-lvl`. Setting it to 1 on the listener in front of the switches means no RADIUS answer crossing this relay can hand out enable, whatever the server says. Every av-pair on the reply is read, and every pair inside one, and the highest grant found is the one bounded — including the NUL-separated spelling several platforms use, and a value outside 0–15. Which pair a given platform acts on is the platform's business, so all of them are this relay's |
+| `deny_administrative_replies` | bool | `false` | Refuse a reply carrying `Service-Type = Administrative-User`, which is the standard attribute's spelling of the same grant |
+| `deny_attributes` | list | `[]` | Attribute types a request may not carry, by name or number |
+| `deny_reply_attributes` | list | `[]` | Attribute types a reply may not carry. The interesting one is `Tunnel-Private-Group-Id`: the VLAN a RADIUS answer puts a port in, which a listener whose job is authentication rather than authorisation can refuse to carry |
+| `refuse_proxy_state` | bool | `false` | Refuse a request carrying `Proxy-State`. The attribute exists so a proxy can recognise its own forwarded requests, and a client sending one is either a proxy or something putting state into a server's reply path |
+| `max_attributes` | int | `255` | The attributes one packet may carry — more than any real packet, and far short of what 4096 octets of empty attributes holds |
+| `max_message_bytes` | int | `4096` | One datagram; RFC 2865's own maximum |
+| `max_pending` | int | `256` | The requests waiting for answers, bounded by the width of the identifier space |
+| `request_timeout` | duration | `10s` | How long a request's slot is held |
+| `rate_limit`, `rate_burst` | int | `0` (off) | Requests a second per client address. Here this is also the only thing between a credential-stuffing run and a server doing a key derivation per attempt |
+| `default_action` | enum | `deny` | `deny` or `allow` for a request no rule matched |
+| `deny_response` | enum | `reject` | `reject` (an `Access-Reject`, which the client reports as a failed login and stops on) or `drop`. An `Accounting-Request` has nothing useful to refuse with, so a refused one is always dropped |
+| `log_requests` | bool | `true` | A line per request and per answer: who, from where, which method, and what was granted |
+| `alert_on_deny` | bool | `true` | A security event for every refusal |
+| `monitor_only` | bool | `false` | Evaluate and enforce nothing, the same as `policy: {mode: shadow}`. The bounds, the integrity checks and the malformed-packet refusals still apply: a packet whose digest does not verify is not a policy question |
+| `anomaly` | object | off | Behavioural models over what each piece of equipment has been doing; see `anomaly` |
+
+Counters: `radius_requests`, `radius_bad_digest`, `radius_no_digest`,
+`radius_plaintext_passwords`, `radius_privilege_grants` and
+`radius_unsolicited`. `radius_bad_digest` is the one to alert on — a packet
+whose Message-Authenticator or Response Authenticator did not verify is
+either a mismatched secret or somebody forging answers, and a relay cannot
+tell which. `radius_plaintext_passwords` is a fact about the estate's
+equipment rather than about this relay.
+
+#### server.listeners[].radius.rules[]
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | string | required | Names the rule in the logs and the counters |
+| `action` | enum | `allow` | `allow`, `deny` or `observe`. `observe` records the rule in the access line and decides nothing, so the rules below it still decide: the whole point is to try a rule on live traffic without it changing what happens, and a rule that decided — by allowing what it covers — would make trying one out the way to switch off every deny rule under it |
+| `clients` | list of CIDR | `[]` | The networks the client is in |
+| `codes` | list | `[]` | The packet codes this rule covers |
+| `auth_types`, `eap_types` | list | inherited | The credential shapes and EAP methods this rule covers |
+| `users`, `realms`, `nas_identifiers` | list | `[]` | Select by who is asking |
+| `max_privilege_level` | int | inherited | The rule's own bound on what a reply may grant, which is how the one jump host that really does get enable is written down |
+| `require_message_authenticator` | bool | inherited | The rule's own answer, which is how the one piece of equipment too old to send a digest is admitted without turning the check off for the estate |
+| `schedule` | object | none | Limit the rule to a time window |
+
+### server.listeners[].tacacs (kind: tacacs)
+
+TACACS+ on TCP 49 (RFC 8907): device administration. Where RADIUS answers
+"may this user onto the network", TACACS+ answers "may this user, at this
+privilege level, run `configure terminal` on this router" — it authorises
+each command separately, and the command is in the packet. Of every protocol
+in this reference it is the one where a policy is worth the most per line.
+
+**The shared key is what makes the rest possible.** RFC 8907 calls its MD5
+construction "obfuscation", not encryption, and §10.3 says it is "not
+cryptographically sound": the pad is a chain of MD5 digests over the session
+identifier, the key, the version and the sequence number, so anybody with the
+key reads everything. This listener uses that. With `secret_file` it reads
+the user, the command and the privilege level; without one it reads the
+twelve-octet header and forwards the body unexamined — which is a bound and
+an audit of sessions, and not a policy on commands. Naming `commands` or
+`users` without a key is a load error rather than a setting that silently
+matches nothing.
+
+**The command patterns are the point.** They match the command line a device
+sends split across `cmd` and one `cmd-arg` per word, so a rule is written the
+way the command is typed and the listener reassembles it. The grammar is
+words with an optional trailing `...` meaning "and anything after": `show
+...` covers every show command, `show running-config` covers exactly that,
+and a wildcard in the middle is refused at load — a pattern whose author and
+whose reader disagree about what it covers is worse than no pattern on a
+protocol that authorises each command separately. Matching is
+case-insensitive, because a device's command line is. Abbreviations are
+*not* expanded: a user may type `conf t`, but what reaches the server is what
+the device sends, and every platform worth naming sends the expanded form.
+
+**Privilege is granted in the reply, and bounded here.** An authorization
+response carries `priv-lvl=15` as a mandatory argument, and a device that
+receives a mandatory argument must apply it. So `max_privilege_level` is
+checked on the server's answer as well as on the request's own field: the
+first is a grant, the second only a claim.
+
+**A `FOLLOW` reply is refused by default.** RFC 8907 §5.2's
+`TAC_PLUS_AUTHEN_STATUS_FOLLOW` redirects the client to a different server,
+and the reply's data field carries that server's address, port and *key*. It
+is a server-chosen redirect to an arbitrary host after which the client sends
+its next credential there; the standard deprecates it and says a client
+should treat it as a failure.
+
+**Device administration is engineering activity.** The `engineering` block
+applies here for the same reason it applies to a PLC download: a `configure
+terminal` on a core router at three in the morning is either a change with a
+work order behind it or an incident. A `show` is not engineering and is not
+reported as one.
+
+A `tls` section is allowed and means TACACS+ over TLS, which is the fix for
+everything §10.3 admits. Almost no equipment speaks it yet, which is why
+`refuse_unencrypted` exists as the weaker thing it is.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstream` | string | required | The TACACS+ server pool |
+| `secret_file` | absolute path | none (warned about) | The shared key, one line, readable only by its owner |
+| `upstream_secret_file` | absolute path | `""` | The key towards the servers, where it differs. Setting it makes this listener a key boundary: a device's key never reaches the server and the server's never reaches a device |
+| `allow_clients`, `deny_clients` | list of CIDR | `[]` | The networks a device may connect from; deny is evaluated first |
+| `exchanges` | list | all three | `authentication`, `authorization`, `accounting`. Naming fewer is a real control: a listener in front of equipment managed from a bastion and nowhere else can carry accounting and authorization and refuse authentication, so no login can be attempted through it at all |
+| `refuse_unencrypted` | bool | `true` | Refuse a packet whose `TAC_PLUS_UNENCRYPTED_FLAG` is set, meaning the body arrived in the clear. RFC 8907 §4.5 allows it only on a secured transport; on bare TCP it is either a mistake or somebody stripping the obfuscation, and either way an administrative login's user name and password are on the wire |
+| `allow_follow` | bool | `false` | Carry a `FOLLOW` status; see above |
+| `allow_change_password` | bool | `false` | Carry an authentication session whose action is `CHPASS`. It changes a credential on the server, and most estates do password changes elsewhere entirely |
+| `allow_sendauth` | bool | `false` | Carry a `SENDAUTH` session, which asks the server for a credential to send onwards to a peer. RFC 8907 §5.4.3 keeps it for outbound CHAP and PAP on dial links; in a modern estate a request for one is either dead configuration or somebody extracting credentials from the server |
+| `authen_types` | list | any | The credential shapes carried: `ascii`, `pap`, `chap`, `mschap`, `mschapv2` |
+| `refuse_plaintext_passwords` | bool | `false` | Refuse a session whose type puts the password in the body — `ascii` and `pap`. It defaults off for the reason the knob on `mms` does: on a lot of equipment interactive login is the only authentication there is. What this listener does by default is count every session that carries one |
+| `allow_unauthenticated_authorization` | bool | `false` | Carry an authorization request whose `authen_method` says the device authenticated nobody: not-set, none, guest, or the line password. This is a whole attack in one octet — a device that asks "may this unnamed user run this command" and is told yes has authorised a command for whoever is on the port |
+| `services` | list | any | The `service` argument values carried: `shell`, `ppp`, or a vendor's own |
+| `authen_services` | list | any | The protocol's own `authen_service` field: `login`, `enable`, `ppp`, `rcmd`. `enable` is the one to think about — it is the privilege escalation inside an existing session, and a separate decision from the login |
+| `users`, `deny_users` | list | `[]` | The user names carried |
+| `commands` | list | any | The command lines carried, written the way they are typed; empty allows any |
+| `deny_commands` | list | `[]` | Checked first, and no rule overrides it, which is how an exception inside an allowed set is written: `show ...` allowed, `show running-config` denied. A deny pattern covers the command it names **and whatever is appended to it**, because a device's command line takes suffixes: `show running-config` denies `show running-config \| include password` and `copy running-config` denies it to any destination. An allow pattern is read exactly, unless it ends in `...` — allowing more than was asked for is the unsafe direction |
+| `max_privilege_level` | int | `15` (no bound) | The privilege level, 0 to 15, checked on a request's own field and on a `priv-lvl` argument in the server's response |
+| `max_args` | int | `64` | The arguments one request may carry; the protocol's own bound is 255 |
+| `max_body_bytes` | int | `32768` | One packet's body. RFC 8907 §4.1 says a server should refuse one past 65536, and nothing legitimate is near either number |
+| `max_sessions`, `max_sessions_per_client` | int | `0` (off) | Concurrent connections |
+| `max_sessions_per_connection` | int | `64` | The sessions one TCP connection may carry. A connection carries more than one only when both ends set `TAC_PLUS_SINGLE_CONNECT_FLAG`, which is ordinary — so this is a bound rather than a refusal |
+| `idle_timeout`, `session_timeout` | duration | `5m`, `1h` | How long a connection may sit silent, and how long it may live |
+| `rate_limit`, `rate_burst` | int | `0` (off) | Connections a second per client address |
+| `require_tls` | bool | `false` | Refuse a connection that is not TLS. Requires a `tls` section on the listener |
+| `upstream_tls_mode` | enum | `disable` | `disable`, `prefer` or `require` towards the servers. `prefer` tries TLS and falls back, which is what an estate migrating its equipment needs |
+| `upstream_tls` | object | none | Client-side TLS settings for that leg; see `upstreams[].tls` |
+| `default_action` | enum | `deny` | `deny` or `allow` for a request no rule matched |
+| `deny_response` | enum | `fail` | `fail` (an authentication FAIL, an authorization FAIL or an accounting ERROR, each carrying a message saying which proxy refused it) or `drop`. `fail` is the right default here in a way it is not on every protocol: the person refused is an engineer at a terminal, and a line saying `refused by xproxy: command_not_allowed` is the difference between a policy they can work with and a router they report as broken |
+| `log_requests` | bool | `true` | A line per request and per answer |
+| `log_accounting` | bool | `true` | Every accounting record as its own line. This is the estate's own copy of the device-administration audit trail — who ran what, on which device, at what privilege level — worth having separately from the server's because it is in a different place, written by a different program, and whoever has just got privileged access to the routers does not have it |
+| `alert_on_deny` | bool | `true` | A security event for every refusal |
+| `monitor_only` | bool | `false` | Evaluate and enforce nothing, the same as `policy: {mode: shadow}`. The bounds, the session limits and the malformed-packet refusals still apply, and so do the refusals about what the *server* sent: carrying a `FOLLOW` to see what would have happened is the thing being prevented |
+| `anomaly` | object | off | Behavioural models over what each device and each user has been doing; see `anomaly` |
+| `engineering` | object | reports, no grant required | Report configuration commands as their own class of event and, with `require_grant`, refuse one with no approved work order open; see `access` |
+
+Counters: `tacacs_sessions`, `tacacs_commands`, `tacacs_accounting`,
+`tacacs_header_only`, `tacacs_plaintext_passwords` and
+`tacacs_privilege_grants`. `tacacs_commands` is the audit number — how many
+command authorizations crossed this listener — and `tacacs_header_only` is
+the one that says a command policy is deciding nothing, because it counts
+the packets whose body this listener could not read.
+
+#### server.listeners[].tacacs.rules[]
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | string | required | Names the rule in the logs and the counters |
+| `action` | enum | `allow` | `allow`, `deny` or `observe`. `observe` records the rule in the access line and decides nothing, so the rules below it still decide: the whole point is to try a rule on live traffic without it changing what happens, and a rule that decided — by allowing what it covers — would make trying one out the way to switch off every deny rule under it |
+| `clients` | list of CIDR | `[]` | The networks the device is in |
+| `exchanges` | list | `[]` | The exchanges this rule covers |
+| `users` | list | `[]` | The user names this rule covers |
+| `commands`, `deny_commands` | list | added to the listener's | The command lines this rule covers, and the ones it does not cover even when `commands` would match. A rule whose command list does not cover a command does not decide it, so a rule written to allow `show ...` is not the rule that allows `reload`. The lists **add to** the listener's rather than standing in for them: both deny lists are checked and both allow lists have to be satisfied, so a rule can only ever narrow. A rule that replaced the listener's deny list would be a hole in the sentence "no router behind this relay accepts `write erase`", opened by writing a deny |
+| `services`, `authen_services` | list | inherited | The service values this rule covers |
+| `authen_types` | list | inherited | The credential shapes this rule covers |
+| `max_privilege_level` | int | inherited | The rule's own bound |
+| `schedule` | object | none | Limit the rule to a time window, which is what a change window is: configuration commands allowed while the engineers are on shift and not at three in the morning |
+
+### server.listeners[].kkdcp (kind: kkdcp)
+
+A Kerberos KDC proxy: HTTPS in, TCP to the KDC, and the answer wrapped back.
+MS-KKDCP exists because Kerberos is UDP and TCP on port 88 and the places
+people work from are not on the network the KDC is on; Windows has shipped
+the client since 2012, and MIT and Heimdal both speak it.
+
+It is the only listener here that translates one protocol into another, and
+it is one of the few places an estate's Kerberos traffic can be read at all.
+
+**Everything a policy needs is in the clear.** Which realm, which client
+principal, which service principal, which encryption types the client will
+take, which pre-authentication it brought: those are the fields the KDC
+itself decides on, and they are readable because they have to be — they are
+how the two ends agree what to encrypt. What is encrypted is the ticket and
+the reply's enc-part, and no setting here needs those. One limit worth
+stating: a request wrapped in RFC 6113's FAST armour shows this relay the
+armour and not what is inside it.
+
+**A proxy with no realm policy is an open relay.** `realms` is required. A
+request whose envelope and inner message name different realms is refused
+rather than resolved: the outer one is what the proxy routes by and the inner
+one is what the KDC decides on, so a proxy that picked one would be deciding
+about a different realm than the KDC.
+
+**The interesting attacks are visible, and three have knobs of their own.**
+
+- A TGS-REQ offering **nothing but RC4** is Kerberoasting: an RC4 service
+  ticket's encrypted part is crackable offline against the service account's
+  NT hash. `refuse_weak_etypes` refuses those. "Nothing but" rather than
+  "any", and the distinction is the whole setting — a Windows client lists
+  aes256, aes128 and rc4 and the KDC takes the first it can, so refusing a
+  request that *mentions* RC4 would refuse the estate. "Nothing but" is read
+  as "offers no type this estate is content with", not as "every type is on a
+  list of bad ones": the field is integers a client chooses, and a number
+  nobody has assigned is not a strong offer just because this proxy has no
+  name for it.
+- An **AS-REP for a request whose pre-authentication cannot be seen to have
+  been acted on** means the account is pre-authentication exempt, and the
+  reply's encrypted part is an offline password-cracking target. That is
+  AS-REP roasting, and `refuse_preauth_exempt` refuses the *reply* — because
+  the question cannot be answered on the request: a bare AS-REQ is the normal
+  first message of every exchange, and the KDC answers one with
+  `KDC_ERR_PREAUTH_REQUIRED`. It cannot be answered by the request's own
+  padata either, which is a field the client writes and this relay holds no
+  key to check: what is read instead is the pair of messages, so a claim the
+  KDC must decrypt to act on counts, and a PKINIT claim counts when the reply
+  carries the KDC's own half of it.
+- A TGS-REQ carrying `PA-FOR-USER` or `PA-S4U-X509-USER` is **S4U2Self** and one carrying the
+  constrained-delegation option with an additional ticket is **S4U2Proxy**,
+  the two primitives behind most delegation abuse. Both default off, and
+  S4U2Proxy needs both halves to be recognised as one: the option alone is a
+  client setting a reserved bit, and an additional ticket alone is a
+  user-to-user request.
+
+**A run of failures is the other half.** An internet-facing KDC proxy is
+where password spraying lands, and the signal is a burst of
+`KDC_ERR_PREAUTH_FAILED`. `max_preauth_failures` counts them per client over
+a window and refuses past the bound, which is a control the KDC's own lockout
+policy cannot give — it locks the account, which is what the sprayer wanted.
+
+**A `tls` section is required**, not optional: the protocol is HTTPS, and the
+message it carries holds a value derived from the user's password. A listener
+without one is refused at load.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `upstream` | string | required | The KDC pool, reached over TCP |
+| `password_upstream` | string | `""` | The pool kpasswd requests go to, which is a different service on a different port. Required when `allow_password_change` is set |
+| `path` | path | `/KdcProxy` | The HTTP path served, which is what Windows asks for. Everything else gets a 404 with no body |
+| `realms` | list | required | The realms carried, matched case-insensitively against both the envelope's target domain and the inner message's realm |
+| `require_target_domain` | bool | `false` | Refuse an envelope that names no target domain. The field is optional in MS-KKDCP and MIT's client omits it, so requiring it refuses real traffic; without it the decision is made on the inner realm, which is the realm the KDC will use |
+| `message_types` | list | `as-req`, `tgs-req` | The request types carried; `ap-req` is admitted only when `allow_password_change` is set |
+| `etypes`, `deny_etypes` | list | any not weak | The encryption types a request may ask for, by name (`aes256-cts-hmac-sha1-96`, `rc4-hmac`) or number |
+| `refuse_weak_etypes` | bool | `true` | Refuse a request that offers the KDC nothing it could issue a ticket in that an estate is content with: aes128 or aes256 (RFC 3962 or RFC 8009) or camellia. The test is "offers no strong type" rather than "every type is weak", because the etype field is a list of integers the client chooses: under the other reading one number the registry has never assigned — appended to `rc4-hmac` and discarded by the KDC — made the list look mixed and the control a formality |
+| `refuse_weak_ticket_etypes` | bool | `false` | Refuse a *reply* whose ticket was encrypted in a weak type. The same finding from the other end, off by default because by then the KDC has minted the ticket; the counter is worth reading either way |
+| `refuse_preauth_exempt` | bool | `true` | Refuse an AS-REP the KDC cannot be seen to have pre-authenticated; see above. "Cannot be seen to" rather than "said it did not": a request's padata is written by the client and this relay holds no key, so the test pairs the claim with the KDC's own answer — an encrypted timestamp or an encrypted challenge is one the KDC must decrypt before it issues anything, and a PKINIT claim is proven by the `PA-PK-AS-REP` in the reply rather than by the asking |
+| `allow_s4u2self`, `allow_s4u2proxy` | bool | `false` | Carry MS-SFU's protocol transition and constrained delegation. Protocol transition is recognised in both of its spellings, `PA-FOR-USER` and `PA-S4U-X509-USER`, because a KDC honours either and the impersonated name is read from whichever arrived |
+| `allow_anonymous` | bool | `false` | Carry a request asking for the anonymous principal (RFC 8062). It is authentication with no identity in it, and a proxy carrying it carries something nobody can attribute afterwards |
+| `allow_password_change` | bool | `false` | Carry RFC 3244's kpasswd exchange, which arrives as an AP-REQ for `kadmin/changepw` |
+| `allow_forwarded_tickets` | bool | `true` | Carry a request with the `forwarded` or `proxy` option set. It is how ordinary delegation works, and an estate that does none can turn it off |
+| `deny_options` | list | `[]` | KDC options a request may not set, by the standard's names: `renew`, `validate`, `enc-tkt-in-skey`, `disable-transited-check`, `postdated` |
+| `principals`, `deny_principals` | list | `[]` | The client principals carried, by name without the realm. `deny_principals` is where the names nobody should be authenticating as from outside go: the built-in administrator, the service accounts, `krbtgt` itself |
+| `services`, `deny_services` | list | `[]` | The service principals a TGS-REQ may ask for, matched on the whole name or on the service class alone — so `MSSQLSvc` covers every SQL Server instance and `host/dc1.corp.example` covers one host |
+| `max_ticket_lifetime` | duration | `0` (off) | The validity a request may ask for |
+| `max_distinct_services`, `service_window` | int, duration | `0` (off), `5m` | How many different service principals one client may ask for inside a window. This is the behavioural half of the Kerberoasting control and catches what the encryption rules cannot: a client asking for forty service tickets in a minute is enumerating the realm's service accounts whatever encryption it asked for them in |
+| `max_preauth_failures`, `failure_window` | int, duration | `0` (off), `5m` | How many `KDC_ERR_PREAUTH_FAILED` replies one client may collect before this listener stops carrying its requests |
+| `max_message_bytes` | int | `131072` | One inner Kerberos message, each way. The bound has to be generous: a Windows reply for a user in several hundred groups carries a PAC of tens of kilobytes, and a listener that refused one would refuse exactly the users whose group membership matters most. The HTTP body is bounded separately and more tightly |
+| `max_requests_per_connection` | int | `64` | The POSTs one keep-alive connection may make |
+| `upstream_timeout` | duration | `10s` | How long this listener waits for the KDC |
+| `max_sessions`, `max_sessions_per_client` | int | `0` (off) | Concurrent connections |
+| `rate_limit`, `rate_burst` | int | `0` (off) | Requests a second per client address. Worth setting here more than on most kinds: this listener's whole purpose is to be reachable from the open internet, and every request it carries costs the KDC a cryptographic operation |
+| `default_action` | enum | `deny` | `deny` or `allow` for a request no rule matched |
+| `deny_response` | enum | `error` | `error` (a KRB-ERROR with `KDC_ERR_POLICY` and a text saying which proxy refused it, wrapped in the envelope the client expects) or `status` (HTTP 403 and no Kerberos message). `error` is the better default, because silence on this protocol is a client that falls back to port 88 — where there is no relay — and then reports a network fault to whoever is sitting at it. The text names the proxy and **not** the control that fired: on this protocol the reason a refusal happened is usually the intelligence the refusal exists to deny — `preauth_not_required` would confirm to a roaster that the account exists and is exempt, which is a cleaner answer than the AS-REP it was refused. The reason is in this proxy's security log and counters instead |
+| `log_requests` | bool | `true` | A line per request and per reply: the realm, the principal, the service, the encryption types, and what the KDC answered |
+| `alert_on_deny` | bool | `true` | A security event for every refusal |
+| `monitor_only` | bool | `false` | Evaluate and enforce nothing, the same as `policy: {mode: shadow}`. The bounds, the realm check and the malformed-message refusals still apply — forwarding a message for a realm this proxy does not serve would make it the open relay the realm list exists to prevent |
+| `anomaly` | object | off | Behavioural models over what each client has been doing; see `anomaly` |
+
+Counters: `kkdcp_requests`, `kkdcp_preauth_failures`, `kkdcp_weak_tickets`,
+`kkdcp_preauth_exempt`, `kkdcp_delegations` and `kkdcp_realm_mismatch`.
+`kkdcp_preauth_failures` is password spraying seen from the one place it is
+visible, and `kkdcp_weak_tickets` counts the tickets that left in RC4 —
+the Kerberoasting target — whether or not this listener was configured to
+refuse them.
+
+#### server.listeners[].kkdcp.rules[]
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | string | required | Names the rule in the logs and the counters |
+| `action` | enum | `allow` | `allow`, `deny` or `observe`. `observe` records the rule in the access line and decides nothing, so the rules below it still decide: the whole point is to try a rule on live traffic without it changing what happens, and a rule that decided — by allowing what it covers — would make trying one out the way to switch off every deny rule under it |
+| `clients` | list of CIDR | `[]` | The networks the client is in. On an internet-facing listener this will usually be empty; on one in front of a branch office it is the strongest line in the rule |
+| `realms` | list | `[]` | The realms this rule covers |
+| `message_types` | list | `[]` | The request types this rule covers |
+| `principals` | list | `[]` | The client principals this rule covers |
+| `services`, `deny_services` | list | inherited | The service principals this rule covers, and the ones it does not cover even when `services` would match |
+| `etypes` | list | inherited | The encryption types this rule covers |
+| `max_ticket_lifetime` | duration | inherited | The rule's own bound |
+| `schedule` | object | none | Limit the rule to a time window |
+
+### server.listeners[].imap (kind: imap)
+
+IMAP on 143 and IMAPS on 993: the protocol a mail client reads a mailbox
+with, which makes this the relay in front of the most complete record of
+what an organisation has said and been told that exists anywhere.
+
+**The setting that matters most is a bound, not a list.** Every other
+control here is about access, and access is what the mail server already
+decides. `max_fetch_messages` is about *volume*: `UID FETCH 1:* (BODY[])`
+is three dozen characters and every message in the mailbox, and it is what
+both a mail client's first synchronisation and an emptied account look
+like. The bound counts what a sequence set *names*, before the server reads
+anything, and an open-ended set (`1:*`, `*`) is refused outright once it is
+set — because the size of that request is the mailbox's rather than the
+client's. `allow_open_sets` is the exemption for the estate whose clients
+legitimately synchronise everything.
+
+**A password in the clear is refused by default.** LOGIN on 143, and
+AUTHENTICATE with PLAIN or LOGIN, put a mailbox password on the wire.
+`require_tls` defaults on and is not shadowable: by the time a policy could
+be consulted the password has travelled. A listener with a certificate and
+`tls_mode: starttls` terminates RFC 2595's upgrade itself, which is how a
+client nobody can reconfigure gets TLS anyway.
+
+**The capability list is narrowed on the way out.** A mechanism `mechanisms`
+does not name is removed from what the client is shown, and `LOGINDISABLED`
+is added where LOGIN will be refused — RFC 3501 §6.2.3 makes that the way a
+server says so, and a client that reads it asks for something else instead
+of sending a password into a refusal. `COMPRESS=DEFLATE` is removed
+whenever `refuse_compression` is on, which is the default: a deflated
+connection cannot be inspected, so advertising it would be offering to
+stop.
+
+**A literal is decided on its declared size.** `APPEND INBOX {310}` says
+the next 310 octets are a message, and RFC 7888's `{310+}` sends them
+without waiting for anybody to agree — so `max_append_bytes` is checked on
+the command line, and a refused `{310+}`'s octets are read and dropped
+rather than left to desynchronise the connection. A refused plain `{310}` is
+the opposite case: the client is waiting for a continuation request that is
+never coming and RFC 9051 §4.3 says it must not send the octets, so nothing is
+read. The bound applies to the command's literals **together**, so a client
+cannot divide its way past it one hop at a time, and the rule that decided the
+command decides its continuations too.
+
+**An argument sent as a literal is refused.** A literal is the last token on
+the line, so the argument list ends where it begins: `SELECT {25+}` parses as
+SELECT naming *no* mailbox, and `mailboxes`, `deny_mailboxes`, the rule
+selectors, `users` and the estate's authorization question would each decide
+about nothing while the server received the name intact. Such a command is
+refused with `literal_argument` rather than guessed at — reading the literal
+first would mean this proxy answering the continuation request instead of the
+server, which makes it a participant in an exchange it is relaying. Clients
+spell mailbox names as atoms or quoted strings; a literal there is conformant
+and rare, and a refusal an operator can see beats a policy that silently
+decided nothing.
+
+**A PREAUTH greeting is not carried.** RFC 9051 §7.1.4 lets a server decide
+from the transport that no credential is needed; a relay that carried that
+would make every later decision here about a name it never saw. The
+connection is closed and `imap_preauth_refused` counts it.
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `upstream` | string | — | The pool of IMAP servers. Required |
+| `tls_mode` | string | `implicit` with a `tls` section, else `none` | `implicit` (IMAPS from the first octet), `starttls` (RFC 2595's upgrade, terminated here) or `none` |
+| `require_tls` | bool | `true` | Refuse LOGIN, and AUTHENTICATE with a mechanism that carries the password, on an unencrypted connection. Not shadowable |
+| `upstream_tls_mode` | string | `disable` | `disable`, `implicit` or `starttls` towards the server |
+| `upstream_tls` | object | — | Verification for that leg. See `upstream_tls` |
+| `allow_clients`, `deny_clients` | list | `[]` | Networks a client may connect from; deny is evaluated first |
+| `mechanisms` | list | `[]` (any) | `login` for the LOGIN command plus a SASL name per AUTHENTICATE mechanism. Enforced twice: a mechanism not named is refused, and it is removed from the advertised capabilities |
+| `users` | list | `[]` (any) | The identities that may be claimed, folded for comparison. A claim rather than a proven identity: the server checks the password |
+| `commands`, `deny_commands` | list | `[]` | Allow and deny lists of IMAP command names; deny is evaluated first. A `UID` command is the command it qualifies |
+| `mailboxes`, `deny_mailboxes` | list | `[]` (any) | Allow and deny lists of mailbox names, compared on the **decoded** name so a rule written `Sent` matches the modified UTF-7 a client sent. A name may end in `*` (the rest of the name, hierarchy included) or `%` (within one level); a wildcard anywhere else is refused at load. `INBOX` is compared case-insensitively — it is the one name RFC 9051 §5.1 makes so — and that fold covers the hierarchy under it, because a server with mail below INBOX folds that component too: `inbox/Finance` and `INBOX/Finance` are one mailbox there and must not be two patterns here. Every other component is the server's own and `Archive` is not `archive` |
+| `read_only` | bool | `false` | Refuse every command that changes a mailbox: APPEND, CREATE, DELETE, RENAME, STORE, COPY, MOVE, EXPUNGE, the ACL and quota writes |
+| `max_fetch_messages` | int | `0` (unbounded) | How many messages one FETCH, SEARCH, COPY or MOVE may name. The mailbox-copying bound; validation advises setting it |
+| `allow_open_sets` | bool | `false` | Carry an open-ended sequence set even with `max_fetch_messages` set |
+| `max_append_bytes` | int | `33554432` | The literal of an APPEND: a message written into a mailbox |
+| `max_literal_bytes` | int | `65536` | Any other literal: a mailbox name, a search string, a credential |
+| `max_literals` | int | `8` | The literals one command may chain, because a command continues after each one |
+| `max_line_bytes` | int | `8192` | One command line. RFC 9051 bounds a line not at all |
+| `max_response_bytes` | int | `65536` | One response line; servers send longer ones than clients |
+| `max_commands` | int | `0` (unbounded) | The commands one connection may send |
+| `refuse_compression` | bool | `true` | Remove `COMPRESS=DEFLATE` from the capabilities and refuse the command |
+| `refuse_preauth` | bool | `true` | Refuse a PREAUTH greeting |
+| `allow_idle` | bool | `true` | Carry RFC 2177's IDLE. Every mail client uses it |
+| `max_idle_duration` | duration | `30m` | How long one IDLE may hold a connection silent |
+| `max_connections` | int | `512` | Connections served at once |
+| `max_sessions`, `max_sessions_per_client` | int | `0` | Sessions in flight in total and per client address |
+| `rate_limit`, `rate_burst` | int | `0` | Connections per second per client address |
+| `idle_timeout`, `session_timeout` | duration | `30m`, `24h` | Silence outside an IDLE, and the life of a connection |
+| `rules` | list | `[]` | Per-user, per-client and per-mailbox rules, first match wins |
+| `default_action` | string | `allow` | `allow` or `deny`. It defaults to allow because IMAP has sixty commands a client needs, and the controls that matter here are the bounds and the mailbox list |
+| `deny_response` | string | `no` | `no` (a tagged NO, which every client displays), `bad`, `drop` or `close` |
+| `log_commands` | bool | `true` | An access line per command |
+| `log_fetches` | bool | `true` | A line per FETCH, SEARCH, COPY and MOVE with the number of messages it named: the record of how much left |
+| `alert_on_deny` | bool | `true` | A security event per refusal |
+| `monitor_only` | bool | `false` | Evaluate and enforce nothing; the bounds and the malformed-command refusals still apply |
+| `anomaly` | object | — | Behavioural detection. See `anomaly` |
+
+Counters: `imap_connections`, `imap_commands`, `imap_auth_failures`,
+`imap_fetched_messages`, `imap_append_bytes`, `imap_plaintext_logins`,
+`imap_capabilities_stripped` and `imap_preauth_refused`.
+`imap_fetched_messages` is the one to graph — it is how much of the
+estate's mail crossed this relay — and `imap_auth_failures` the one to
+alert on.
+
+Ban reasons: `imap_denied` for a policy refusal, `imap_auth_failed` for a
+credential the server rejected, and `imap_anomaly` for a behavioural
+finding.
+
+#### server.listeners[].imap.rules[]
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `name` | string | — | Appears in the logs and the shadow report |
+| `users`, `clients`, `mailboxes` | list | `[]` (any) | Which commands this rule decides about. Every mailbox a command names has to match, because a COPY names two |
+| `commands`, `deny_commands` | list | `[]` | This rule's own command lists |
+| `read_only` | bool | `false` | Refuse the commands that change a mailbox, for this rule's clients and users |
+| `max_fetch_messages`, `max_append_bytes` | int | `0` (inherit) | This rule's own bounds: how the one account that really does synchronise a whole mailbox is written down |
+| `action` | string | `allow` | `allow` or `deny` |
+| `schedule` | object | — | Limit the rule to a time window. See `schedule` |
+
+### server.listeners[].pop3 (kind: pop3)
+
+POP3 on 110 and POP3S on 995: the older mailbox protocol, and the one still
+configured on the scripts, appliances and phones nobody has revisited.
+
+**The credential is least protected here of anywhere in this
+configuration.** `USER` names an identity and `PASS` sends the password in
+the clear on the next line, with no negotiation in between and nothing to
+inspect. Either the transport protects it or it is published, so
+`require_tls` defaults on and is not shadowable. `tls_mode: starttls`
+terminates RFC 2595's STLS, and the upgrade is answered here rather than
+forwarded — anything the client pipelined behind it would be plaintext to
+one end and ciphertext to the other, which is the injection SMTP's STARTTLS
+has.
+
+**The copying bound is a running total.** This protocol has no sequence set
+to measure: a client asks for one message at a time, so the only honest
+bound is the octets and the messages counted as they pass.
+`max_retr_bytes` and `max_messages` are that, and they are enforced
+*mid-transfer* as well as before a command — a bound that only applied to
+the next command is one a client walks past one message at a time.
+
+**APOP works because the greeting is not rewritten.** The `<...>` in a POP3
+greeting is the challenge an APOP digest is computed over, so a relay that
+invented its own greeting would have to refuse APOP outright. This one
+carries the server's unchanged, which means a digest the client computes
+verifies at the server that issued the challenge.
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `upstream` | string | — | The pool of POP3 servers. Required |
+| `tls_mode` | string | `implicit` with a `tls` section, else `none` | `implicit` (POP3S), `starttls` (STLS, terminated here) or `none` |
+| `require_tls` | bool | `true` | Refuse USER, PASS, APOP and a plaintext SASL mechanism on an unencrypted connection. Not shadowable |
+| `upstream_tls_mode` | string | `disable` | `disable`, `implicit` or `starttls` towards the server |
+| `upstream_tls` | object | — | Verification for that leg. See `upstream_tls` |
+| `allow_clients`, `deny_clients` | list | `[]` | Networks a client may connect from; deny is evaluated first |
+| `mechanisms` | list | `[]` (any) | `user` for the USER and PASS pair, `apop` for the digest, and a SASL name per AUTH mechanism. A mechanism not named is refused *and* removed from the CAPA list. An `AUTH` that names no mechanism at all is refused: there is nothing for this list or for `require_tls` to decide about, and the exchange that used to follow it moved this relay's view of the session to the transaction state on the server's `+OK` with no credential behind it. A client that wants the mechanism list has CAPA |
+| `users` | list | `[]` (any) | The identities that may be claimed, folded for comparison |
+| `commands`, `deny_commands` | list | `[]` | Allow and deny lists of POP3 command names; deny is evaluated first |
+| `read_only` | bool | `false` | Refuse DELE and RSET, the two commands that change what the mailbox holds after the update state |
+| `max_messages` | int | `0` (unbounded) | Messages one connection may retrieve |
+| `max_retr_bytes` | int | `0` (unbounded) | Octets one connection may retrieve across every RETR and TOP. The mailbox-copying bound; validation advises setting one of the two |
+| `max_line_bytes`, `max_response_bytes` | int | `512`, `4096` | One command line and one reply line |
+| `max_connections` | int | `256` | Connections served at once |
+| `max_sessions`, `max_sessions_per_client` | int | `0` | Sessions in flight in total and per client address |
+| `rate_limit`, `rate_burst` | int | `0` | Connections per second per client address |
+| `idle_timeout`, `session_timeout` | duration | `10m`, `1h` | Silence, and the life of a connection: a POP3 client connects, takes its mail and goes |
+| `rules` | list | `[]` | Per-user and per-client rules, first match wins |
+| `default_action` | string | `allow` | `allow` or `deny` |
+| `deny_response` | string | `err` | `err` (`-ERR` with the reason), `drop` or `close` |
+| `log_commands` | bool | `true` | An access line per command |
+| `log_retrievals` | bool | `true` | A line per RETR and TOP with the octets it carried |
+| `alert_on_deny` | bool | `true` | A security event per refusal |
+| `monitor_only` | bool | `false` | Evaluate and enforce nothing |
+| `anomaly` | object | — | Behavioural detection. See `anomaly` |
+
+Counters: `pop3_connections`, `pop3_commands`, `pop3_auth_failures`,
+`pop3_retrieved_bytes`, `pop3_deletes`, `pop3_plaintext_logins` and
+`pop3_capabilities_stripped`. `pop3_retrieved_bytes` is the one to graph.
+
+Ban reasons: `pop3_denied`, `pop3_auth_failed` and `pop3_anomaly`.
+
+#### server.listeners[].pop3.rules[]
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `name` | string | — | Appears in the logs and the shadow report |
+| `users`, `clients` | list | `[]` (any) | Which commands this rule decides about |
+| `commands`, `deny_commands` | list | `[]` | This rule's own command lists |
+| `read_only` | bool | `false` | Refuse DELE and RSET for this rule's clients and users |
+| `max_messages`, `max_retr_bytes` | int | `0` (inherit) | This rule's own bounds |
+| `action` | string | `allow` | `allow` or `deny` |
+| `schedule` | object | — | Limit the rule to a time window. See `schedule` |
 
 ### server.listeners[].tftp (kind: tftp)
 
@@ -9019,7 +9806,7 @@ comes from a trusted proxy chain or `action` is `reject`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | name | required, unique | Appears in the ban entry as `trigger:<name>` |
-| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `flow`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `tcp_denied`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `dhcp6_denied`, `coap_denied`, `opcua_denied`, `mms_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `bacnet_denied`, `amqp_denied`, `s7_denied`, `ntp_denied`, `ntske_denied`, `dns_denied`, `dns_threat_intel`, `dns_deceived`, `dns_tripwire`, `telnet_tripwire`, `ssh_tripwire`, `modbus_tripwire`, `iec104_tripwire`, `s7_tripwire`, `redis_tripwire`, `mysql_tripwire`, `postgres_tripwire`, `yara` |
+| `reasons` | list | `[]` (all) | Deny categories that count: `acl`, `rate_limit`, `waf`, `body_size`, `uri_length`, `bad_host`, `no_route`, `websocket`, `concurrency`, `challenge`, `jwt`, `icap`, `geo`, `tcp_no_route`, `forward_denied`, `forward_auth`, `honeypot`, `dns_blocked`, `dns_bogus`, `dns_rpz`, `honeytoken`, `account_abuse`, `api_abuse`, `flow`, `threat_intel`, `scim`, `smtp_denied`, `mqtt_denied`, `ssh_denied`, `ftp_denied`, `syslog_denied`, `telnet_denied`, `vnc_denied`, `rdp_denied`, `forward_sni_mismatch`, `forward_host_mismatch`, `dns_tunnel`, `dns_answer_denied`, `sftp_icap`, `tcp_denied`, `udp_denied`, `modbus_denied`, `iec104_denied`, `snmp_denied`, `ldap_denied`, `tftp_denied`, `dhcp_denied`, `dhcp6_denied`, `coap_denied`, `opcua_denied`, `mms_denied`, `postgres_denied`, `mysql_denied`, `tds_denied`, `redis_denied`, `bacnet_denied`, `amqp_denied`, `s7_denied`, `radius_denied`, `tacacs_denied`, `kkdcp_denied`, `imap_denied`, `imap_auth_failed`, `imap_anomaly`, `pop3_denied`, `pop3_auth_failed`, `pop3_anomaly`, `sse_denied`, `ntp_denied`, `ntske_denied`, `dns_denied`, `dns_threat_intel`, `dns_deceived`, `dns_tripwire`, `telnet_tripwire`, `ssh_tripwire`, `modbus_tripwire`, `iec104_tripwire`, `s7_tripwire`, `redis_tripwire`, `mysql_tripwire`, `postgres_tripwire`, `yara` |
 | `threshold` | int | required | Denies within `window` that trigger the ban |
 | `window` | duration | required | At most 24h |
 | `duration` | duration | required | First ban length |
@@ -9693,6 +10480,22 @@ only recorded, depending on `action`.
 | `deny_patterns` | list of RE2 | `[]` | Patterns matched against inspected messages |
 | `action` | `close`, `log` | `close` | Close the connection, or record and forward |
 | `close_code` | int | protocol's own | Override the close code; 3000-4999 only |
+| `compression` | `strip`, `refuse`, `inspect` | `strip` | What happens to a client's `permessage-deflate` offer; see below |
+| `max_inflate_ratio` | int | `100` | How far one message may expand before it is a bomb rather than a message; `compression: inspect` only |
+| `type_field` | string | `type` | The JSON member that names a message's type |
+| `types` | list | `[]` | The policy per kind of message; see below |
+| `unknown_types` | `allow`, `observe`, `deny` | `deny` with `types`, else `allow` | A message whose type `types` does not name |
+| `require_json` | bool | `false` | Refuse a text message that is not a JSON object |
+
+Each entry of `types`:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `name` | string | required | The value of `type_field` this entry is about |
+| `max_bytes` | int | `0` | Largest message of this type, after inflation; 0 leaves it to `max_message_bytes` |
+| `messages_per_second` | int | `0` | This type's rate, per connection and per direction |
+| `schema_file` | path | | A JSON Schema (JSON or YAML) every message of this type must match |
+| `direction` | `client`, `server`, `both` | `both` | Which way this type travels |
 
 The structural checks are the half with no false positives, because
 they are the protocol's own rules: a reserved bit set without a
@@ -9712,13 +10515,212 @@ with a real false-positive rate — start with `action: log` and read
 
 Messages larger than `max_inspect_bytes` are checked up to that bound
 and forwarded: the alternative is buffering whatever a client chooses
-to send. Compressed frames (`permessage-deflate`) cannot be inspected
-at all, which is why a reserved bit is refused rather than ignored — a
-negotiated compression extension would silently turn every check off.
+to send.
 
-Violations are security events with reason `websocket`, counted per
-route by `xproxyctl` and `GET /v1/websocket`, and exported as
-`xproxy_websocket_violations_total` and `xproxy_websocket_closed_total`.
+#### What kinds of message the route carries
+
+The bounds above are about the connection, and `max_message_bytes` for a
+connection is the bound of its largest message — which is the bound that lets
+every other message be that large too. A WebSocket API carries several kinds of
+message, and the bounds that are right for a keepalive are nowhere near the ones
+that are right for an order.
+
+`types` is where that is written. Each entry names a value of `type_field` (the
+JSON member an application uses for this, conventionally `type`) and says how
+large that kind of message may be, how often it may arrive, which direction it
+travels in, and the schema it must match:
+
+```yaml
+websocket_guard:
+  max_message_bytes: 1048576
+  type_field: op
+  types:
+    - {name: ping, max_bytes: 64, messages_per_second: 2}
+    - {name: subscribe, max_bytes: 4096, messages_per_second: 10, schema_file: /etc/xproxy/ws/subscribe.json}
+    - {name: order, max_bytes: 16384, messages_per_second: 50, schema_file: /etc/xproxy/ws/order.json}
+    - {name: tick, direction: server}
+  unknown_types: observe
+```
+
+**`unknown_types` is the positive half.** A message whose type is not in the
+list is the interesting one: `deny` refuses it, which is what a route that knows
+its API wants and is the default once `types` names anything; `observe` records
+it and forwards it, which is how the list gets written (run for a week, read
+`xproxy_websocket_unknown_type_total{route}` and the events, promote what
+belongs); `allow` ignores it. A route with no `types` allows them, so nothing
+changes for a configuration written before this existed.
+
+**Where each check decides is not the same.** The type is read out of the
+message, so it is known when the message is complete:
+
+- From the **client** that is still before anything reaches the origin — the
+  guard already holds a client message until the whole of it has passed
+  inspection, so a per-type bound refuses the message rather than reporting it.
+- From the **origin** each frame is forwarded as it is checked, so a bound
+  broken by a fragmented message is found at the end of it: the connection
+  closes and what had already been written has gone. That is the same limit the
+  pattern list has had, and it is why a `direction: server` type is a statement
+  about what the application does rather than a gate in front of it.
+- A **schema** needs the whole message, and the guard keeps `max_inspect_bytes`
+  of it. A message under a schema that is longer than that cannot be validated
+  and is refused rather than passed, because a check that stops applying above a
+  size the sender chooses is not a check. Validation warns where a type's
+  `max_bytes` makes that certain.
+- The type policy reads **text** messages, because the type is a JSON member. A
+  binary message is a format this does not claim to read, and `require_json`
+  (which refuses a text message that is not a JSON object) is how a route whose
+  messages are all JSON says so.
+
+#### Compression
+
+A `permessage-deflate` frame cannot be read without being inflated, so this is
+the setting that decides whether an inspected route is also a compressed one.
+
+- **`strip`**, the default, takes the client's `Sec-WebSocket-Extensions` offer
+  out of the upgrade request: the origin never sees it, never accepts it, and
+  both ends fall back to uncompressed frames, which is what the extension is
+  designed to do when it is not agreed. This is the friendly half — browsers
+  offer the extension on every WebSocket, and leaving the offer to the endpoints
+  meant they agreed compression behind the proxy, the client was told it had
+  succeeded, and the first data frame then closed the connection with a protocol
+  error that blamed the peer.
+- **`refuse`** answers the upgrade with `400` instead, for an estate that would
+  rather a client's own logs recorded the refusal than have its offer quietly
+  changed.
+- **`inspect`** keeps compression and reads it. The offer forwarded to the origin
+  is narrowed to `permessage-deflate; client_no_context_takeover;
+  server_no_context_takeover`, whatever the client asked for: with context
+  takeover a message can only be inflated by a decoder that has seen every
+  message before it, and a proxy holding that state per direction per connection
+  has agreed to unbounded work on behalf of whoever opened the connection.
+  Without takeover each message is a stream of its own. An acceptance that is
+  not that offer is refused at the 101 with `502` — including an origin that
+  accepts plain `permessage-deflate` — because a stream the guard cannot inflate
+  would leave it choosing between closing every connection and reading nothing.
+
+With `inspect`, every check above is about the inflated message: its size, its
+UTF-8, the patterns, the type and the schema. Two bounds then matter that do not
+otherwise: `max_message_bytes` is the largest message after inflation, and
+`max_inflate_ratio` (default 100) is how far one message may expand — a kilobyte
+on the wire becoming a megabyte in the application is the shape of the attack
+rather than the size of it, and past either bound the message is refused as
+`compression_bomb` without being inflated any further.
+
+An origin that claims an extension on a route that offered none is still refused
+at the 101, and a reserved bit arriving after all means what it says: a peer
+using an extension nobody negotiated.
+
+Violations are security events with reason `websocket`, carrying the specific
+finding — `protocol`, `opcode`, `frame_size`, `message_size`, `rate`, `pattern`,
+`extension`, `compression`, `compression_bomb`, `json`, `message_type`,
+`type_size`, `type_rate` or `schema` — counted per route by `xproxyctl` and
+`GET /v1/websocket`, and exported as `xproxy_websocket_violations_total`,
+`xproxy_websocket_closed_total`, `xproxy_websocket_unknown_type_total` and,
+per named type, `xproxy_websocket_type_messages_total` and
+`xproxy_websocket_type_violations_total`.
+
+### routes[].sse_guard
+
+A `text/event-stream` response is the other long-lived HTTP exchange an estate
+runs, and the only one nothing else in this configuration bounds. One GET, a
+response with no length, flushed per event, held open for hours. Without a
+guard it is an opaque outbound channel on a port that is already open.
+
+It is the WebSocket guard's opposite in the two ways that decide what a policy
+here can be.
+
+**It is one-directional, and the direction is outward.** The client sends a GET
+and then says nothing; everything after that is the application talking. So
+every event is the estate's own output leaving it, which puts this in the same
+position as the `dhcp` kind — a policy about answers — and makes `deny_patterns`
+here a control that reads what is *leaving*. Nothing about an exfiltration
+channel built this way is malformed: it is arbitrary text, chunked, under a
+Content-Type a dashboard uses. The bounds and the event list are what make the
+difference between a price feed and a copy of a database something a
+configuration can state.
+
+**A single event cannot be refused.** By the time an event is read the status
+line has gone and the response is committed; there is no way to say "not that
+one" inside a sequence a client is reading in order. So `action` has two values
+rather than three — the stream ends, or the event is carried and reported — and
+a refusal is a decision to end the stream at that event. The client sees a
+closed body, which is what it sees when an application finishes, and reconnects:
+the right outcome for a dashboard and a dead end for a channel.
+
+The guard reads each event and **writes it out again** rather than splicing.
+That is why the rest is trustworthy: SSE has three line terminators (CRLF, LF
+*and a bare CR*), a blank line as its only separator and a field with no colon
+that means an empty value, so a spliced stream leaves the framing to be resolved
+twice and the two ends can disagree about where an event ends.
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `max_event_bytes` | bytes | `1048576` | The largest reassembled event: the joined `data`, the name and the identifier. Past it the stream ends rather than the event being truncated, because half an event delivered as whole is worse than none |
+| `max_line_bytes` | bytes | `65536` | The longest single field line. Separate from `max_event_bytes` because `data` accumulates across lines, so an event's size and a line's are different questions |
+| `max_fields` | int | `256` | How many field lines one event may be built from. A stream that sends ten thousand `data:` lines before its blank line is not sending an event |
+| `events_per_second` | int | `0` (none) | The stream's event rate. This is the *server's* rate, which is unusual in this file and is the point: an application that has started emitting a thousand events a second is either broken or being read |
+| `max_events` | int | `0` (none) | How many events one stream may carry before it ends |
+| `max_stream_bytes` | bytes | `0` (none) | How many bytes one stream may carry before it ends. With `max_events`, the pair that makes a stream finite |
+| `max_duration` | duration | `0` (none) | How long one stream may be held open. A dashboard that reconnects every hour costs nothing; a stream open for three weeks is not a dashboard |
+| `idle_timeout` | duration | `0` (none) | Ends a stream that has sent nothing for this long. Comment lines count as traffic — that is what a keepalive is — so this bounds a stream whose application has stopped without closing the socket |
+| `allow_events` | list | `[]` | The event names that may cross, by the `event:` field. An event with no name is `message`, which is what a client calls it, so that is the name a rule uses |
+| `deny_events` | list | `[]` | Names that may not cross. Checked first, and no entry in `allow_events` overrides it, which is how an exception inside an admitted set is written |
+| `unknown_events` | `allow`, `observe`, `deny` | `deny` once `allow_events` names any, else `allow` | What happens to a name neither list covers. A list of the events a stream carries that also carries everything else is not a list, which is why naming any makes the rest deny; `observe` records and forwards, which is how the list gets written |
+| `events[]` | list | `[]` | The policy per event name; see below |
+| `allow_last_event_id` | bool | `true` | Whether a client's `Last-Event-ID` request header is forwarded. It is the one piece of client-controlled input on this protocol and it reaches the application as a **cursor**: an application that replays from it is being told where to start, and an identifier a client was never issued is a request for history it was not shown. The cursor policy applies to **every** request on a route that has an `sse_guard`, not only to one whose `Accept` header asked for a stream: what makes a response a stream is its Content-Type, so an application that answers a path with `text/event-stream` answers it that way for a client that sent no `Accept` header at all. A request carrying the header twice has both removed — the first value is one library's answer and the last is another's, so a check on one of them is a check on a value the application need not be the one to use |
+| `max_id_bytes` | int | `256` | Bounds the server's `id:` field and the client's `Last-Event-ID` alike. They are the same value making a round trip, so one bound covers both ends |
+| `last_event_id_pattern` | RE2 | none | A shape a client's `Last-Event-ID` must match, anchored around the **whole** pattern — so `[0-9]{1,19}|[0-9A-HJKMNP-TV-Z]{26}`, the estate whose identifiers are a counter or a ULID, is anchored on both branches rather than on the first and the last. An estate whose identifiers are integers or ULIDs says so here, and then the cursor reaching the application is one of its own shape rather than whatever was sent. A cursor that does not match is **removed**, not refused: the client gets the stream from the beginning, which is what a client with no cursor gets |
+| `min_retry` | duration | `0` (leave alone) | A floor on the `retry:` field the server sends. The field tells the client how long to wait before reconnecting, so `retry: 0` from a misconfigured application is a fleet of browsers reconnecting as fast as they can. A floor **rewrites** rather than refuses, because the stream itself is fine |
+| `inspect` | `none`, `data`, `all` | `data` | Which part of an event is kept for pattern matching. `data` is the payload; `all` adds the name and the identifier |
+| `max_inspect_bytes` | bytes | `65536` | The prefix of an event kept for matching |
+| `deny_patterns` | list | `[]` | RE2 patterns matched against the inspected part. On this protocol they read what is leaving, which is the direction an exfiltration channel runs in |
+| `compression` | `strip`, `refuse`, `inspect` | `strip` | What happens to compression. A compressed stream cannot be read without being inflated. `strip` removes the client's `Accept-Encoding` for this route so the application sends the stream in the clear, which costs little because an event stream is small messages flushed one at a time and a sender has already given up cross-message compression to keep latency; `refuse` answers the request with 400 instead, for an estate that would rather a client was told than quietly changed; `inspect` inflates each event before the policy sees it |
+| `max_inflate_ratio` | int | `100` | How far a compressed stream may expand before it is a bomb rather than a stream. Only read with `compression: inspect` |
+| `allow_comments` | bool | `true` | Whether `:`-prefixed lines are forwarded. They are how a stream stays alive through an intermediary that would time it out, so removing them would make this proxy the reason a stream dies; an estate that wants nothing but named events turns them off |
+| `require_json` | bool | `false` | Makes an event whose data is not a JSON object a violation rather than one the schema policy cannot read. Off by default: an event stream carries whatever the application chose, and plenty of real ones carry a bare number or a fragment of HTML |
+| `action` | `close`, `log` | `close` | What a violation does. There is no third answer here, for the reason above |
+| `log_events` | bool | `false` | One line per event. Off by default, because a stream is thousands of events and the summary at its end is what an operator reads; a route being investigated turns it on |
+| `monitor_only` | bool | `false` | Report what would be refused and carry everything, which is how an estate finds out what its own streams send before a bound is set |
+
+#### routes[].sse_guard.events[]
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `name` | string | required | The `event:` field this entry is about. `message` names the events that carry no `event:` field, because that is what a client calls them |
+| `max_bytes` | bytes | `0` | One event of this name, after inflation where the route inspects a compressed stream. 0 leaves it to `max_event_bytes` |
+| `events_per_second` | int | `0` | This name's rate. 0 is no bound of its own; the stream's `events_per_second` still applies |
+| `schema_file` | path | none | A JSON Schema (JSON or YAML) every event of this name must match. Read at load and on reload. An event too large to have been inspected whole cannot be validated and is **refused**: a check that silently stops applying above a size the sender chooses is not a check, and the sender here is the thing being checked |
+
+One `max_event_bytes` for the stream is the bound of its largest event, which is
+the bound that lets every other event be that large too. `events[]` is where the
+keepalive and the hourly report get different answers.
+
+```yaml
+routes:
+  - name: dashboard
+    paths: ["/events"]
+    upstream: app
+    sse_guard:
+      max_event_bytes: 65536
+      events_per_second: 50
+      max_events: 100000
+      max_duration: 2h
+      idle_timeout: 90s
+      allow_events: [price, volume, heartbeat]
+      events:
+        - {name: heartbeat, max_bytes: 128, events_per_second: 1}
+        - {name: price, max_bytes: 4096, schema_file: /etc/xproxy/schemas/price.json}
+      last_event_id_pattern: "[0-9]{1,19}"
+      min_retry: 5s
+      deny_patterns: ["BEGIN [A-Z ]*PRIVATE KEY", "[0-9]{13,19}"]
+```
+
+Counters: `sse_streams`, `sse_events`, `sse_event_bytes`, `sse_comments`,
+`sse_violations`, `sse_unknown_events` and `sse_cursors_stripped`. Every
+refusal is counted under its own reason and is bannable as `sse_denied`;
+`sse_cursors_stripped` counts the `Last-Event-ID` headers that did not cross,
+which is not a refusal — the request goes on without the cursor.
+
 
 ### routes[].deceive
 
@@ -12853,7 +13855,7 @@ logged as an `alert` rather than a refusal, since nothing was denied.
 | `name` | string | Names the rule in logs and counters |
 | `clients`, `users`, `databases`, `programs` | lists | Selectors; AND within a rule, OR within one |
 | `schedule` | object | `days`, `from`, `to`, `timezone` |
-| `action` | `allow`, `deny`, `observe` | Default `allow` |
+| `action` | `allow`, `deny`, `observe` | Default `allow`. `observe` records the rule in the log line and decides nothing, so the rules below it still decide — and on a listener whose `default_action` is `deny`, the default does. That is what lets a rule be tried on live traffic without the trial changing what happens; a rule that decided, by allowing what it covers, would make writing one the way to switch off every rule under it |
 | `allow_commands`, `deny_commands`, `allow_statements`, `deny_statements`, `allow_load`, `read_only`, `max_statements` | | The rule's own narrowing. A rule that names a command or a kind **widens** the listener for its own traffic; the deny lists always win |
 
 ### What shadow mode never shadows
@@ -13063,7 +14065,7 @@ cannot do at all:
 | `name` | string | Names the rule in logs and counters |
 | `clients`, `users`, `databases`, `applications` | lists | Selectors. Within a rule they are AND; values within one are OR |
 | `schedule` | object | `days`, `from`, `to`, `timezone` |
-| `action` | `allow`, `deny`, `observe` | Default `allow` |
+| `action` | `allow`, `deny`, `observe` | Default `allow`. `observe` records the rule in the log line and decides nothing, so the rules below it still decide — and on a listener whose `default_action` is `deny`, the default does. That is what lets a rule be tried on live traffic without the trial changing what happens; a rule that decided, by allowing what it covers, would make writing one the way to switch off every rule under it |
 | `allow_statements`, `deny_statements`, `allow_copy`, `read_only`, `max_statements` | | The rule's own narrowing. A rule that names a kind **widens** the listener for its own traffic, which is what makes one listener serve a reporting account that may only select and a migration account that may also change the schema. The deny lists always win, on the rule and the listener both |
 
 ### What shadow mode never shadows
@@ -13346,7 +14348,7 @@ part way through a connection.
 | `name` | string | Names the rule in logs and counters |
 | `clients`, `users`, `databases`, `apps` | lists | Selectors; AND within a rule, OR within one |
 | `schedule` | object | `days`, `from`, `to`, `timezone` |
-| `action` | `allow`, `deny`, `observe` | Default `allow` |
+| `action` | `allow`, `deny`, `observe` | Default `allow`. `observe` records the rule in the log line and decides nothing, so the rules below it still decide — and on a listener whose `default_action` is `deny`, the default does. That is what lets a rule be tried on live traffic without the trial changing what happens; a rule that decided, by allowing what it covers, would make writing one the way to switch off every rule under it |
 | `allow_procedures`, `deny_procedures`, `allow_types`, `deny_types`, `allow_statements`, `deny_statements`, `read_only`, `max_statements` | | The rule's own narrowing. A rule that names a procedure, a type or a kind **widens** the listener for its own traffic; the deny lists always win |
 
 ### What shadow mode never shadows
@@ -13493,7 +14495,7 @@ ordinary commands.
 | `name` | string | Names the rule in logs and counters |
 | `clients`, `users` | lists | Selectors; AND within a rule, OR within one |
 | `schedule` | object | `days`, `from`, `to`, `timezone` |
-| `action` | `allow`, `deny`, `observe` | Default `allow` |
+| `action` | `allow`, `deny`, `observe` | Default `allow`. `observe` records the rule in the log line and decides nothing, so the rules below it still decide — and on a listener whose `default_action` is `deny`, the default does. That is what lets a rule be tried on live traffic without the trial changing what happens; a rule that decided, by allowing what it covers, would make writing one the way to switch off every rule under it |
 | `allow_commands`, `deny_commands`, `allow_subcommands`, `deny_subcommands`, `allow_key_prefixes`, `deny_key_prefixes`, `read_only`, `max_commands` | | The rule's own narrowing. A rule that names commands **widens** the listener for its own traffic; the deny lists always win |
 
 ### What is off by default, and why
@@ -13981,7 +14983,7 @@ that means to allow publishing to a queue by name has to write `""` in
 | `name` | string | Names the rule in logs and counters |
 | `clients`, `users`, `vhosts` | lists | Selectors; AND within a rule, OR within one |
 | `schedule` | object | `days`, `from`, `to`, `timezone` |
-| `action` | `allow`, `deny`, `observe` | Default `allow` |
+| `action` | `allow`, `deny`, `observe` | Default `allow`. `observe` records the rule in the log line and decides nothing, so the rules below it still decide — and on a listener whose `default_action` is `deny`, the default does. That is what lets a rule be tried on live traffic without the trial changing what happens; a rule that decided, by allowing what it covers, would make writing one the way to switch off every rule under it |
 | `allow_methods`, `deny_methods`, `allow_performatives`, `deny_performatives`, `allow_exchanges`, `deny_exchanges`, `allow_queues`, `deny_queues`, `allow_routing_keys`, `deny_routing_keys`, `allow_addresses`, `deny_addresses`, `allow_topology`, `allow_publish`, `allow_consume`, `max_message_bytes`, `max_methods` | | The rule's own narrowing. A rule that names methods **widens** the listener for its own traffic; the deny lists always win |
 
 ### A refusal ends the connection
@@ -14393,7 +15395,7 @@ controller instead, and validation says so at load.
 | Key | Type | Description |
 |-----|------|-------------|
 | `name` | string | Names the rule in logs and counters |
-| `action` | `allow`, `deny`, `observe` | Default `allow` |
+| `action` | `allow`, `deny`, `observe` | Default `allow`. `observe` records the rule in the log line and decides nothing, so the rules below it still decide — and on a listener whose `default_action` is `deny`, the default does. That is what lets a rule be tried on live traffic without the trial changing what happens; a rule that decided, by allowing what it covers, would make writing one the way to switch off every rule under it |
 | `clients`, `racks`, `slots`, `resources` | lists | Selectors; AND within a rule, OR within one |
 | `schedule` | object | `days`, `from`, `to`, `timezone`. This is how "the integrator may download during the shutdown window" is written |
 | `operations`, `deny_operations`, `areas`, `deny_areas`, `dbs`, `addresses`, `write_addresses`, `block_types`, `max_items` | | The rule's own narrowing. A rule that names operations **widens** the listener for its own traffic; the deny lists and `read_only` always win |
@@ -14992,6 +15994,7 @@ access:
   approvals: 1            # four eyes: the person who asked and one other
   max_duration: 4h
   max_lead: 24h
+  max_work_order: 720h    # thirty days: a shutdown fits, a forgotten one does not
   max_uses: 0             # the window is the bound
   max_open: 256
 
@@ -15010,6 +16013,7 @@ server:
 | `approvals` | int | `1` | Approvals a grant needs **in addition to** the request. 1 is four eyes: the person who asked and one other. 0 means a request is in force the moment it is made -- still just-in-time and time-boxed, but nobody else has to agree, and it is warned about. At most 8 |
 | `max_duration` | duration | `4h` | The longest window a grant may cover; 1m to 24h |
 | `max_lead` | duration | `24h` | How far ahead of now a window may start, so an approval today cannot be a key for next quarter; 0 to 720h |
+| `max_work_order` | duration | `720h` | The longest window a [work order](#a-work-order-is-not-a-grant) may cover. Separate from `max_duration` because the two measure different things: a grant is a window somebody is admitted through and four hours is generous, while a work order is how long the work lasts and a plant shutdown is a fortnight. `max_lead` bounds its start as well; 1m to 2160h |
 | `max_uses` | int | `0` | Sessions one grant may open. 0 leaves the window as the only bound; 1 is a one-shot grant. 0 to 1000 |
 | `max_open` | int | `256` | Grants that may be pending or in force at once. A request queue nobody drains is how an approval system becomes a rubber stamp; 1 to 4096 |
 | `self_approval` | bool | `false` | Let the requester approve their own request. It is here for the estate with one operator, where the alternative is switching the requirement off altogether. Warned about every time |
@@ -15027,6 +16031,51 @@ in the afternoon, and only the second needs a work order, so there
 [`engineering`](#engineering) block and covers the engineering classes rather
 than the connection. The grant, the approvals, the window and the trail are
 the same machinery; what differs is the unit of access.
+
+### A work order is not a grant
+
+The two are both in this section, both in the trail, and they are not the
+same thing. Conflating them is the mistake this heading exists to stop.
+
+| | A grant | A work order |
+|-|---------|--------------|
+| What it is | an authorisation | a change reference somebody filed |
+| Who agrees | `approvals` other people | nobody |
+| What it permits | a session, or an engineering class, that would otherwise be refused | **nothing**. It never permits anything that was not already permitted |
+| What it changes | whether the operation happens | how the operation is *reported* |
+| Its window | `max_duration`, hours | `max_work_order`, up to a shutdown |
+| Filed by | the person who wants the access, approved by another | one person, alone |
+
+A work order is the identifier the maintenance system already issued —
+`WO-2026-0481` — filed against a device for a window, with a note saying
+what the work is. It is written to the ledger like everything else here, so
+"was that download filed, and by whom" has an answer nobody could edit
+afterwards. An engineering operation on that device while it is open is
+reported as expected work: the event carries `work_order`, its severity is
+`notice` rather than `warning`, and the operation counts under
+`xproxy_engineering_filed_total` as well. The same operation with nothing on
+file is reported as an operation nobody wrote down.
+
+**A listener with `require_grant: true` still refuses an operation with no
+grant, whatever work orders are open.** A work order cannot open a door. If
+it could, the person who wanted the access could file one for themselves and
+the approval requirement would be decoration.
+
+So the two are for two different estates, and most plants are the second one
+for a while before they are the first. An estate that can run four-eyes
+approval on every program download uses grants and refuses what has none. An
+estate that cannot yet — because the commissioning engineer is on site now
+and the approver is not — still files the reference, and then the weekly
+report has two lists: the engineering somebody filed, and the engineering
+nobody did. The second list is short, and it is the one worth reading. What
+it must not be is a single list of everything, which is what an estate with
+neither gets and therefore does not read.
+
+Work orders are filed over the management API (`POST /v1/workorders`), from
+`xproxyctl workorder`, and from the Plant screen of the web interface. There
+is no configuration for them beyond `max_work_order`: the `access` ledger is
+where they go, so a daemon with no `ledger` has nowhere to file one and says
+so.
 
 ### What a grant names
 

@@ -30,6 +30,8 @@ import (
 	"github.com/rom/xproxy/internal/originsig"
 	"github.com/rom/xproxy/internal/otlp"
 	"github.com/rom/xproxy/internal/securitytxt"
+	"github.com/rom/xproxy/internal/sse"
+	"github.com/rom/xproxy/internal/textsafe"
 	"github.com/rom/xproxy/internal/tlsconf"
 	"github.com/rom/xproxy/internal/tracing"
 	"github.com/rom/xproxy/internal/upstream"
@@ -67,14 +69,18 @@ type reqState struct {
 	// ln is the listener this request arrived on, for the decisions that are
 	// about a listener rather than a route: the estate's authorisation policy
 	// names listeners and honours each one's own shadow switch.
-	ln         *config.Listener
-	span       *tracing.Span // server span, nil without tracing
-	upSpan     *tracing.Span // client span of the upstream exchange
-	propagate  bool
-	cache      string // hit, miss or bypass on a cached route
-	hadCookie  bool   // the client sent a cookie before request filters mutated the headers
-	encoding   string // gzip when the proxy compressed the response
-	canary     bool   // the response came from a canary endpoint
+	ln        *config.Listener
+	span      *tracing.Span // server span, nil without tracing
+	upSpan    *tracing.Span // client span of the upstream exchange
+	propagate bool
+	cache     string // hit, miss or bypass on a cached route
+	hadCookie bool   // the client sent a cookie before request filters mutated the headers
+	encoding  string // gzip when the proxy compressed the response
+	// wsDeflate says the origin accepted this proxy's permessage-deflate
+	// offer on terms the guard can read, which is decided on the 101 and
+	// read when the connection is hijacked.
+	wsDeflate  bool
+	canary     bool // the response came from a canary endpoint
 	cacheKey   string
 	marked     bool         // client previously hit a honeypot
 	degraded   string       // the degradation level serving this request, if any
@@ -86,7 +92,15 @@ type reqState struct {
 	grpcWeb    bool         // request is gRPC-web: translated to gRPC for the upstream
 	h3srv      *h3.Server   // the HTTP/3 endpoint the request arrived on, for WebTransport
 	grpcCode   string       // grpc-status of the upstream response
-	release    func()       // concurrency slot; idempotent
+	// The event stream, where the response was one. sseGuard is kept so the
+	// recorder can read log_events without threading the route through.
+	sse         bool
+	sseGuard    *sseGuard
+	sseEvents   int64
+	sseBytes    int64
+	sseComments int64
+	sseRefused  string
+	release     func() // concurrency slot; idempotent
 	// cr is the matched route; captures and captureNames hold the
 	// route's regular expression match for templates.
 	cr           *compiledRoute
@@ -830,6 +844,48 @@ func (s *engine) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 		s.deny(rw, r, st, http.StatusForbidden, "websocket")
 		return
 	}
+	if isUpgrade(r) && cr.wsGuard != nil && cr.wsGuard.cfg.Compression == wsCompressRefuse &&
+		r.Header.Get("Sec-WebSocket-Extensions") != "" {
+		// The route would rather say no than quietly change what the
+		// client asked for. Stripping the offer is friendlier and is the
+		// default; this is for an estate that would rather a client's
+		// own logs recorded the refusal.
+		cr.wsGuard.violations.Add(1)
+		s.stats.WSViolations.Add(1)
+		st.denied = "websocket:extension"
+		s.logs.SecurityEvent(r.Context(), "websocket", "websocket",
+			"route", st.route, "client_ip", st.clientIP.String(), "reason", "extension",
+			"detail", textsafe.Clip64(r.Header.Get("Sec-WebSocket-Extensions")))
+		s.deny(rw, r, st, http.StatusBadRequest, "websocket")
+		return
+	}
+	if g := cr.sseGuard; g != nil {
+		// The cursor first, for every request on the route: the response's
+		// Content-Type is what decides whether a stream is served, so a client
+		// that sends no Accept header still gets one, and a cursor check gated
+		// on Accept would be a check a client opts out of by omission.
+		g.sseCursor(r, s.sseRecorder(st, r))
+		// The encoding is the other way round, and only for a request that
+		// asked for a stream: a route that serves a page and a stream under
+		// one path is ordinary, and stripping Accept-Encoding from the page
+		// would make this proxy the reason the page is uncompressed.
+		if acceptsEventStream(r) {
+			if g.compression == sseCompressRefuse && r.Header.Get("Accept-Encoding") != "" {
+				// The route would rather say no than quietly change what the
+				// client asked for. Stripping the offer is the default and is
+				// friendlier; this is for an estate that would rather a
+				// client's own logs recorded the refusal.
+				s.stats.SSEViolations.Add(1)
+				st.denied = "sse:encoding"
+				s.logs.SecurityEvent(r.Context(), "sse", "sse",
+					"route", st.route, "client_ip", st.clientIP.String(), "reason", "encoding_not_allowed",
+					"detail", textsafe.Clip64(r.Header.Get("Accept-Encoding")))
+				s.deny(rw, r, st, http.StatusBadRequest, "sse")
+				return
+			}
+			g.sseEncoding(r)
+		}
+	}
 	if isUpgrade(r) && cr.wsGuard != nil {
 		// The reverse proxy hijacks the connection when the origin
 		// answers 101; the guard is installed now so that it is in
@@ -900,6 +956,38 @@ func (s *engine) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 			// the proxy can refuse. The subprotocol the origin picked
 			// is checked here, before any frame exists.
 			if resp.StatusCode == http.StatusSwitchingProtocols && cr.wsGuard != nil {
+				// An extension the origin claims although nothing was offered
+				// (the offer is stripped above). A server that does this is
+				// either broken or has been told to compress by something else,
+				// and either way its frames would arrive unreadable -- so the
+				// upgrade is refused here rather than at the first frame, where
+				// the client would already believe it had a connection.
+				if ext := strings.TrimSpace(resp.Header.Get("Sec-WebSocket-Extensions")); ext != "" {
+					// On a route that offered compression this is the
+					// acceptance, and it has to be the offer that was
+					// made: a stream this guard cannot inflate is one it
+					// would have to choose between closing and not
+					// reading. Anywhere else an extension is one nothing
+					// offered, so its frames would arrive unreadable --
+					// and either way the refusal belongs here rather
+					// than at the first frame, where the client already
+					// believes it has a connection.
+					ok, why := false, "an extension nothing offered"
+					if cr.wsGuard.cfg.Compression == wsCompressInspect {
+						ok, why = wsDeflateAccepted(ext)
+					}
+					if !ok {
+						cr.wsGuard.violations.Add(1)
+						s.stats.WSViolations.Add(1)
+						st.denied = "websocket:extension"
+						s.logs.SecurityEvent(r.Context(), "websocket", "websocket",
+							"route", st.route, "client_ip", st.clientIP.String(),
+							"reason", "extension", "detail", textsafe.Clip64(ext+": "+why))
+						return &filterDenied{v: filter.Verdict{Deny: true, Status: http.StatusBadGateway,
+							Reason: "websocket", Detail: "extension " + ext}}
+					}
+					st.wsDeflate = true
+				}
 				if sp, ok := cr.wsGuard.subprotocolAllowed(resp.Header.Get("Sec-WebSocket-Protocol")); !ok {
 					cr.wsGuard.violations.Add(1)
 					s.stats.WSViolations.Add(1)
@@ -978,6 +1066,37 @@ func (s *engine) proxyTo(rw *responseWriter, r *http.Request, st *reqState, cr *
 			if !upgraded && cr.idleTimeout > 0 && st.cancel != nil && resp.Body != nil && resp.Body != http.NoBody {
 				resp.Body = newIdleReader(resp.Body, cr.idleTimeout, st.cancel)
 			}
+			// An event stream is read, decided about one event at a time
+			// and written out again. It goes on after the idle reader so
+			// that the guard's own idle bound sees the events rather than
+			// the octets, and before the error pages and the shadow
+			// summary, which are about a response that ends.
+			if g := cr.sseGuard; g != nil && !upgraded && resp.Body != nil && resp.Body != http.NoBody &&
+				sse.Stream(resp.Header.Get("Content-Type")) {
+				st.sse, st.sseGuard = true, g
+				s.stats.SSEStreams.Add(1)
+				enc := resp.Header.Get("Content-Encoding")
+				if g.compression == sseCompressInspect && enc != "" {
+					// The route reads a compressed stream, so the body is
+					// counted on the way in -- the ratio bound needs a
+					// denominator -- and inflated before the policy sees it.
+					cnt := &countingReader{r: resp.Body}
+					str := newSSEStream(g, readCloser{Reader: cnt, Closer: resp.Body}, s.sseRecorder(st, r), st.cancel)
+					if err := str.inflate(enc); err != nil {
+						// A stream this route cannot read is a stream it
+						// cannot decide about, so it is not forwarded.
+						s.logs.SecurityEvent(r.Context(), "sse", "sse_encoding_not_readable",
+							"route", st.route, "client_ip", st.clientIP.String(),
+							"detail", textsafe.Clip64(enc))
+						s.stats.SSEViolations.Add(1)
+						return &filterDenied{v: filter.Verdict{Deny: true, Status: http.StatusBadGateway, Reason: "sse"}}
+					}
+					resp.Header.Del("Content-Encoding")
+					resp.Body = str
+				} else {
+					resp.Body = newSSEStream(g, resp.Body, s.sseRecorder(st, r), st.cancel)
+				}
+			}
 			if cr.cors != nil {
 				// The route's policy is authoritative; drop any copy the
 				// upstream set so the header the proxy wrote to rw stands.
@@ -1047,6 +1166,35 @@ func (s *engine) rewrite(pr *httputil.ProxyRequest, st *reqState, cr *compiledRo
 	}
 	if st.grpcWeb {
 		grpcWebRequest(out, in.Header.Get("Content-Type"))
+	}
+	// An inspected upgrade offers no extensions.
+	//
+	// The guard reads frames, and a `permessage-deflate` frame cannot be read:
+	// it arrives with RSV1 set over a DEFLATE stream whose dictionary spans
+	// messages. So the offer is taken out of the request rather than forwarded,
+	// which is the only way "no extension is negotiated on an inspected route"
+	// can be true of the whole path -- this proxy negotiating nothing itself
+	// does not stop the two endpoints agreeing compression behind it.
+	//
+	// Leaving it in was worse than it sounds. Browsers offer permessage-deflate
+	// on every WebSocket by default; a compression-capable origin accepted it;
+	// the client was told it was on; and then the first data frame tripped the
+	// reserved-bit check and the connection closed with a protocol error that
+	// blamed the peer for what this proxy had let through. Stripping the offer
+	// makes both endpoints fall back to uncompressed frames, which is what the
+	// extension is designed to do when it is not agreed.
+	if isUpgrade(in) && cr.wsGuard != nil {
+		if cr.wsGuard.cfg.Compression == wsCompressInspect && in.Header.Get("Sec-WebSocket-Extensions") != "" {
+			// The client offered compression and this route reads
+			// compressed messages, so the offer is narrowed to the terms
+			// that make a message inflatable on its own rather than
+			// forwarded as it came: whatever the client asked for, what
+			// the origin is offered is no context takeover in either
+			// direction.
+			out.Header.Set("Sec-WebSocket-Extensions", wsDeflateOffer)
+		} else {
+			out.Header.Del("Sec-WebSocket-Extensions")
+		}
 	}
 	// Forwarding headers: only a trusted peer's chain is preserved.
 	trustedPeer := netutil.Contains(rt.trusted, netutil.RemoteAddr(in))

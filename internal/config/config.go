@@ -359,6 +359,16 @@ type Listener struct {
 	OPCUA *OPCUAListener `yaml:"opcua"`
 	// MMS configures a kind: mms listener.
 	MMS *MMSListener `yaml:"mms"`
+	// RADIUS configures a kind: radius listener.
+	RADIUS *RADIUSListener `yaml:"radius"`
+	// TACACS configures a kind: tacacs listener.
+	TACACS *TACACSListener `yaml:"tacacs"`
+	// KKDCP configures a kind: kkdcp listener.
+	KKDCP *KKDCPListener `yaml:"kkdcp"`
+	// IMAP configures a kind: imap listener.
+	IMAP *IMAPListener `yaml:"imap"`
+	// POP3 configures a kind: pop3 listener.
+	POP3 *POP3Listener `yaml:"pop3"`
 	// Policy is whether this listener enforces its policy or only
 	// evaluates it. It overrides the estate's own policy section.
 	Policy *ListenerPolicy `yaml:"policy"`
@@ -8225,7 +8235,147 @@ type ForwardListener struct {
 	SOCKSUDP bool `yaml:"socks_udp"`
 	// Masque enables the MASQUE proxying protocols on this listener.
 	Masque *Masque `yaml:"masque"`
+	// Categories are named sets of destinations a rule can talk about, so
+	// an egress policy is written in the estate's own words rather than
+	// repeating a list of domains in every rule.
+	Categories []ForwardCategory `yaml:"categories"`
+	// Rules are the egress policy: who may send what, where, and when.
+	// First match decides and an unmatched request is refused.
+	Rules []ForwardRule `yaml:"rules"`
+	// SNI decides what happens when a tunnel this listener is *not*
+	// intercepting carries a TLS handshake whose server name is not the
+	// destination the client asked for.
+	//
+	// It is the one check that makes a name-based egress policy mean
+	// something without interception. A client that is allowed to reach
+	// cdn.example.com can open a tunnel there and then handshake for
+	// anything else the same address serves -- which on a shared CDN is a
+	// great many things, and is how domain fronting works. The destination
+	// policy then decided about a name nobody used.
+	//
+	// enforce refuses it, observe records it and relays it anyway, off does
+	// not look. Default observe: a name that disagrees is almost always
+	// this, and occasionally a client with a stale DNS answer or a
+	// configuration that pins one address for several names, so an estate
+	// reads its own traffic before this refuses anything. A handshake with
+	// no name at all -- which is what Encrypted Client Hello looks like
+	// from here -- is not a mismatch and is never refused by this.
+	SNI string `yaml:"sni"`
 }
+
+// ForwardCategory is a named set of destinations.
+//
+// A category is how an egress policy stops being a wall of domains. "No
+// uploads to file sharing" is one sentence about one category, and the list
+// behind it is maintained in one place -- or in a file, because the list an
+// estate actually has came from somewhere else and has a few thousand lines
+// in it.
+type ForwardCategory struct {
+	// Name is what a rule names. Rules refer to it exactly, so it is
+	// compared without case but not globbed: a typo in a rule is a rule
+	// about nothing, and validation refuses one.
+	Name string `yaml:"name"`
+	// Hosts are destination patterns in the same spelling as allow and
+	// deny: an exact name, *.suffix for a domain and everything under it,
+	// an address, or a CIDR.
+	Hosts []string `yaml:"hosts"`
+	// File holds further patterns, one per line, # for a comment. Absolute.
+	// It is read at start and on reload, and a file that cannot be read
+	// fails the load rather than leaving the category quietly smaller than
+	// the policy says.
+	File string `yaml:"file"`
+}
+
+// ForwardRule is one decision about egress.
+//
+// Every selector it names has to hold, and a rule that names none matches
+// everything, which is how a catch-all is written. First match decides, and a
+// destination no rule matched is refused -- the same shape the OT relays use,
+// for the same reason: a policy that permits what nobody wrote a rule for is a
+// policy whose gaps are invisible.
+//
+// # What a rule can be decided from
+//
+// A forward proxy sees two very different things. A plain request through the
+// proxy carries its method, its URL and its content types, so every selector
+// here can be decided about it. A CONNECT tunnel carries a destination and
+// nothing else: the method and the content types are inside TLS.
+//
+// So a rule that names method, path or content type is a rule about a request,
+// and it decides nothing for a destination reached through a tunnel this
+// listener does not intercept. That is not left to be discovered -- validation
+// says which rules those are, and `xproxyctl listeners` marks them -- but it is
+// the operator's to resolve, by intercepting those destinations or by accepting
+// that the rule covers the plain path only.
+type ForwardRule struct {
+	// Name is what the security event, the shadow ledger and the status
+	// view call this rule. A decision nobody can name is a decision nobody
+	// can find in a log.
+	Name string `yaml:"name"`
+	// Action is allow, deny or observe. Default deny: a rule somebody
+	// forgot to finish refuses rather than permits. observe records a match
+	// and keeps looking, which is how a rule is tried on real traffic
+	// before it decides anything.
+	Action string `yaml:"action"`
+
+	// Who: the name the proxy authenticated with auth, and the groups
+	// something it trusts said that name is in. Compared without case.
+	//
+	// On a listener with no auth the name is empty, so a rule naming users
+	// or groups matches nobody -- which makes it a rule about people on a
+	// listener that has none, and validation says so.
+	Users     []string `yaml:"users"`
+	Groups    []string `yaml:"groups"`
+	NotUsers  []string `yaml:"not_users"`
+	NotGroups []string `yaml:"not_groups"`
+	// Networks are the client addresses or CIDRs this rule is about.
+	Networks    []string `yaml:"networks"`
+	NotNetworks []string `yaml:"not_networks"`
+
+	// Where to: categories by name, destination patterns in the allow and
+	// deny spelling, and ports.
+	Categories    []string `yaml:"categories"`
+	NotCategories []string `yaml:"not_categories"`
+	Hosts         []string `yaml:"hosts"`
+	NotHosts      []string `yaml:"not_hosts"`
+	Ports         []int    `yaml:"ports"`
+
+	// What: request-level selectors, decidable where the request is
+	// visible. Methods are compared in upper case. Paths are globs in which
+	// * does not cross a slash, so "/upload/*" is one directory.
+	Methods []string `yaml:"methods"`
+	Paths   []string `yaml:"paths"`
+	// RequestTypes and ResponseTypes match the media type without its
+	// parameters, and take a trailing * for a whole tree: "image/*".
+	RequestTypes  []string `yaml:"request_types"`
+	ResponseTypes []string `yaml:"response_types"`
+	// RequestBytesOver and ResponseBytesOver match a body larger than this.
+	// A declared length is checked before anything is sent; a body with no
+	// declared length is counted as it goes past, and then the connection
+	// is cut rather than the rest being carried -- what has already gone
+	// cannot be recalled, which is the whole reason a size rule is worth
+	// less on egress than a destination rule.
+	RequestBytesOver  int64 `yaml:"request_bytes_over"`
+	ResponseBytesOver int64 `yaml:"response_bytes_over"`
+
+	// Schedule limits the rule to certain hours. A rule outside its window
+	// does not match, so the next rule -- or the refusal -- decides.
+	Schedule *ModbusSchedule `yaml:"schedule"`
+	// Comment is carried into the event and the shadow ledger, which is
+	// where a change number belongs.
+	Comment string `yaml:"comment"`
+}
+
+// ForwardActions are what a rule may do, used by validation here and by the
+// runtime through the configuration so the vocabulary cannot differ between
+// what loads and what is enforced.
+var ForwardActions = map[string]bool{"allow": true, "deny": true, "observe": true}
+
+// ForwardSNIModes are what the sni setting may say.
+var ForwardSNIModes = map[string]bool{"off": true, "observe": true, "enforce": true}
+
+// ForwardHTTPModes are what intercept.http may say.
+var ForwardHTTPModes = map[string]bool{"auto": true, "on": true, "off": true}
 
 // Masque configures UDP proxying (RFC 9298) and IP proxying (RFC 9484)
 // over extended CONNECT. Both need HTTP/2 or HTTP/3, so the listener
@@ -8313,6 +8463,24 @@ type ForwardIntercept struct {
 	// YARA scans the decrypted stream, which is the point of doing any
 	// of this.
 	YARA *YARAPolicy `yaml:"yara"`
+	// HTTP reads the decrypted stream as HTTP/1.1 rather than relaying it
+	// as bytes, which is what makes the egress rules about a method, a
+	// path, a content type or a body size decide inside a tunnel. Without
+	// it those rules can only ever have covered a plain request through the
+	// proxy, which on an estate whose egress is HTTPS is almost nothing.
+	//
+	// auto (the default) reads the stream when the listener has a rule that
+	// needs a request and relays bytes when it has none, so the parsing
+	// happens exactly where there is something to decide and an existing
+	// deployment is unchanged until a rule asks for it. on reads it always,
+	// which is how to get a log line per request inside tunnels without
+	// writing a rule. off never does.
+	//
+	// What is read is HTTP/1.1. A tunnel that negotiated h2, or that turns
+	// out not to carry HTTP at all, is relayed as bytes whatever this says,
+	// and the output says which tunnels those were -- a proxy that silently
+	// read nothing would be worse than one that says it read nothing.
+	HTTP string `yaml:"http"`
 }
 
 // ForwardAuth is the credential source of a forward listener.
@@ -8322,6 +8490,15 @@ type ForwardAuth struct {
 	UsersFile string `yaml:"users_file"`
 	// Realm is sent in Proxy-Authenticate. Default "proxy".
 	Realm string `yaml:"realm"`
+	// Groups names sets of users, so an egress rule is written about the
+	// build agents rather than about eleven account names -- and so the
+	// estate's own authorization section, which has had a groups selector
+	// all along, finally has something to compare on this listener.
+	//
+	// It is a map from group name to member names. A name in no group is in
+	// no group: there is no implicit "everybody", because a rule that
+	// matched everybody by accident is the kind of rule nobody notices.
+	Groups map[string][]string `yaml:"groups"`
 }
 
 // WebSocketGuard is the frame policy of an upgraded connection. Every
@@ -8357,6 +8534,71 @@ type WebSocketGuard struct {
 	Action string `yaml:"action"`
 	// CloseCode overrides the close code sent on a violation.
 	CloseCode int `yaml:"close_code"`
+	// Compression says what happens to a client's permessage-deflate
+	// offer on this route. A compressed frame cannot be read without
+	// being inflated, so this is the setting that decides whether an
+	// inspected route is also a compressed one.
+	//
+	// strip, the default, takes the offer out of the upgrade request, so
+	// the origin never accepts it and both ends fall back to uncompressed
+	// frames -- which is what the extension is designed to do when it is
+	// not agreed. refuse answers the upgrade instead, for an estate that
+	// would rather a client was told than quietly changed. inspect
+	// negotiates compression on terms this proxy can read (no context
+	// takeover in either direction, so each message is a stream of its
+	// own) and inflates every message before the rest of the policy sees
+	// it.
+	Compression string `yaml:"compression"`
+	// MaxInflateRatio bounds how far one compressed message may expand
+	// before it is a bomb rather than a message: a few hundred bytes of
+	// zeroes inflate to whatever the sender chose, and a guard that
+	// inflated it to find out how large it was would be the thing the
+	// bomb was aimed at. Default 100. Only read with compression:
+	// inspect.
+	MaxInflateRatio int `yaml:"max_inflate_ratio"`
+	// TypeField is the JSON member that names a message's type, which is
+	// what Types match on. Default "type".
+	TypeField string `yaml:"type_field"`
+	// RequireJSON makes a text message that is not a JSON object a
+	// violation rather than a message the type policy cannot read.
+	// Default false.
+	RequireJSON *bool `yaml:"require_json"`
+	// UnknownTypes is allow, observe or deny: what happens to a message
+	// whose type Types does not name. The default is deny once Types
+	// names any and allow when it names none, because a list of the
+	// messages a route carries that also carries everything else is not
+	// a list.
+	UnknownTypes string `yaml:"unknown_types"`
+	// Types is the policy per kind of message. One max_message_bytes for
+	// a connection is the bound of its largest message, which is the
+	// bound that lets every other message be that large too; this is
+	// where the keepalive and the order get different answers.
+	Types []WebSocketMessageType `yaml:"types"`
+}
+
+// WebSocketMessageType is one kind of message a route carries: how large it
+// may be, how often it may arrive, which way it travels, and the shape it
+// must have.
+type WebSocketMessageType struct {
+	// Name is the value of TypeField this entry is about.
+	Name string `yaml:"name"`
+	// MaxBytes bounds one message of this type, after inflation where the
+	// route inspects compressed messages. 0 leaves it to
+	// max_message_bytes.
+	MaxBytes int64 `yaml:"max_bytes"`
+	// MessagesPerSecond bounds this type's rate, per connection and per
+	// direction. 0 is no bound of this type's own; the connection's
+	// messages_per_second still applies to the client.
+	MessagesPerSecond int `yaml:"messages_per_second"`
+	// SchemaFile is a JSON Schema (JSON or YAML) every message of this
+	// type must match. It is read at load and on reload, and a message
+	// too large to have been inspected whole cannot be validated and is
+	// refused.
+	SchemaFile string `yaml:"schema_file"`
+	// Direction is client, server or both. Default both. A message type
+	// that only ever travels one way is one more thing a client cannot
+	// claim to be.
+	Direction string `yaml:"direction"`
 }
 
 // Masked reports the effective require_masked.
@@ -8364,6 +8606,11 @@ func (w *WebSocketGuard) Masked() bool { return w == nil || w.RequireMasked == n
 
 // UTF8 reports the effective validate_utf8.
 func (w *WebSocketGuard) UTF8() bool { return w == nil || w.ValidateUTF8 == nil || *w.ValidateUTF8 }
+
+// JSONRequired reports the effective require_json.
+func (w *WebSocketGuard) JSONRequired() bool {
+	return w != nil && w.RequireJSON != nil && *w.RequireJSON
+}
 
 // TCPListener routes raw connections to upstream pools. TLS connections
 // are routed by the server name of the ClientHello (peeked, never
@@ -9740,6 +9987,10 @@ type Route struct {
 	// WebSocketGuard inspects the frames of an upgraded connection.
 	// Without it an upgrade is an opaque tunnel.
 	WebSocketGuard *WebSocketGuard `yaml:"websocket_guard"`
+	// SSEGuard inspects the events of a `text/event-stream` response.
+	// Without it a stream is an opaque, unbounded, outbound channel: the one
+	// long-lived HTTP response nothing else in this configuration bounds.
+	SSEGuard *SSEGuard `yaml:"sse_guard"`
 	// WebTransport relays WebTransport sessions (extended CONNECT over
 	// HTTP/3 on a listener with h3) to the upstream, which must speak
 	// HTTP/3 (h3: true): bidirectional and unidirectional streams and
@@ -11563,8 +11814,19 @@ type Access struct {
 	// MaxDuration bounds the window a grant may cover. Default 4h.
 	MaxDuration Duration `yaml:"max_duration"`
 	// MaxLead bounds how far ahead of now a window may start, so that an
-	// approval today cannot be a key for next quarter. Default 24h.
+	// approval today cannot be a key for next quarter. Default 24h. It
+	// bounds a work order's start as well.
 	MaxLead Duration `yaml:"max_lead"`
+	// MaxWorkOrder bounds the window a work order may cover. Default 720h,
+	// thirty days.
+	//
+	// It is separate from max_duration because the two measure different
+	// things. A grant is a window somebody is admitted through, and four
+	// hours is generous. A work order is how long the work lasts, and a
+	// plant shutdown is a fortnight -- but a work order with no end is the
+	// one somebody files during a shutdown and never closes, after which
+	// every download on that device reads as expected work forever.
+	MaxWorkOrder Duration `yaml:"max_work_order"`
 	// MaxUses bounds the sessions one grant may open; 0 leaves the window as
 	// the only bound.
 	MaxUses int `yaml:"max_uses"`
@@ -13455,4 +13717,1371 @@ type MMSLearn struct {
 	// Enforce keeps the policy in force while learning. Default false, which
 	// is the only honest way to find out what a policy would have broken.
 	Enforce bool `yaml:"enforce"`
+}
+
+// RADIUSListener is the settings of a kind: radius listener: a relay in
+// front of a RADIUS server, on UDP 1812 for authentication and 1813 for
+// accounting.
+//
+// RADIUS is what authenticates most of the network equipment in most
+// estates: every 802.1X switch port, every VPN concentrator, every
+// wireless controller, and on the routers that do not run TACACS+ the
+// administrative logins too. It is also a protocol whose entire
+// cryptography is one shared secret and MD5.
+//
+// Five things shape these settings.
+//
+// **The secret is how this listener earns its keep.** Without it a relay
+// can read the code, the identifier and the attributes -- all of that is
+// in the clear -- but it cannot tell a packet the server will accept from
+// one it will not. With it, every arriving packet's integrity is checked
+// before anything is forwarded, which is the difference between a relay
+// that filters and a relay that filters *and* authenticates. So
+// `secret_file` is not optional in any deployment worth the name, and the
+// validator says so.
+//
+// **require_message_authenticator defaults ON, and that is the
+// Blast-RADIUS answer.** The Response Authenticator is MD5 over the reply
+// with the request's authenticator spliced in and the secret appended; a
+// chosen-prefix MD5 collision turns an Access-Reject into an
+// Access-Accept on the wire, which is CVE-2024-3596. RFC 3579's
+// Message-Authenticator is a keyed HMAC over the whole packet and the
+// attack does not reach it. Every current server and NAS can send it;
+// requiring it is the published mitigation, and this is the knob.
+//
+// **The dynamic authorization codes are a different protocol wearing the
+// same clothes.** RFC 5176's Disconnect-Request ends a live user's
+// session and CoA-Request re-authorises it -- a new VLAN, a new filter, a
+// new privilege level -- from one UDP datagram on port 3799. They run
+// from a server towards the equipment, which is the opposite direction to
+// everything else here, and `allow_dynamic_authorization` defaults false
+// because a relay in the ordinary position has no business carrying them.
+//
+// **The reply leg is where privilege is granted.** A client asks for
+// access by logging in; the *server's* answer is what says this login
+// gets the enable prompt -- Service-Type = Administrative-User, or
+// `shell:priv-lvl=15` in a Cisco av-pair. So `max_privilege_level` and
+// `deny_administrative_replies` are checks on what comes back, and they
+// are the ones that bound what a compromised or spoofed RADIUS server can
+// hand out across a whole estate of routers.
+//
+// **A password is read, never recovered.** User-Password is XORed with
+// MD5(secret || authenticator), so anybody with the secret -- including
+// this relay -- can recover it. This listener does not: it reports that a
+// request carried one and how long it was. `refuse_plaintext_passwords`
+// defaults OFF for the reason the same knob on the mms listener does: PAP
+// is most of the installed base, refusing it removes the only
+// authentication a lot of equipment has, and counting it does not.
+type RADIUSListener struct {
+	// Upstream is the pool of RADIUS servers this listener relays to.
+	// Required.
+	Upstream string `yaml:"upstream"`
+	// AccountingUpstream is the pool Accounting-Request goes to, where an
+	// estate separates them. Empty sends accounting to Upstream.
+	AccountingUpstream string `yaml:"accounting_upstream"`
+	// SecretFile holds the shared secret this listener verifies arriving
+	// packets with, one line, owner-readable only.
+	//
+	// It is a file rather than a value in this section on purpose: a
+	// shared secret written here is a shared secret in the configuration
+	// management, in the backups and in every review of the change that
+	// added it.
+	SecretFile string `yaml:"secret_file"`
+	// UpstreamSecretFile is the secret towards the servers, where it
+	// differs from the clients'. Empty uses the same one.
+	//
+	// Setting it makes this listener a secret boundary: it verifies what
+	// arrives with one secret and re-signs what it forwards with another,
+	// so the equipment's secret never reaches the server and the server's
+	// never reaches the equipment. That is worth doing, and it has a cost
+	// -- the obfuscated User-Password has to be re-obfuscated under the
+	// new secret, which means this relay recovers it in memory for the
+	// length of one packet. A listener that does not set this never does.
+	UpstreamSecretFile string `yaml:"upstream_secret_file"`
+	// AllowClients and DenyClients are the networks a client may send
+	// from. Deny is evaluated first.
+	//
+	// On a protocol where the client is a switch or a concentrator with a
+	// fixed address, this is a strong control and the cheapest line in
+	// the section.
+	AllowClients []string `yaml:"allow_clients"`
+	DenyClients  []string `yaml:"deny_clients"`
+	// Codes is the allow list of packet codes, by name
+	// (access-request, accounting-request, status-server) or number.
+	// Empty allows the four a client sends: authentication, accounting,
+	// and the two status queries.
+	Codes []string `yaml:"codes"`
+	// DenyCodes are codes no rule can allow.
+	DenyCodes []string `yaml:"deny_codes"`
+	// RequireMessageAuthenticator refuses a packet with no valid RFC 3579
+	// Message-Authenticator. Default true.
+	//
+	// This is the Blast-RADIUS (CVE-2024-3596) mitigation and it is on by
+	// default deliberately. Turning it off on a listener that has a
+	// secret means accepting replies whose only integrity check is a
+	// collidable MD5 -- which is the attack. An estate with equipment too
+	// old to send one should name that equipment in a rule rather than
+	// turning this off for everything.
+	RequireMessageAuthenticator *bool `yaml:"require_message_authenticator"`
+	// VerifyResponseAuthenticator checks RFC 2865's own authenticator on
+	// a reply. Default true.
+	//
+	// It is the weaker of the two checks -- it is what the collision
+	// attack forges -- and it is still worth running: it catches a
+	// mismatched secret, a corrupted packet and an answer from the wrong
+	// server, which are the three things that actually happen.
+	VerifyResponseAuthenticator *bool `yaml:"verify_response_authenticator"`
+	// AllowDynamicAuthorization carries RFC 5176's Disconnect-Request and
+	// CoA-Request. Default false.
+	AllowDynamicAuthorization *bool `yaml:"allow_dynamic_authorization"`
+	// AuthTypes is the allow list of credential shapes: pap, chap,
+	// mschap, eap, none. Empty allows any.
+	AuthTypes []string `yaml:"auth_types"`
+	// RefusePlaintextPasswords refuses an Access-Request carrying
+	// User-Password. Default false; see this type's own documentation for
+	// why.
+	RefusePlaintextPasswords *bool `yaml:"refuse_plaintext_passwords"`
+	// EAPTypes is the allow list of EAP methods, by name (peap, tls,
+	// ttls, mschapv2) or number. Empty allows any that is not weak.
+	EAPTypes []string `yaml:"eap_types"`
+	// DenyEAPTypes are methods no rule can allow.
+	DenyEAPTypes []string `yaml:"deny_eap_types"`
+	// RefuseWeakEAP refuses the methods that provide no server
+	// authentication and no key material, and are crackable offline from
+	// one observed exchange: EAP-MD5, LEAP, and the bare one-time
+	// password and token card types. Default true.
+	//
+	// It is the one EAP line worth writing. EAP-MD5 cannot be used with
+	// WPA-Enterprise at all and RFC 3748 §5.4 says itself that it offers
+	// no protection against a dictionary attack; a client that Naks its
+	// way down to it has downgraded the estate's authentication to a
+	// hash somebody can crack on a laptop.
+	RefuseWeakEAP *bool `yaml:"refuse_weak_eap"`
+	// Users and DenyUsers are the User-Name values this listener carries.
+	// Empty allows any. Matched on the whole name as the client sent it.
+	Users     []string `yaml:"users"`
+	DenyUsers []string `yaml:"deny_users"`
+	// Realms and DenyRealms are the realms a user name may carry, in any
+	// of the three forms the installed base uses: user@realm, realm\user
+	// and realm/user. Empty allows any.
+	//
+	// A realm is routing: a RADIUS server proxies by it, so a name
+	// carrying one asks this estate's server to forward the credential
+	// somewhere else. An allow list here is a say in that.
+	Realms     []string `yaml:"realms"`
+	DenyRealms []string `yaml:"deny_realms"`
+	// RequireRealm refuses a user name with no realm in it. Default
+	// false. An estate whose equipment is configured to send
+	// user@realm can turn it on and refuse the bare names, which is
+	// where a misconfigured supplicant and a hand-typed login both land.
+	RequireRealm *bool `yaml:"require_realm"`
+	// NASIdentifiers is the allow list of NAS-Identifier values. Empty
+	// allows any. It is a claim rather than a fact -- the client chose it
+	// -- so it is worth pairing with AllowClients rather than trusting on
+	// its own.
+	NASIdentifiers []string `yaml:"nas_identifiers"`
+	// MaxPrivilegeLevel bounds the administrative privilege a reply may
+	// grant, 0 to 15. Default 15, which is no bound.
+	//
+	// Read on the reply leg, where the grant is: a Cisco av-pair saying
+	// `shell:priv-lvl=15`. Setting it to 1 on the listener that fronts
+	// the switches means no RADIUS answer crossing this relay can hand
+	// out enable, whatever the server says.
+	MaxPrivilegeLevel *int `yaml:"max_privilege_level"`
+	// DenyAdministrativeReplies refuses a reply carrying Service-Type =
+	// Administrative-User. Default false. It is the standard attribute's
+	// spelling of the same grant MaxPrivilegeLevel bounds, and an estate
+	// that does its device administration over TACACS+ has no reason to
+	// carry it over RADIUS at all.
+	DenyAdministrativeReplies *bool `yaml:"deny_administrative_replies"`
+	// DenyAttributes are attribute types a request may not carry, by name
+	// or number.
+	DenyAttributes []string `yaml:"deny_attributes"`
+	// DenyReplyAttributes are attribute types a reply may not carry.
+	//
+	// The interesting ones are the tunnel attributes:
+	// Tunnel-Private-Group-Id is the VLAN a RADIUS answer puts a port in,
+	// and a listener whose job is authentication rather than
+	// authorisation can refuse to carry one.
+	DenyReplyAttributes []string `yaml:"deny_reply_attributes"`
+	// RefuseProxyState refuses a request carrying Proxy-State. Default
+	// false. The attribute exists so a proxy can recognise its own
+	// forwarded requests, and a client sending one is either a proxy or
+	// something putting state into a server's reply path.
+	RefuseProxyState *bool `yaml:"refuse_proxy_state"`
+	// MaxAttributes bounds the attributes one packet may carry. Default
+	// 255, which is more than any real packet and far short of what a
+	// 4096-octet packet of empty attributes holds.
+	MaxAttributes int `yaml:"max_attributes"`
+	// MaxMessageBytes bounds one datagram. Default 4096, which is RFC
+	// 2865's own maximum.
+	MaxMessageBytes int `yaml:"max_message_bytes"`
+	// MaxPending bounds the requests this listener is waiting for answers
+	// to. Default 256, which is the width of the identifier space.
+	MaxPending int `yaml:"max_pending"`
+	// RequestTimeout is how long a request's slot is held. Default 10s.
+	RequestTimeout Duration `yaml:"request_timeout"`
+	// RateLimit and RateBurst bound requests per second per client
+	// address. Zero disables them.
+	RateLimit int `yaml:"rate_limit"`
+	RateBurst int `yaml:"rate_burst"`
+	// Rules decide each request, in order, first match wins. A request
+	// that matches no rule takes DefaultAction.
+	Rules []RADIUSRule `yaml:"rules"`
+	// DefaultAction is deny (the default) or allow.
+	DefaultAction string `yaml:"default_action"`
+	// DenyResponse is how a refused request is answered: reject (the
+	// default: an Access-Reject, which the client reports as a failed
+	// login and stops on) or drop (nothing, which the client retries and
+	// then reads as a dead server).
+	//
+	// An Accounting-Request has nothing useful to refuse with -- an
+	// Accounting-Response means "recorded" -- so a refused one is always
+	// dropped.
+	DenyResponse string `yaml:"deny_response"`
+	// LogRequests writes an access line per request: who, from where,
+	// which method and how it was decided. Default true.
+	LogRequests *bool `yaml:"log_requests"`
+	// AlertOnDeny writes a security event for every refusal. Default
+	// true.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
+	// MonitorOnly evaluates the policy and enforces nothing, which is the
+	// same as policy: {mode: shadow} on the listener. The bounds, the
+	// integrity checks and the malformed-packet refusals still apply: a
+	// packet whose digest does not verify is not a policy question.
+	MonitorOnly bool `yaml:"monitor_only"`
+	// Anomaly watches what each client has been doing and reports when it
+	// stops. The block is the same on every kind; see Anomaly.
+	Anomaly *Anomaly `yaml:"anomaly"`
+}
+
+// RADIUSRule decides one request.
+type RADIUSRule struct {
+	// Name identifies the rule in the logs and the counters. Required.
+	Name string `yaml:"name"`
+	// Action is allow, deny or observe. observe logs and counts and then
+	// keeps looking, which is how a rule is tried on live traffic before
+	// it decides anything.
+	Action string `yaml:"action"`
+	// Clients are the networks the client is in.
+	Clients []string `yaml:"clients"`
+	// Codes are the packet codes this rule covers.
+	Codes []string `yaml:"codes"`
+	// AuthTypes are the credential shapes this rule covers.
+	AuthTypes []string `yaml:"auth_types"`
+	// EAPTypes are the EAP methods this rule covers.
+	EAPTypes []string `yaml:"eap_types"`
+	// Users and Realms are the names and realms this rule covers.
+	Users  []string `yaml:"users"`
+	Realms []string `yaml:"realms"`
+	// NASIdentifiers are the NAS-Identifier values this rule covers.
+	NASIdentifiers []string `yaml:"nas_identifiers"`
+	// MaxPrivilegeLevel overrides the listener's bound for this rule's
+	// traffic, which is how the one jump host that really does get enable
+	// is written down.
+	MaxPrivilegeLevel *int `yaml:"max_privilege_level"`
+	// RequireMessageAuthenticator overrides the listener's setting, which
+	// is how the one piece of equipment too old to send one is admitted
+	// without turning the check off for the estate.
+	RequireMessageAuthenticator *bool `yaml:"require_message_authenticator"`
+	// Schedule limits the rule to a time window.
+	Schedule *ModbusSchedule `yaml:"schedule"`
+}
+
+// TACACSListener is the settings of a kind: tacacs listener: a relay in
+// front of a TACACS+ server, on TCP 49.
+//
+// TACACS+ is device administration. Where RADIUS answers "may this user
+// onto the network", TACACS+ answers "may this user, at this privilege
+// level, run this command on this router" -- it authorises each command
+// separately, and the command is in the packet. So of every protocol in
+// this file, this is the one where what a policy can say is worth the
+// most: not which hosts may reach the equipment, but which commands may
+// run on it, written as commands.
+//
+// Five things shape these settings.
+//
+// **The shared key is what makes the rest possible.** RFC 8907 calls its
+// MD5 construction "obfuscation", not encryption, and §10.3 says it is
+// "not cryptographically sound" -- the pad is a chain of MD5 digests over
+// the session identifier, the key, the version and the sequence number,
+// so anybody with the key reads everything. This listener uses that: with
+// `secret_file` it reads the user, the command and the privilege level,
+// and without it it reads the twelve-octet header and nothing else. A
+// listener with no key can still bound sessions and refuse by address; it
+// cannot police a command, and the validator says so.
+//
+// **The commands are the point.** `commands` and `deny_commands` match the
+// command line a device sends split across `cmd` and one `cmd-arg` per
+// word -- so a rule is written as `show ...` or `configure terminal`, the
+// way it is typed, and the listener reassembles it. The patterns are
+// prefix patterns with a trailing `...` meaning "and anything after": a
+// listener whose rules admit `show ...` and `ping ...` and nothing else
+// has made every router behind it read-only, whatever the TACACS+
+// server's own profiles say.
+//
+// **Privilege is granted in the reply, and bounded here.** An
+// authorization *response* carries `priv-lvl=15` as a mandatory argument,
+// and a device that receives a mandatory argument must apply it. So
+// `max_privilege_level` is a check on what the server sends back, and it
+// is the line that stops one compromised TACACS+ server from handing out
+// enable across an estate.
+//
+// **A FOLLOW reply is refused by default.** RFC 8907 §5.2's
+// TAC_PLUS_AUTHEN_STATUS_FOLLOW redirects the client to a different
+// server, and the reply's data field carries that server's address, port
+// and *key*. It is a server-chosen redirect to an arbitrary host,
+// authenticated by an MD5 pad, after which the client sends its next
+// credential there. The standard deprecates it and says a client should
+// treat it as a failure; this listener does not carry it.
+//
+// **Device administration is engineering activity.** The `engineering`
+// block applies here for the same reason it applies to a PLC download: a
+// `configure terminal` on a core router at three in the morning is either
+// a change with a work order behind it or an incident, and this is the
+// listener that can tell the difference. With `require_grant` a command
+// this listener classes as engineering is refused unless an approved
+// grant is open for it.
+type TACACSListener struct {
+	// Upstream is the pool of TACACS+ servers this listener relays to.
+	// Required.
+	Upstream string `yaml:"upstream"`
+	// SecretFile holds the shared key, one line, owner-readable only.
+	// Without it this listener reads headers and forwards bodies
+	// unexamined.
+	SecretFile string `yaml:"secret_file"`
+	// UpstreamSecretFile is the key towards the servers, where it differs
+	// from the devices'. Empty uses the same one.
+	//
+	// Setting it makes this listener a key boundary: it de-obfuscates with
+	// one key and re-obfuscates with another, so a device's key never
+	// reaches the server and the server's never reaches a device.
+	UpstreamSecretFile string `yaml:"upstream_secret_file"`
+	// AllowClients and DenyClients are the networks a device may connect
+	// from. Deny is evaluated first.
+	AllowClients []string `yaml:"allow_clients"`
+	DenyClients  []string `yaml:"deny_clients"`
+	// Exchanges is the allow list of exchanges: authentication,
+	// authorization, accounting. Empty allows all three.
+	//
+	// Naming fewer is a real control. A listener in front of the
+	// equipment that is managed from a bastion and nowhere else can carry
+	// accounting and authorization and refuse authentication, so no login
+	// can be attempted through it at all.
+	Exchanges []string `yaml:"exchanges"`
+	// RefuseUnencrypted refuses a packet whose
+	// TAC_PLUS_UNENCRYPTED_FLAG is set, meaning the body arrived in the
+	// clear. Default true.
+	//
+	// RFC 8907 §4.5 allows it only on a secured transport. On bare TCP it
+	// is either a configuration mistake or somebody stripping the
+	// obfuscation, and either way an administrative login's user name and
+	// password are on the wire.
+	RefuseUnencrypted *bool `yaml:"refuse_unencrypted"`
+	// AllowFollow carries a FOLLOW status, which redirects the client to
+	// another server with another key. Default false.
+	AllowFollow *bool `yaml:"allow_follow"`
+	// AllowChangePassword carries an authentication session whose action
+	// is CHPASS. Default false: it changes a credential on the server,
+	// and most estates do password changes somewhere else entirely.
+	AllowChangePassword *bool `yaml:"allow_change_password"`
+	// AllowSendAuth carries a SENDAUTH session, which asks the server for
+	// a credential to send onwards to a peer. Default false.
+	//
+	// RFC 8907 §5.4.3 keeps it for outbound CHAP and PAP on dial links.
+	// In a modern estate a request for one is either dead configuration or
+	// somebody extracting credentials from the TACACS+ server.
+	AllowSendAuth *bool `yaml:"allow_sendauth"`
+	// AuthenTypes is the allow list of credential shapes: ascii, pap,
+	// chap, mschap, mschapv2. Empty allows any.
+	AuthenTypes []string `yaml:"authen_types"`
+	// RefusePlaintextPasswords refuses an authentication session whose
+	// type puts the password in the body -- ascii and pap. Default false.
+	//
+	// It defaults off for the reason the same knob on the mms listener
+	// does: on a lot of equipment interactive login is the only
+	// authentication there is, refusing it removes that, and counting it
+	// does not. What this listener does by default is count every session
+	// that carries one.
+	RefusePlaintextPasswords *bool `yaml:"refuse_plaintext_passwords"`
+	// AllowUnauthenticatedAuthorization carries an authorization request
+	// whose authen_method says the device authenticated nobody: not-set,
+	// none, guest, or the line password. Default false.
+	//
+	// This is the whole of an attack in one octet. A device that asks
+	// "may this unnamed user run this command" and is told yes has
+	// authorised a command for whoever is on the port.
+	AllowUnauthenticatedAuthorization *bool `yaml:"allow_unauthenticated_authorization"`
+	// Services is the allow list of `service` argument values on an
+	// authorization request: shell, ppp, slip, or a vendor's own. Empty
+	// allows any.
+	Services []string `yaml:"services"`
+	// AuthenServices is the allow list of the protocol's own
+	// authen_service field: login, enable, ppp, rcmd. Empty allows any.
+	//
+	// `enable` is the one to think about: it is the privilege escalation
+	// inside an existing session, and it is a separate decision from the
+	// login.
+	AuthenServices []string `yaml:"authen_services"`
+	// Users and DenyUsers are the user names this listener carries. Empty
+	// allows any.
+	Users     []string `yaml:"users"`
+	DenyUsers []string `yaml:"deny_users"`
+	// Commands and DenyCommands are the command lines this listener
+	// carries, written the way they are typed. Empty Commands allows any.
+	//
+	// A pattern is matched against the reassembled command line, word by
+	// word, and a trailing `...` means "and anything after": `show ...`
+	// covers every show command, `show running-config` covers exactly
+	// that, and `copy ... tftp:` is not a pattern -- the wildcard is only
+	// at the end, because a pattern with a hole in the middle is a pattern
+	// whose author and whose reader disagree about what it covers.
+	//
+	// DenyCommands is checked first and no rule can override it, which is
+	// how an exception inside an allowed set is written: `show ...`
+	// allowed, `show running-config` denied.
+	Commands     []string `yaml:"commands"`
+	DenyCommands []string `yaml:"deny_commands"`
+	// MaxPrivilegeLevel bounds the privilege level, 0 to 15. Default 15,
+	// which is no bound. It is checked on a request's own priv_lvl field
+	// and on a `priv-lvl` argument in the server's response, because the
+	// second is the grant and the first is only the claim.
+	MaxPrivilegeLevel *int `yaml:"max_privilege_level"`
+	// MaxArgs bounds the arguments one request may carry. Default 64;
+	// the protocol's own bound is 255.
+	MaxArgs int `yaml:"max_args"`
+	// MaxBodyBytes bounds one packet's body. Default 32768. RFC 8907 §4.1
+	// says a server should refuse a body past 65536, and nothing
+	// legitimate is near either number.
+	MaxBodyBytes int `yaml:"max_body_bytes"`
+	// MaxSessions and MaxSessionsPerClient bound the sessions held.
+	// Zero is unbounded.
+	MaxSessions          int `yaml:"max_sessions"`
+	MaxSessionsPerClient int `yaml:"max_sessions_per_client"`
+	// MaxSessionsPerConnection bounds the sessions one TCP connection may
+	// carry. Default 64.
+	//
+	// A connection carries more than one only when both ends set
+	// TAC_PLUS_SINGLE_CONNECT_FLAG, which is ordinary and is why this is a
+	// bound rather than a refusal: without it one connection can open
+	// sessions until the table this listener pairs answers in is full.
+	MaxSessionsPerConnection int `yaml:"max_sessions_per_connection"`
+	// IdleTimeout and SessionTimeout bound how long a connection may sit
+	// silent and how long it may live. Defaults 5m and 1h.
+	IdleTimeout    Duration `yaml:"idle_timeout"`
+	SessionTimeout Duration `yaml:"session_timeout"`
+	// RateLimit and RateBurst bound connections per second per client
+	// address. Zero disables them.
+	RateLimit int `yaml:"rate_limit"`
+	RateBurst int `yaml:"rate_burst"`
+	// RequireTLS refuses a connection that is not TLS. Default false.
+	//
+	// TACACS+ over TLS is the fix for everything §10.3 admits about the
+	// obfuscation, and it is a transport this listener terminates like any
+	// other: put a certificate on the listener and the client's leg is
+	// TLS. It defaults off because almost no equipment speaks it yet; an
+	// estate whose equipment does should turn it on, and one whose
+	// equipment does not should read `refuse_unencrypted` as the weaker
+	// thing it is.
+	RequireTLS *bool `yaml:"require_tls"`
+	// UpstreamTLSMode is how this listener reaches the servers: disable
+	// (the default), prefer or require.
+	UpstreamTLSMode string `yaml:"upstream_tls_mode"`
+	// UpstreamTLS is the client-side TLS settings for that leg.
+	UpstreamTLS *UpstreamTLS `yaml:"upstream_tls"`
+	// Rules decide each request, in order, first match wins. A request
+	// that matches no rule takes DefaultAction.
+	Rules []TACACSRule `yaml:"rules"`
+	// DefaultAction is deny (the default) or allow.
+	DefaultAction string `yaml:"default_action"`
+	// DenyResponse is how a refused request is answered: fail (the
+	// default, in the protocol's own terms -- an authentication FAIL, an
+	// authorization FAIL, an accounting ERROR, each carrying a message
+	// saying which proxy refused it) or drop, which closes the
+	// connection and leaves the device to time out.
+	//
+	// fail is the right default here in a way it is not on every
+	// protocol: the person refused is an engineer at a terminal, and a
+	// line saying "refused by xproxy: command_not_allowed" is the
+	// difference between a policy they can work with and a router they
+	// think is broken.
+	DenyResponse string `yaml:"deny_response"`
+	// LogRequests writes an access line per request. Default true.
+	LogRequests *bool `yaml:"log_requests"`
+	// LogAccounting writes every accounting record as its own line.
+	// Default true.
+	//
+	// This is the estate's own copy of the device administration audit
+	// trail: who ran what, on which device, at what privilege level. It
+	// is worth having separately from the TACACS+ server's because it is
+	// in a different place, written by a different program, and whoever
+	// has just got privileged access to the routers does not have it.
+	LogAccounting *bool `yaml:"log_accounting"`
+	// AlertOnDeny writes a security event for every refusal. Default
+	// true.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
+	// MonitorOnly evaluates the policy and enforces nothing, which is the
+	// same as policy: {mode: shadow}. The bounds, the session limits and
+	// the malformed-packet refusals still apply.
+	MonitorOnly bool `yaml:"monitor_only"`
+	// Anomaly watches what each device and each user has been doing and
+	// reports when it stops: a command this user has never run, a device
+	// this user has never logged in to, an hour nobody works at. See
+	// Anomaly.
+	Anomaly *Anomaly `yaml:"anomaly"`
+	// Engineering reports this listener's configuration commands as their
+	// own class of event and, with require_grant, refuses one with no
+	// approved work order open. See Engineering.
+	Engineering *Engineering `yaml:"engineering"`
+}
+
+// TACACSRule decides one request.
+type TACACSRule struct {
+	// Name identifies the rule in the logs and the counters. Required.
+	Name string `yaml:"name"`
+	// Action is allow, deny or observe.
+	Action string `yaml:"action"`
+	// Clients are the networks the device is in.
+	Clients []string `yaml:"clients"`
+	// Exchanges are the exchanges this rule covers.
+	Exchanges []string `yaml:"exchanges"`
+	// Users are the user names this rule covers.
+	Users []string `yaml:"users"`
+	// Commands and DenyCommands are the command lines this rule covers,
+	// and the ones it does not cover even when Commands would match.
+	Commands     []string `yaml:"commands"`
+	DenyCommands []string `yaml:"deny_commands"`
+	// Services and AuthenServices are the service values this rule
+	// covers.
+	Services       []string `yaml:"services"`
+	AuthenServices []string `yaml:"authen_services"`
+	// AuthenTypes are the credential shapes this rule covers.
+	AuthenTypes []string `yaml:"authen_types"`
+	// MaxPrivilegeLevel overrides the listener's bound for this rule's
+	// traffic.
+	MaxPrivilegeLevel *int `yaml:"max_privilege_level"`
+	// Schedule limits the rule to a time window, which is what a change
+	// window is: configuration commands allowed while the engineers are on
+	// shift and not at three in the morning.
+	Schedule *ModbusSchedule `yaml:"schedule"`
+}
+
+// KKDCPListener is the settings of a kind: kkdcp listener: a Kerberos KDC
+// proxy, serving HTTPS and speaking TCP to the KDC behind it.
+//
+// MS-KKDCP exists because Kerberos is UDP and TCP on port 88 and the
+// places people work from are not on the network the KDC is on. A client
+// POSTs its AS-REQ to an HTTPS endpoint wrapped in a KDC-PROXY-MESSAGE,
+// the proxy unwraps it, speaks TCP to the KDC, and wraps the answer back.
+// Windows has shipped the client since 2012; MIT and Heimdal both speak
+// it.
+//
+// It is the only listener in this file that translates one protocol into
+// another, and it is one of the few places an estate's Kerberos traffic
+// can be read at all. Six things shape these settings.
+//
+// **It must be HTTPS.** MS-KKDCP says so and the reason is not
+// ceremonial: the inner message carries a pre-authentication blob derived
+// from the user's password. A listener with no certificate is refused at
+// load rather than warned about.
+//
+// **A proxy with no realm policy is an open relay.** The envelope names a
+// target domain and the inner message names a realm, and a proxy that
+// forwards whatever it is handed will relay Kerberos for realms that are
+// not the estate's, to KDCs that are not the estate's, from the estate's
+// own address. `realms` is therefore required, and a request whose two
+// realms disagree is refused rather than resolved -- the outer one is what
+// the proxy routes by and the inner one is what the KDC decides on, and a
+// proxy that picked one would be deciding about a different realm than the
+// KDC.
+//
+// **Everything a policy needs is in the clear.** Which realm, which
+// client principal, which service principal, which encryption types the
+// client will take, which pre-authentication it brought: those are the
+// fields the KDC itself decides on, and they are readable because they
+// have to be. What is encrypted is the ticket and the reply's enc-part,
+// and no setting here needs those.
+//
+// **The attacks are visible in those fields, and three of them have knobs
+// of their own.** A TGS-REQ offering nothing but RC4 is Kerberoasting
+// (`etypes`, and the finding it raises). An AS-REP that arrives for a
+// request which carried no pre-authentication means the account is
+// pre-authentication exempt, and the reply is an offline
+// password-cracking target: that is AS-REP roasting, and
+// `refuse_preauth_exempt` refuses the *reply*, because the question
+// cannot be answered on the request -- a bare AS-REQ is the normal first
+// message of every exchange. A TGS-REQ carrying PA-FOR-USER is S4U2Self
+// and one carrying the constrained-delegation option with an additional
+// ticket is S4U2Proxy, and both default off.
+//
+// **A run of failures is the other half.** An internet-facing KDC proxy
+// is where password spraying lands, and the signal is a burst of
+// KDC_ERR_PREAUTH_FAILED: `max_preauth_failures` counts them per client
+// over a window and refuses past the bound, which is a control the KDC's
+// own lockout policy cannot give -- it locks the account, which is what
+// the sprayer wanted.
+//
+// **Password changes are a separate decision.** RFC 3244's kpasswd is a
+// different service on a different port, reached through the same proxy
+// by a client that sends an AP-REQ for kadmin/changepw. It is off by
+// default and has its own upstream pool when it is on.
+type KKDCPListener struct {
+	// Upstream is the pool of KDCs this listener relays to, reached over
+	// TCP. Required.
+	Upstream string `yaml:"upstream"`
+	// PasswordUpstream is the pool kpasswd requests go to, which is a
+	// different service on a different port. Required when
+	// AllowPasswordChange is set.
+	PasswordUpstream string `yaml:"password_upstream"`
+	// Path is the HTTP path this listener serves. Default /KdcProxy,
+	// which is what Windows asks for.
+	Path string `yaml:"path"`
+	// Realms is the allow list of realms this proxy will carry, matched
+	// case-insensitively against both the envelope's target domain and
+	// the inner message's realm. Required: a KDC proxy with no realm
+	// policy is an open relay.
+	Realms []string `yaml:"realms"`
+	// RequireTargetDomain refuses an envelope that names no target
+	// domain. Default false.
+	//
+	// The field is optional in MS-KKDCP and MIT's client omits it, so
+	// requiring it refuses real traffic. What this listener does without
+	// it is decide on the inner realm alone, which is the realm the KDC
+	// will use.
+	RequireTargetDomain *bool `yaml:"require_target_domain"`
+	// MessageTypes is the allow list of request types: as-req, tgs-req,
+	// ap-req. Empty allows the two KDC requests, and ap-req only when
+	// AllowPasswordChange is set.
+	MessageTypes []string `yaml:"message_types"`
+	// ETypes is the allow list of encryption types a request may ask for,
+	// by name (aes256-cts-hmac-sha1-96, rc4-hmac) or number. Empty allows
+	// any that is not weak.
+	ETypes []string `yaml:"etypes"`
+	// DenyETypes are types no rule can allow.
+	DenyETypes []string `yaml:"deny_etypes"`
+	// RefuseWeakETypes refuses a request offering nothing but weak
+	// encryption types: single DES, triple DES and RC4-HMAC. Default
+	// true.
+	//
+	// "Nothing but" rather than "any", and the distinction is the whole
+	// setting. A Windows client in a mixed estate lists aes256, aes128
+	// and rc4 in that order and the KDC takes the first it can, so a
+	// request *mentioning* RC4 is ordinary traffic and refusing it would
+	// break the estate. A request offering RC4 alone has asked for a
+	// ticket it can crack offline, and on a TGS-REQ for a service
+	// principal that is Kerberoasting with no ambiguity left in it.
+	RefuseWeakETypes *bool `yaml:"refuse_weak_etypes"`
+	// RefuseWeakTicketETypes refuses a *reply* whose ticket was encrypted
+	// in a weak type. Default false.
+	//
+	// It is the same finding seen from the other end, and it is off by
+	// default because by then the ticket exists: the KDC has minted it,
+	// and refusing the reply denies the client a ticket the KDC was
+	// willing to issue. On a listener where the requests are already
+	// bounded this is the belt to that braces, and it is the counter
+	// worth reading either way.
+	RefuseWeakTicketETypes *bool `yaml:"refuse_weak_ticket_etypes"`
+	// RefusePreauthExempt refuses an AS-REP answering a request that
+	// carried no pre-authentication. Default true.
+	//
+	// This is the AS-REP roasting control, and it is on the reply because
+	// that is the only place the question can be answered: a bare AS-REQ
+	// is the first message of every normal exchange, and the KDC answers
+	// one with KDC_ERR_PREAUTH_REQUIRED. A KDC that answers it with a
+	// *ticket* has told you the account does not require
+	// pre-authentication, and the reply's encrypted part is crackable
+	// offline against that account's password.
+	RefusePreauthExempt *bool `yaml:"refuse_preauth_exempt"`
+	// AllowS4U2Self carries a TGS-REQ with PA-FOR-USER: a service asking
+	// for a ticket to itself as another user. Default false.
+	AllowS4U2Self *bool `yaml:"allow_s4u2self"`
+	// AllowS4U2Proxy carries a TGS-REQ with the constrained-delegation
+	// option and an additional ticket. Default false.
+	AllowS4U2Proxy *bool `yaml:"allow_s4u2proxy"`
+	// AllowAnonymous carries a request asking for the anonymous principal
+	// (RFC 8062). Default false: it is authentication with no identity in
+	// it, and a proxy carrying it is carrying something nobody can
+	// attribute afterwards.
+	AllowAnonymous *bool `yaml:"allow_anonymous"`
+	// AllowPasswordChange carries RFC 3244's kpasswd exchange, which
+	// arrives as an AP-REQ for kadmin/changepw. Default false.
+	AllowPasswordChange *bool `yaml:"allow_password_change"`
+	// AllowForwardedTickets carries a request with the `forwarded` or
+	// `proxy` option set, meaning the ticket is being presented from
+	// somewhere other than where it was issued to. Default true: it is
+	// how ordinary delegation works, and an estate that does none can turn
+	// it off.
+	AllowForwardedTickets *bool `yaml:"allow_forwarded_tickets"`
+	// DenyOptions are KDC options a request may not set, by the
+	// standard's names: renew, validate, enc-tkt-in-skey,
+	// disable-transited-check, postdated. Empty denies none beyond what
+	// the settings above cover.
+	DenyOptions []string `yaml:"deny_options"`
+	// Principals and DenyPrincipals are the client principals this
+	// listener carries, by name without the realm. Empty allows any.
+	//
+	// DenyPrincipals is where the names nobody should be authenticating
+	// as from outside go: the built-in administrator, the service
+	// accounts, krbtgt itself.
+	Principals     []string `yaml:"principals"`
+	DenyPrincipals []string `yaml:"deny_principals"`
+	// Services and DenyServices are the service principals a TGS-REQ may
+	// ask for, matched on the whole name or on the service class alone --
+	// so `MSSQLSvc` covers every SQL Server instance and
+	// `host/dc1.corp.example` covers one host. Empty allows any.
+	Services     []string `yaml:"services"`
+	DenyServices []string `yaml:"deny_services"`
+	// MaxTicketLifetime bounds the validity a request may ask for. Zero
+	// is no bound. A request asking for a ten-year ticket is not an
+	// attack on its own -- the KDC applies its own maximum -- and it is
+	// a thing worth refusing and counting.
+	MaxTicketLifetime Duration `yaml:"max_ticket_lifetime"`
+	// MaxDistinctServices and ServiceWindow bound how many different
+	// service principals one client may ask for inside a window. Zero
+	// disables the check; the default window is 5m.
+	//
+	// This is the behavioural half of the Kerberoasting control and it
+	// catches what the encryption-type rules cannot: a client that asks
+	// for forty service tickets in a minute is enumerating the realm's
+	// service accounts, whatever encryption it asked for them in.
+	MaxDistinctServices int      `yaml:"max_distinct_services"`
+	ServiceWindow       Duration `yaml:"service_window"`
+	// MaxPreauthFailures and FailureWindow bound how many
+	// KDC_ERR_PREAUTH_FAILED replies one client may collect inside a
+	// window before this listener refuses it. Zero disables the check;
+	// the default window is 5m.
+	MaxPreauthFailures int      `yaml:"max_preauth_failures"`
+	FailureWindow      Duration `yaml:"failure_window"`
+	// MaxMessageBytes bounds one inner Kerberos message, each way.
+	// Default 131072.
+	//
+	// The bound has to be generous: a Windows TGS-REP for a user in
+	// several hundred groups carries a PAC of tens of kilobytes, and a
+	// listener that refused one would refuse exactly the users whose
+	// group membership matters most. The HTTP body is bounded separately
+	// and more tightly.
+	MaxMessageBytes int `yaml:"max_message_bytes"`
+	// MaxRequestsPerConnection bounds the POSTs one keep-alive connection
+	// may make. Default 64.
+	MaxRequestsPerConnection int `yaml:"max_requests_per_connection"`
+	// UpstreamTimeout is how long this listener waits for the KDC.
+	// Default 10s.
+	UpstreamTimeout Duration `yaml:"upstream_timeout"`
+	// MaxSessions and MaxSessionsPerClient bound the connections held.
+	// Zero is unbounded.
+	MaxSessions          int `yaml:"max_sessions"`
+	MaxSessionsPerClient int `yaml:"max_sessions_per_client"`
+	// RateLimit and RateBurst bound requests per second per client
+	// address. Zero disables them.
+	//
+	// They are worth setting here more than on most kinds: this is a
+	// listener whose whole purpose is to be reachable from the open
+	// internet, and every request it carries costs the KDC a
+	// cryptographic operation.
+	RateLimit int `yaml:"rate_limit"`
+	RateBurst int `yaml:"rate_burst"`
+	// Rules decide each request, in order, first match wins. A request
+	// that matches no rule takes DefaultAction.
+	Rules []KKDCPRule `yaml:"rules"`
+	// DefaultAction is deny (the default) or allow.
+	DefaultAction string `yaml:"default_action"`
+	// DenyResponse is how a refused request is answered: error (the
+	// default: a KRB-ERROR with KDC_ERR_POLICY and a text saying which
+	// proxy refused it, wrapped in the envelope the client expects) or
+	// status, which answers the HTTP request with 403 and no Kerberos
+	// message at all.
+	//
+	// error is the better default, because silence on this protocol is a
+	// client that falls back to port 88 -- where there is no relay -- and
+	// then reports a network fault to whoever is sitting at it. The
+	// KRB-ERROR says no in the only language the client reads.
+	DenyResponse string `yaml:"deny_response"`
+	// LogRequests writes an access line per request: the realm, the
+	// client principal, the service, the encryption types and how it was
+	// decided. Default true.
+	LogRequests *bool `yaml:"log_requests"`
+	// AlertOnDeny writes a security event for every refusal. Default
+	// true.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
+	// MonitorOnly evaluates the policy and enforces nothing, which is the
+	// same as policy: {mode: shadow}. The bounds, the realm check and the
+	// malformed-message refusals still apply: a message this listener
+	// cannot read is not a policy question, and neither is a realm it
+	// does not serve -- forwarding that would make it the open relay the
+	// realm list exists to prevent.
+	MonitorOnly bool `yaml:"monitor_only"`
+	// Anomaly watches what each client has been doing and reports when it
+	// stops. See Anomaly.
+	Anomaly *Anomaly `yaml:"anomaly"`
+}
+
+// KKDCPRule decides one request.
+type KKDCPRule struct {
+	// Name identifies the rule in the logs and the counters. Required.
+	Name string `yaml:"name"`
+	// Action is allow, deny or observe.
+	Action string `yaml:"action"`
+	// Clients are the networks the client is in. On an internet-facing
+	// listener this will usually be empty; on one in front of a branch
+	// office it is the strongest line in the rule.
+	Clients []string `yaml:"clients"`
+	// Realms are the realms this rule covers.
+	Realms []string `yaml:"realms"`
+	// MessageTypes are the request types this rule covers.
+	MessageTypes []string `yaml:"message_types"`
+	// Principals are the client principals this rule covers.
+	Principals []string `yaml:"principals"`
+	// Services and DenyServices are the service principals this rule
+	// covers, and the ones it does not cover even when Services would
+	// match.
+	Services     []string `yaml:"services"`
+	DenyServices []string `yaml:"deny_services"`
+	// ETypes are the encryption types this rule covers.
+	ETypes []string `yaml:"etypes"`
+	// MaxTicketLifetime overrides the listener's bound for this rule's
+	// traffic.
+	MaxTicketLifetime Duration `yaml:"max_ticket_lifetime"`
+	// Schedule limits the rule to a time window.
+	Schedule *ModbusSchedule `yaml:"schedule"`
+}
+
+// IMAPListener configures a kind: imap listener: a relay in front of a
+// mailbox server.
+//
+// This is the protocol that carries the mail somebody already received,
+// which makes it a different problem from SMTP. A submission proxy sees
+// one message at a time on its way out; an IMAP relay sees a client with
+// a credential asking for everything in a mailbox, and the interesting
+// request is not malformed -- it is `UID FETCH 1:* (BODY[])`, which is
+// what both a mail client's first sync and an account takeover look like.
+// So the two settings worth more than the rest are `max_fetch_messages`,
+// which bounds how much of a mailbox one request may name, and
+// `mailboxes`, which says which mailboxes exist as far as this listener
+// is concerned.
+type IMAPListener struct {
+	// Upstream is the pool of IMAP servers this listener relays to.
+	// Required.
+	Upstream string `yaml:"upstream"`
+	// TLSMode is implicit (IMAPS: TLS from the first octet, port 993),
+	// starttls (RFC 2595's STARTTLS on port 143, which this relay
+	// terminates itself) or none. Default implicit where the listener has
+	// a tls section.
+	TLSMode string `yaml:"tls_mode"`
+	// RequireTLS refuses a LOGIN, or an AUTHENTICATE with a mechanism
+	// that carries the password, on a connection that is not encrypted.
+	// Default true, and it is not shadowable: by the time a policy could
+	// be consulted the password has travelled.
+	RequireTLS *bool `yaml:"require_tls"`
+	// UpstreamTLSMode is how this listener reaches the servers: disable,
+	// implicit or starttls. Default implicit where the pool's port is 993
+	// and disable otherwise.
+	UpstreamTLSMode string `yaml:"upstream_tls_mode"`
+	// UpstreamTLS verifies the server on that leg.
+	UpstreamTLS *UpstreamTLS `yaml:"upstream_tls"`
+	// AllowClients and DenyClients are the networks a client may connect
+	// from. Deny is evaluated first.
+	AllowClients []string `yaml:"allow_clients"`
+	DenyClients  []string `yaml:"deny_clients"`
+	// Mechanisms is the allow list of authentication mechanisms: `login`
+	// for the LOGIN command, and a SASL name for each AUTHENTICATE
+	// mechanism (PLAIN, OAUTHBEARER, XOAUTH2, CRAM-MD5, GSSAPI,
+	// EXTERNAL). Empty allows any.
+	//
+	// It is enforced in two places, which is the point. A mechanism not
+	// named is refused when it is asked for, and it is also **removed
+	// from the capability list** the client is shown -- so a client
+	// configured for one this listener will not carry asks for something
+	// else instead of failing a login.
+	Mechanisms []string `yaml:"mechanisms"`
+	// Users is the allow list of identities that may be claimed, folded
+	// for comparison. Empty allows any.
+	//
+	// The name is a claim rather than a proven identity: this is the
+	// request on its way to the server that will check the password. A
+	// rule keyed on it is a filter on who may attempt a login, which is
+	// worth having and worth not overstating.
+	Users []string `yaml:"users"`
+	// Commands is the allow list of IMAP commands, by name. Empty allows
+	// every command this relay knows. DenyCommands is the narrower
+	// statement and is evaluated first.
+	//
+	// A UID command is the command it qualifies: a rule naming FETCH
+	// covers `UID FETCH`, because every client written this century uses
+	// UIDs and a policy that distinguished them would be a policy about
+	// nothing.
+	Commands     []string `yaml:"commands"`
+	DenyCommands []string `yaml:"deny_commands"`
+	// Mailboxes is the allow list of mailbox names, and DenyMailboxes the
+	// deny list, evaluated first. Empty allows any.
+	//
+	// A name may end in `*`, which matches the rest of the name including
+	// the hierarchy separator, or `%`, which matches within one level --
+	// the two wildcards IMAP's own LIST command has. The comparison is on
+	// the *decoded* name, so a rule written as `Sent` matches the
+	// modified UTF-7 the client sent and the UTF-8 a client with
+	// UTF8=ACCEPT sent.
+	Mailboxes     []string `yaml:"mailboxes"`
+	DenyMailboxes []string `yaml:"deny_mailboxes"`
+	// ReadOnly refuses every command that changes a mailbox -- APPEND,
+	// CREATE, DELETE, RENAME, STORE, COPY, MOVE, EXPUNGE, the ACL and
+	// quota writes -- for every client, before any rule is read.
+	ReadOnly bool `yaml:"read_only"`
+	// MaxFetchMessages bounds how many messages one FETCH, SEARCH, COPY
+	// or MOVE may name. Default 0, which is unbounded.
+	//
+	// This is the mailbox-copying bound and the one setting here that is
+	// about collection rather than access: `1:*` is three characters and
+	// every message there is. A set that names more is refused, and an
+	// open-ended one (`1:*`, `*`) is refused outright once this is set,
+	// because its size is the mailbox's rather than the client's.
+	MaxFetchMessages int `yaml:"max_fetch_messages"`
+	// AllowOpenSets carries an open-ended sequence set even where
+	// max_fetch_messages is set. Default false.
+	//
+	// It exists because a mail client's first synchronisation of a
+	// mailbox legitimately asks for everything, and an estate that wants
+	// the bound for FETCH may still need `SEARCH 1:*` to work. Naming the
+	// commands in a rule is the better answer where it is available.
+	AllowOpenSets *bool `yaml:"allow_open_sets"`
+	// MaxAppendBytes bounds the literal of an APPEND, which is a message
+	// being written *into* a mailbox. Default 33554432 (32 MiB).
+	//
+	// It is decided on the declared size before any octet arrives, which
+	// is the only place it can be decided: RFC 7888's LITERAL+ sends the
+	// octets without waiting for the server to agree to them.
+	MaxAppendBytes int `yaml:"max_append_bytes"`
+	// MaxLiteralBytes bounds any other literal, which is an argument
+	// rather than a message: a mailbox name, a search string, a
+	// credential. Default 65536.
+	MaxLiteralBytes int `yaml:"max_literal_bytes"`
+	// MaxLiterals bounds the literals one command may chain. Default 8.
+	//
+	// A command continues after a literal, and the continuation may end in
+	// another, so without a bound one command can be an unbounded
+	// conversation.
+	MaxLiterals int `yaml:"max_literals"`
+	// MaxLineBytes bounds one command line. Default 8192. RFC 9051 bounds
+	// a line not at all, which means the bound is whichever peer runs out
+	// of memory first.
+	MaxLineBytes int `yaml:"max_line_bytes"`
+	// MaxResponseBytes bounds one response line from the server. Default
+	// 65536: servers send longer lines than clients, and a FETCH of a
+	// header is one of them.
+	MaxResponseBytes int `yaml:"max_response_bytes"`
+	// MaxCommands bounds the commands one connection may send. Default 0,
+	// unbounded.
+	MaxCommands int `yaml:"max_commands"`
+	// RefuseCompression removes COMPRESS=DEFLATE (RFC 4978) from the
+	// capability list and refuses the COMPRESS command. Default true.
+	//
+	// A deflated connection cannot be inspected, so advertising it would
+	// be offering to stop -- the same decision this project makes about
+	// permessage-deflate on a WebSocket.
+	RefuseCompression *bool `yaml:"refuse_compression"`
+	// RefusePreauth refuses a PREAUTH greeting, which says the connection
+	// is authenticated before anybody claimed an identity. Default true.
+	//
+	// RFC 9051 §7.1.4 allows a server to decide from the transport that no
+	// credential is needed. A relay that carried it would make every later
+	// decision about a name it never saw, so the connection is closed and
+	// counted instead.
+	RefusePreauth *bool `yaml:"refuse_preauth"`
+	// AllowIdle carries the IDLE command of RFC 2177. Default true: every
+	// mail client uses it, and refusing it turns them all into pollers.
+	AllowIdle *bool `yaml:"allow_idle"`
+	// MaxIdleDuration bounds one IDLE. Default 30m, which is longer than
+	// RFC 2177's advice to the client and shorter than for ever.
+	MaxIdleDuration Duration `yaml:"max_idle_duration"`
+	// MaxConnections bounds the connections this listener serves at once.
+	// Default 512.
+	MaxConnections int `yaml:"max_connections"`
+	// MaxSessions and MaxSessionsPerClient bound the sessions in flight in
+	// total and per client address. Zero is unbounded.
+	MaxSessions          int `yaml:"max_sessions"`
+	MaxSessionsPerClient int `yaml:"max_sessions_per_client"`
+	// RateLimit and RateBurst bound connections per second per client
+	// address. Zero disables them.
+	RateLimit int `yaml:"rate_limit"`
+	RateBurst int `yaml:"rate_burst"`
+	// IdleTimeout and SessionTimeout bound how long a connection may sit
+	// silent outside an IDLE and how long it may live. Defaults 30m and
+	// 24h -- a mail client holds a connection open for days, which is what
+	// IDLE is for.
+	IdleTimeout    Duration `yaml:"idle_timeout"`
+	SessionTimeout Duration `yaml:"session_timeout"`
+	// Rules decide each command, in order, first match wins. A command
+	// that matches no rule takes DefaultAction.
+	Rules []IMAPRule `yaml:"rules"`
+	// DefaultAction is allow (the default) or deny.
+	//
+	// It defaults to allow, unlike the OT kinds, because a mailbox
+	// protocol has sixty commands a client needs and an estate that had to
+	// list them would list them wrong. The controls that matter here are
+	// the bounds and the mailbox list, not an enumeration of IMAP.
+	DefaultAction string `yaml:"default_action"`
+	// DenyResponse is how a refused command is answered: no (the default:
+	// a tagged NO, which every client displays), bad (a tagged BAD, which
+	// a client reads as its own mistake), drop (no answer) or close.
+	DenyResponse string `yaml:"deny_response"`
+	// LogCommands writes an access line per command. Default true.
+	LogCommands *bool `yaml:"log_commands"`
+	// LogFetches writes a line for each FETCH, SEARCH, COPY or MOVE with
+	// the number of messages it named. Default true.
+	//
+	// This is the record an estate is asked for after a mailbox
+	// compromise: not that somebody logged in, but how much they read.
+	LogFetches *bool `yaml:"log_fetches"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
+	// MonitorOnly evaluates the policy and enforces nothing, which is the
+	// same as policy: {mode: shadow}. The bounds, the session limits and
+	// the malformed-command refusals still apply.
+	MonitorOnly bool `yaml:"monitor_only"`
+	// Anomaly watches what each client and each account has been doing and
+	// reports when it stops: a mailbox this account has never opened, an
+	// hour it has never connected at, a volume of messages it has never
+	// fetched. See Anomaly.
+	Anomaly *Anomaly `yaml:"anomaly"`
+}
+
+// IMAPRule is one rule of an imap listener's policy.
+type IMAPRule struct {
+	// Name appears in the logs and the shadow report.
+	Name string `yaml:"name"`
+	// Users, Clients and Mailboxes narrow which commands this rule
+	// decides. Empty matches any.
+	Users     []string `yaml:"users"`
+	Clients   []string `yaml:"clients"`
+	Mailboxes []string `yaml:"mailboxes"`
+	// Commands and DenyCommands are this rule's own command lists.
+	Commands     []string `yaml:"commands"`
+	DenyCommands []string `yaml:"deny_commands"`
+	// ReadOnly refuses the commands that change a mailbox, for the clients
+	// and users this rule matches.
+	ReadOnly bool `yaml:"read_only"`
+	// MaxFetchMessages and MaxAppendBytes are this rule's own bounds,
+	// which is how the one account that really does synchronise a whole
+	// mailbox is written down.
+	MaxFetchMessages int `yaml:"max_fetch_messages"`
+	MaxAppendBytes   int `yaml:"max_append_bytes"`
+	// Action is allow (the default) or deny.
+	Action string `yaml:"action"`
+	// Schedule limits the rule to a time window.
+	Schedule *ModbusSchedule `yaml:"schedule"`
+}
+
+// POP3Listener configures a kind: pop3 listener: a relay in front of a
+// POP3 server.
+//
+// POP3 is the smaller of the two mailbox protocols and the one where the
+// credential is least protected: `USER` names an identity and `PASS`
+// sends the password in the clear on the next line, with no negotiation
+// in between. So `require_tls` is the setting that matters most, and
+// `max_retr_bytes` is the second -- RETR is how a mailbox is copied, one
+// whole message at a time.
+type POP3Listener struct {
+	// Upstream is the pool of POP3 servers this listener relays to.
+	// Required.
+	Upstream string `yaml:"upstream"`
+	// TLSMode is implicit (POP3S: TLS from the first octet, port 995),
+	// starttls (RFC 2595's STLS on port 110, terminated here) or none.
+	// Default implicit where the listener has a tls section.
+	TLSMode string `yaml:"tls_mode"`
+	// RequireTLS refuses USER, PASS, APOP and a plaintext SASL mechanism
+	// on a connection that is not encrypted. Default true, and not
+	// shadowable: the password has travelled by the time a policy could
+	// be consulted.
+	RequireTLS *bool `yaml:"require_tls"`
+	// UpstreamTLSMode is how this listener reaches the servers: disable,
+	// implicit or starttls.
+	UpstreamTLSMode string `yaml:"upstream_tls_mode"`
+	// UpstreamTLS verifies the server on that leg.
+	UpstreamTLS *UpstreamTLS `yaml:"upstream_tls"`
+	// AllowClients and DenyClients are the networks a client may connect
+	// from. Deny is evaluated first.
+	AllowClients []string `yaml:"allow_clients"`
+	DenyClients  []string `yaml:"deny_clients"`
+	// Mechanisms is the allow list of authentication mechanisms: `user`
+	// for the USER and PASS pair, `apop` for the digest of RFC 1939 §7,
+	// and a SASL name for each AUTH mechanism. Empty allows any.
+	//
+	// As on the imap listener it is enforced twice: a mechanism not named
+	// is refused, and it is removed from the CAPA list the client reads.
+	Mechanisms []string `yaml:"mechanisms"`
+	// Users is the allow list of identities that may be claimed, folded
+	// for comparison. Empty allows any.
+	Users []string `yaml:"users"`
+	// Commands is the allow list of POP3 commands and DenyCommands the
+	// deny list, evaluated first. Empty allows every command this relay
+	// knows.
+	Commands     []string `yaml:"commands"`
+	DenyCommands []string `yaml:"deny_commands"`
+	// ReadOnly refuses DELE and RSET, which are the two commands that
+	// change what the mailbox will hold after the update state.
+	ReadOnly bool `yaml:"read_only"`
+	// MaxMessages bounds how many messages one connection may retrieve.
+	// Default 0, unbounded.
+	MaxMessages int `yaml:"max_messages"`
+	// MaxRetrBytes bounds the octets one connection may retrieve across
+	// every RETR and TOP. Default 0, unbounded.
+	//
+	// This is the mailbox-copying bound on this protocol. POP3 has no
+	// sequence set to measure, so the only honest bound is the running
+	// total, counted as the message passes.
+	MaxRetrBytes int64 `yaml:"max_retr_bytes"`
+	// MaxLineBytes and MaxResponseBytes bound one command line and one
+	// reply line. Defaults 512 and 4096.
+	MaxLineBytes     int `yaml:"max_line_bytes"`
+	MaxResponseBytes int `yaml:"max_response_bytes"`
+	// MaxConnections bounds the connections this listener serves at once.
+	// Default 256.
+	MaxConnections int `yaml:"max_connections"`
+	// MaxSessions and MaxSessionsPerClient bound the sessions in flight in
+	// total and per client address. Zero is unbounded.
+	MaxSessions          int `yaml:"max_sessions"`
+	MaxSessionsPerClient int `yaml:"max_sessions_per_client"`
+	// RateLimit and RateBurst bound connections per second per client
+	// address. Zero disables them.
+	RateLimit int `yaml:"rate_limit"`
+	RateBurst int `yaml:"rate_burst"`
+	// IdleTimeout and SessionTimeout bound how long a connection may sit
+	// silent and how long it may live. Defaults 10m and 1h: a POP3 client
+	// connects, takes its mail and goes.
+	IdleTimeout    Duration `yaml:"idle_timeout"`
+	SessionTimeout Duration `yaml:"session_timeout"`
+	// Rules decide each command, in order, first match wins.
+	Rules []POP3Rule `yaml:"rules"`
+	// DefaultAction is allow (the default) or deny.
+	DefaultAction string `yaml:"default_action"`
+	// DenyResponse is how a refused command is answered: err (the
+	// default: -ERR with the reason), drop or close.
+	DenyResponse string `yaml:"deny_response"`
+	// LogCommands writes an access line per command. Default true.
+	LogCommands *bool `yaml:"log_commands"`
+	// LogRetrievals writes a line per RETR and TOP with the octets it
+	// carried. Default true: it is the record of how much of a mailbox
+	// left.
+	LogRetrievals *bool `yaml:"log_retrievals"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
+	// MonitorOnly evaluates the policy and enforces nothing.
+	MonitorOnly bool `yaml:"monitor_only"`
+	// Anomaly watches what each client and account has been doing and
+	// reports when it stops. See Anomaly.
+	Anomaly *Anomaly `yaml:"anomaly"`
+}
+
+// POP3Rule is one rule of a pop3 listener's policy.
+type POP3Rule struct {
+	// Name appears in the logs and the shadow report.
+	Name string `yaml:"name"`
+	// Users and Clients narrow which commands this rule decides.
+	Users   []string `yaml:"users"`
+	Clients []string `yaml:"clients"`
+	// Commands and DenyCommands are this rule's own command lists.
+	Commands     []string `yaml:"commands"`
+	DenyCommands []string `yaml:"deny_commands"`
+	// ReadOnly refuses DELE and RSET for the clients and users this rule
+	// matches.
+	ReadOnly bool `yaml:"read_only"`
+	// MaxMessages and MaxRetrBytes are this rule's own bounds.
+	MaxMessages  int   `yaml:"max_messages"`
+	MaxRetrBytes int64 `yaml:"max_retr_bytes"`
+	// Action is allow (the default) or deny.
+	Action string `yaml:"action"`
+	// Schedule limits the rule to a time window.
+	Schedule *ModbusSchedule `yaml:"schedule"`
+}
+
+// SSEGuard is the event policy of a `text/event-stream` response.
+//
+// Server-Sent Events is the other long-lived HTTP response an estate runs, and
+// it is the WebSocket's opposite in the two ways that decide what a policy
+// here can be about.
+//
+// It is one-directional, and the direction is outward. The client sends a GET
+// and then says nothing; everything after that is the application talking. So
+// every event is the estate's own output leaving it, which makes this a policy
+// about answers -- as the dhcp kind's whole policy is -- rather than about
+// requests. The one thing a client contributes is `Last-Event-ID` on a
+// reconnection, and that is a resumption token the application uses to decide
+// what history to replay, which is why it has settings of its own below.
+//
+// And it is indistinguishable, in shape, from the thing you would build to
+// move data out quietly: arbitrary text, chunked, flushed per event, held open
+// for hours, on a port that is already open, under a Content-Type a dashboard
+// uses. Nothing here is malformed. What the bounds and the event list do is
+// make the difference between a price feed and a copy of a database something
+// a configuration can state.
+//
+// Every bound is on the response, because there is nothing else; the rate and
+// the totals are per stream.
+type SSEGuard struct {
+	// MaxEventBytes is the largest single reassembled event -- the joined
+	// data, the name and the identifier. Default 1 MiB. An event past it ends
+	// the stream rather than being truncated: half an event delivered as whole
+	// is worse than none.
+	MaxEventBytes int64 `yaml:"max_event_bytes"`
+	// MaxLineBytes is the longest single field line. Default 64 KiB. It is
+	// separate from max_event_bytes because `data` accumulates across lines,
+	// so an event's size and a line's are different questions.
+	MaxLineBytes int64 `yaml:"max_line_bytes"`
+	// MaxFields is how many field lines one event may be built from. Default
+	// 256. A stream that sends ten thousand `data:` lines before its blank
+	// line is not sending an event.
+	MaxFields int `yaml:"max_fields"`
+	// EventsPerSecond bounds the stream's event rate. 0 is no bound. This is
+	// the server's rate, which is unusual for a rate limit in this project
+	// and is the point: an application that has started emitting a thousand
+	// events a second is either broken or being read.
+	EventsPerSecond int `yaml:"events_per_second"`
+	// MaxEvents and MaxStreamBytes are the totals one stream may carry before
+	// it is ended. 0 is no bound. These are the settings that make a stream
+	// finite: an event stream has no length and nothing else in HTTP bounds
+	// it, so without them a single GET is an open-ended channel.
+	MaxEvents      int64 `yaml:"max_events"`
+	MaxStreamBytes int64 `yaml:"max_stream_bytes"`
+	// MaxDuration is how long one stream may be held open. 0 is no bound. A
+	// dashboard that reconnects every hour costs nothing; a stream open for
+	// three weeks is not a dashboard.
+	MaxDuration Duration `yaml:"max_duration"`
+	// IdleTimeout ends a stream that has sent nothing for this long. Comment
+	// lines count as traffic, because that is what they are for -- a keepalive
+	// is the application saying it is still there -- so this bounds a stream
+	// whose application has stopped without closing the socket.
+	IdleTimeout Duration `yaml:"idle_timeout"`
+
+	// AllowEvents and DenyEvents name the events that may cross, by the
+	// `event:` field. An event with no name is `message`, which is what a
+	// client calls it, so that is the name a rule uses.
+	AllowEvents []string `yaml:"allow_events"`
+	DenyEvents  []string `yaml:"deny_events"`
+	// UnknownEvents is allow, observe or deny: what happens to an event whose
+	// name neither list names. The default is deny once allow_events names
+	// any and allow when it names none, because a list of the events a stream
+	// carries that also carries everything else is not a list.
+	UnknownEvents string `yaml:"unknown_events"`
+	// Events is the policy per event name: how large one of them may be, how
+	// often it may arrive, and the shape its data must have. One
+	// max_event_bytes for the stream is the bound of its largest event, which
+	// is the bound that lets every other event be that large too -- this is
+	// where the keepalive and the report get different answers.
+	Events []SSEEventType `yaml:"events"`
+
+	// AllowLastEventID says whether a client's `Last-Event-ID` request header
+	// is forwarded at all. Default true. It is a header worth a setting
+	// because it is the one piece of client-controlled input on this protocol
+	// and it reaches the application as a cursor: an application that replays
+	// from it is being told where to start, and an identifier a client was
+	// never given is a request for history it was not shown.
+	AllowLastEventID *bool `yaml:"allow_last_event_id"`
+	// MaxIDBytes bounds both the `id:` field the server sends and the
+	// `Last-Event-ID` the client sends back. Default 256. They are the same
+	// value making a round trip, so one bound covers both ends.
+	MaxIDBytes int `yaml:"max_id_bytes"`
+	// LastEventIDPattern is an RE2 pattern a client's Last-Event-ID must
+	// match, anchored at both ends. An estate whose identifiers are integers
+	// or ULIDs can say so here, and then the cursor reaching the application
+	// is one of its own shape rather than whatever was sent.
+	LastEventIDPattern string `yaml:"last_event_id_pattern"`
+
+	// MinRetry is a floor on the `retry:` field the server may send. 0 leaves
+	// it alone. The field tells the client how long to wait before
+	// reconnecting, so `retry: 0` from a misconfigured application is a fleet
+	// of browsers reconnecting as fast as they can; a floor rewrites it
+	// rather than refusing the stream, because the stream itself is fine.
+	MinRetry Duration `yaml:"min_retry"`
+
+	// Inspect is none, data or all: which part of an event is kept for
+	// pattern matching. data is the payload, all adds the name and the
+	// identifier. Default data.
+	Inspect string `yaml:"inspect"`
+	// MaxInspectBytes bounds the prefix of an event kept for matching.
+	// Default 64 KiB.
+	MaxInspectBytes int64 `yaml:"max_inspect_bytes"`
+	// DenyPatterns are RE2 patterns matched against the inspected part. On
+	// this protocol they are the control that reads what is leaving rather
+	// than what is arriving, which is the direction an exfiltration channel
+	// runs in.
+	DenyPatterns []string `yaml:"deny_patterns"`
+
+	// Compression says what happens to compression on an event stream. A
+	// compressed stream cannot be read without being inflated, so this is the
+	// setting that decides whether an inspected route is also a compressed
+	// one.
+	//
+	// strip, the default, removes the client's `Accept-Encoding` for this
+	// route so the application sends the stream uncompressed -- which costs
+	// little, because an event stream is small messages flushed one at a time
+	// and compression across them is what a sender has to give up anyway to
+	// keep latency. refuse answers the request instead, for an estate that
+	// would rather a client was told than quietly changed. inspect inflates
+	// each event before the rest of the policy sees it.
+	Compression string `yaml:"compression"`
+	// MaxInflateRatio bounds how far a compressed stream may expand before it
+	// is a bomb rather than a stream. Default 100. Only read with
+	// compression: inspect.
+	MaxInflateRatio int `yaml:"max_inflate_ratio"`
+
+	// AllowComments says whether `:`-prefixed lines are forwarded. Default
+	// true: they are how a stream stays alive through an intermediary that
+	// would time it out, and removing them would make this proxy the reason a
+	// stream dies. A comment carries no event and no data, which is also why
+	// an estate that wants nothing but named events can turn them off.
+	AllowComments *bool `yaml:"allow_comments"`
+
+	// RequireJSON makes an event whose data is not a JSON object a violation
+	// rather than an event the schema policy cannot read. Default false: an
+	// event stream carries whatever the application chose, and plenty of real
+	// ones carry a bare number or a fragment of HTML.
+	RequireJSON *bool `yaml:"require_json"`
+
+	// Action is close or log. Default close. There is no third answer on this
+	// protocol: an event cannot be refused on its own the way a request can,
+	// because the response has already begun and its status line has gone --
+	// so either the stream ends or the event is carried and reported.
+	Action string `yaml:"action"`
+
+	// LogEvents records one line per event. Off by default, because a stream
+	// is thousands of events and the summary at the end of it is what an
+	// operator reads; a route being investigated turns it on.
+	LogEvents bool `yaml:"log_events"`
+	// MonitorOnly reports what it would refuse and carries everything, which
+	// is how an estate finds out what its own streams actually send before a
+	// bound is set.
+	MonitorOnly bool `yaml:"monitor_only"`
+}
+
+// SSEEventType is one kind of event a stream carries: how large it may be, how
+// often it may arrive, and the shape it must have.
+type SSEEventType struct {
+	// Name is the `event:` field this entry is about. `message` names the
+	// events that carry no `event:` field, because that is what a client
+	// calls them.
+	Name string `yaml:"name"`
+	// MaxBytes bounds one event of this name, after inflation where the route
+	// inspects a compressed stream. 0 leaves it to max_event_bytes.
+	MaxBytes int64 `yaml:"max_bytes"`
+	// EventsPerSecond bounds this name's rate. 0 is no bound of its own; the
+	// stream's events_per_second still applies.
+	EventsPerSecond int `yaml:"events_per_second"`
+	// SchemaFile is a JSON Schema (JSON or YAML) every event of this name
+	// must match. It is read at load and on reload, and an event too large to
+	// have been inspected whole cannot be validated and is refused: a check
+	// that silently stops applying above a size the sender chooses is not a
+	// check.
+	SchemaFile string `yaml:"schema_file"`
+}
+
+// Comments reports the effective allow_comments.
+func (s *SSEGuard) Comments() bool { return s == nil || s.AllowComments == nil || *s.AllowComments }
+
+// LastEventID reports the effective allow_last_event_id.
+func (s *SSEGuard) LastEventID() bool {
+	return s == nil || s.AllowLastEventID == nil || *s.AllowLastEventID
+}
+
+// JSONRequired reports the effective require_json.
+func (s *SSEGuard) JSONRequired() bool {
+	return s != nil && s.RequireJSON != nil && *s.RequireJSON
 }

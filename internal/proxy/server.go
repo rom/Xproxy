@@ -158,6 +158,30 @@ type boundListener struct {
 	// rate is the accept rate applied to this listener, the process's
 	// own or this listener's replacement for it.
 	rate *limits.AcceptRate
+	// packets are the datagram sockets of this listener, by the suffix
+	// the kind asked for them under, shared with the generations before
+	// and after this one; fronts are this generation's views of them.
+	// A kind that wants no datagrams has neither.
+	packets map[string]*packetSource
+	fronts  []*packetFront
+}
+
+// stopPackets stops this generation reading its datagram sockets, so the
+// generation taking them over answers everything that arrives from now on.
+// The sockets stay open and writes still work: a reply this generation is
+// composing belongs to a request it accepted.
+func (bl *boundListener) stopPackets() {
+	for _, src := range bl.packets {
+		src.handover(bl.fronts)
+	}
+}
+
+// closePackets closes the datagram sockets themselves, which is the engine's
+// to do when the listener is gone rather than the kind's.
+func (bl *boundListener) closePackets() {
+	for _, src := range bl.packets {
+		src.close()
+	}
 }
 
 // rate is the process's current accept gate.
@@ -807,7 +831,7 @@ func (s *Server) bind(lc config.Listener, activated *activated) (*boundListener,
 			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
 		}
 		acc := newAcceptor(newDatagramListener(pc.LocalAddr()))
-		bl, err := s.buildWith(lc, acc, act, activated, pc)
+		bl, err := s.buildWith(lc, acc, act, activated, pc, nil)
 		if err != nil {
 			acc.close()
 			_ = pc.Close()
@@ -828,7 +852,7 @@ func (s *Server) bind(lc config.Listener, activated *activated) (*boundListener,
 			return nil, fmt.Errorf("listener %s: %w", lc.Name, err)
 		}
 		acc := newAcceptor(ln)
-		bl, err := s.build(lc, acc, act, activated)
+		bl, err := s.build(lc, acc, act, activated, nil)
 		if err == nil {
 			return bl, nil
 		}
@@ -868,14 +892,18 @@ func kernelChosenPort(address string) bool {
 
 // build assembles a listener around an accept socket. On error the
 // resources created here are released; the socket stays with the caller.
-func (s *Server) build(lc config.Listener, acc *acceptor, act bool, activated *activated) (*boundListener, error) {
-	return s.buildWith(lc, acc, act, activated, nil)
+func (s *Server) build(lc config.Listener, acc *acceptor, act bool, activated *activated, prev *boundListener) (*boundListener, error) {
+	return s.buildWith(lc, acc, act, activated, nil, prev)
 }
 
 // buildWith is build with a datagram socket the caller already opened,
 // which the kind's first Packet("") call is handed instead of opening a
 // second one on an address that is already taken.
-func (s *Server) buildWith(lc config.Listener, acc *acceptor, act bool, activated *activated, pre net.PacketConn) (*boundListener, error) {
+// prev is the listener this one is replacing on the same sockets, nil when
+// there is none: its datagram sockets are inherited rather than re-bound,
+// because a UDP socket cannot be bound twice and the retiring generation is
+// still holding it.
+func (s *Server) buildWith(lc config.Listener, acc *acceptor, act bool, activated *activated, pre net.PacketConn, prev *boundListener) (*boundListener, error) {
 	ln := acc.raw
 	fr := acc.newFront()
 	// The rate gate is the inner wrapper, so it decides first: a
@@ -889,7 +917,8 @@ func (s *Server) buildWith(lc config.Listener, acc *acceptor, act bool, activate
 		gate = func() *limits.AcceptRate { return own }
 	}
 	bl := &boundListener{cfg: lc, acc: acc, front: fr,
-		ln: s.connLimiter.Wrap(limits.WrapRate(fr, gate)), activated: act, rate: own}
+		ln: s.connLimiter.Wrap(limits.WrapRate(fr, gate)), activated: act, rate: own,
+		packets: map[string]*packetSource{}}
 	k, linked := kindFor(lc.Kind)
 	if !linked {
 		// The kind is one this project implements and this binary did
@@ -910,21 +939,49 @@ func (s *Server) buildWith(lc config.Listener, acc *acceptor, act bool, activate
 	// and the kind builds its own data plane.
 	su := &Setup{Host: s, Config: lc, Net: bl.ln, Plane: s.planeOrNil(),
 		Packet: func(suffix string) (net.PacketConn, error) {
-			if suffix == "" && pre != nil {
-				pc := pre
+			// A socket the generation this one replaces is holding. It
+			// cannot be bound a second time, and closing it to rebind it
+			// would lose every datagram in between, so it is handed over:
+			// this generation reads it once the other stops.
+			if prev != nil {
+				if src, ok := prev.packets[suffix]; ok {
+					bl.packets[suffix] = src
+					fr := src.front()
+					bl.fronts = append(bl.fronts, fr)
+					return fr, nil
+				}
+			}
+			pc := pre
+			if suffix != "" || pc == nil {
+				name := lc.Name
+				if suffix != "" {
+					name += "-" + suffix
+				}
+				addr := lc.Address
+				if strings.HasSuffix(lc.Address, ":0") {
+					addr = ln.Addr().String()
+				}
+				var err error
+				pc, _, err = packetFor(activated, name, addr)
+				if err != nil {
+					return nil, err
+				}
+			} else {
 				pre = nil
+			}
+			// A socket carrying QUIC is given to the kind as it is: its
+			// connections are state inside the transport that holds it, so
+			// it is never handed to another generation (a reload that
+			// would need that is refused), and wrapping it would cost the
+			// QUIC stack the socket it recognises.
+			if config.ListenerHasQUIC(lc) {
 				return pc, nil
 			}
-			name := lc.Name
-			if suffix != "" {
-				name += "-" + suffix
-			}
-			addr := lc.Address
-			if strings.HasSuffix(lc.Address, ":0") {
-				addr = ln.Addr().String()
-			}
-			pc, _, err := packetFor(activated, name, addr)
-			return pc, err
+			src := newPacketSource(pc)
+			bl.packets[suffix] = src
+			fr := src.front()
+			bl.fronts = append(bl.fronts, fr)
+			return fr, nil
 		}}
 	if k.TLS && lc.TLS != nil {
 		tc, rl, err := s.listenerTLS(lc)
@@ -1101,7 +1158,7 @@ func (s *Server) Reload(cfg *config.Config) error {
 		var bl *boundListener
 		var err error
 		if r.reuse {
-			bl, err = s.build(r.cfg, r.old.acc, r.old.activated, noAct)
+			bl, err = s.build(r.cfg, r.old.acc, r.old.activated, noAct, r.old)
 		} else {
 			bl, err = s.bind(r.cfg, noAct)
 		}
@@ -1166,6 +1223,15 @@ func (s *Server) Reload(cfg *config.Config) error {
 			})
 		}
 	}
+	// Counted here rather than at the end of the reload, because this store
+	// is what makes the new generation visible to the management API: a
+	// counter incremented forty lines further on leaves a window in which
+	// status reports generation N with no reload recorded, and a fleet
+	// controller polling through a reload reads that pair as a daemon that
+	// changed its configuration without being asked. Nothing between here
+	// and the end of the function can fail, so counting first cannot
+	// over-count.
+	s.stats.Reloads.Add(1)
 	s.rt.Store(rt)
 	commitPlane()
 	// Switch the listener set: the new listeners start serving on the new
@@ -1185,6 +1251,16 @@ func (s *Server) Reload(cfg *config.Config) error {
 	s.mu.Lock()
 	s.listeners = set
 	s.mu.Unlock()
+	// The datagram handover, before anything new serves: a datagram is a
+	// whole conversation on these protocols, so from the moment the switch
+	// is made every one that arrives has to be answered by the generation
+	// whose policy decided it. The socket is not closed, so what arrives
+	// during the handover waits in its receive buffer.
+	for _, r := range plan.replace {
+		if r.reuse {
+			r.old.stopPackets()
+		}
+	}
 	for _, f := range fresh {
 		go s.serve(f.bl)
 	}
@@ -1201,7 +1277,6 @@ func (s *Server) Reload(cfg *config.Config) error {
 			node.AttachBans(banStore(newBans))
 		}
 	}
-	s.stats.Reloads.Add(1)
 	// The old generation stops probing at once: its health state is no
 	// longer consulted. Its pools stay open until the data plane reports
 	// that the last request compiled against it has finished — a pool
@@ -1304,10 +1379,16 @@ func (s *Server) planListeners(next []config.Listener) (*listenerPlan, error) {
 		p.replace = append(p.replace, listenerReplace{old: match, cfg: lc, reuse: true})
 	}
 	for _, r := range p.replace {
-		// The UDP socket of the old listener (h3, quic relay, dns) stays
-		// bound until it drains, so the new one cannot bind the same port.
-		if r.reuse && config.ListenerHasUDP(r.old.cfg) {
-			return nil, fmt.Errorf("reload: listener %s changed on the same address and has a UDP socket (h3, quic or dns); restart required", r.old.cfg.Name)
+		// A plain datagram socket is handed from the retiring generation
+		// to the new one, so a change on the same address is an ordinary
+		// rebuild. A socket carrying QUIC is not: its connections are
+		// cryptographic state inside the transport holding the socket, and
+		// a handover would end every one of them. That is the dropped
+		// connection this refusal exists to avoid.
+		if r.reuse && config.ListenerHasQUIC(r.old.cfg) {
+			return nil, fmt.Errorf("reload: listener %s carries QUIC (h3, tcp.quic or dns.doq) and changed on the same address: "+
+				"its connections are state inside the socket's transport and handing the socket to a new generation would end "+
+				"all of them; restart required", r.old.cfg.Name)
 		}
 	}
 	for _, bl := range s.listeners {
@@ -1372,6 +1453,10 @@ func (s *Server) stopListener(ctx context.Context, bl *boundListener, closeSocke
 	}
 	if closeSocket {
 		bl.acc.close()
+		// The datagram sockets go with it: the kind closed its fronts,
+		// which by design leave the socket open for the next generation,
+		// and here there is none.
+		bl.closePackets()
 	}
 }
 
@@ -1506,6 +1591,7 @@ func accessPolicy(a *config.Access) access.Policy {
 	p := access.Policy{
 		MaxDuration:  a.MaxDuration.D(),
 		MaxLead:      a.MaxLead.D(),
+		MaxWorkOrder: a.MaxWorkOrder.D(),
 		MaxUses:      a.MaxUses,
 		MaxOpen:      a.MaxOpen,
 		SelfApproval: a.SelfApproval,

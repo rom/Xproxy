@@ -74,7 +74,7 @@ type server struct {
 	limiter   *limits.KeyedLimiter
 	anomaly   *anomaly.Detector
 	// engineering recognises the plant's own tooling -- UMAS, the diagnostic
-	// sub-functions -- and ties it to an approved work order.
+	// sub-functions -- and ties it to an approved grant.
 	engineering *engineering.Guard
 
 	open atomic.Int64
@@ -543,7 +543,7 @@ func (se *session) run() string {
 		// which is the opposite of what it is for.
 		// Engineering: a UMAS program transfer, a CPU stop, a cleared event
 		// log. Reported whatever the policy said, and refused where this
-		// listener requires an approved work order for it.
+		// listener requires an approved grant for it.
 		if reason := t.decideEngineering(se, req); reason != "" {
 			switch t.m.DenyResponse {
 			case "drop":
@@ -1003,7 +1003,8 @@ func (t *server) admitClient(ip netip.Addr) string {
 			h.Counters().WouldRefuse("modbus", reason)
 			h.Shadow().Record("modbus", t.cfg.Name, reason, rule, detail)
 		},
-		Deny: func(reason, _, detail string) { t.deny(ip, reason, detail) },
+		Deny:       func(reason, _, detail string) { t.deny(ip, reason, detail) },
+		Quarantine: func(reason, _, detail string) { t.quarantine(ip, reason, detail) },
 	})
 }
 
@@ -1057,6 +1058,21 @@ func (t *server) deny(ip netip.Addr, what, detail string) {
 	if bl := t.host.Bans(); bl != nil && ip.IsValid() {
 		bl.Observe(ip, "modbus_denied")
 	}
+}
+
+// quarantine reports the bounded refusal without turning it into evidence for
+// the independent automatic-ban ladder.
+func (t *server) quarantine(ip netip.Addr, what, detail string) {
+	t.host.Counters().ModbusRefused.Add(1)
+	t.host.Counters().Refuse("modbus", what)
+	if !t.m.Alerts() {
+		return
+	}
+	attrs := []any{"listener", t.cfg.Name, "client_ip", ip.String(), "proto", "modbus"}
+	if detail != "" {
+		attrs = append(attrs, "detail", detail)
+	}
+	t.host.Logs().SecurityEvent(context.Background(), "deny", "modbus_"+what, attrs...)
 }
 
 // alert records something worth telling an operator about that is not a refusal:

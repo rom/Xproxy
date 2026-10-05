@@ -148,7 +148,7 @@ on this kind, and the other four models carry it.
 Four of BACnet's confirmed services are engineering rather than operation. The
 `engineering` block — [documented once in docs/CONFIG.md](../CONFIG.md#engineering),
 the same on every OT kind — reads them as their own class of event, and can hold
-them to an approved work order out of the [access ledger](../CONFIG.md#access).
+them to an approved grant out of the [access ledger](../CONFIG.md#access).
 
 | Service | Class | Why |
 |---------|-------|-----|
@@ -166,7 +166,7 @@ controller that has been told to stop communicating is a controller the head end
 cannot see, and the head end's operator finds out from the alarm that never
 arrives. Both carry a password field on the wire, which is the device's own
 protection and is worth exactly what the device's default password is worth —
-the work order is the term that does not depend on it.
+the grant is the term that does not depend on it.
 
 ## What it does not do
 

@@ -121,7 +121,8 @@ const operator = () => me && me.role === 'operator';
 
 // ---- views ----
 views.overview = { refresh: 5000, async render() {
-  const st = await get('/api/status'); const s = st.stats;
+  const [st, inv] = await Promise.all([get('/api/status'), get('/api/listeners').catch(() => null)]);
+  const s = st.stats;
   const denied = s.denied_acl + s.denied_rate_limit + s.tarpitted + s.denied_concurrency + s.denied_body_size + s.denied_uri_length + s.denied_no_route + s.denied_websocket + s.denied_bad_host + s.denied_ban + s.denied_waf + s.denied_jwt + s.denied_icap;
   const stats = [
     ['Version', st.version], ['Uptime', fmtDur(s.uptime_seconds)], ['Generation', st.generation], ['Routes / upstreams', st.routes + ' / ' + st.upstreams],
@@ -137,7 +138,9 @@ views.overview = { refresh: 5000, async render() {
   view.append(
     h('div', { class: 'grid' }, stats.map(([k, v]) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k), h('div', { class: 'v' }, v)))),
     h('div', { class: 'card mt' }, h('h2', null, 'Listeners'),
-      table(['Name', 'Address'], Object.entries(st.listeners).map(([k, v]) => [k, v]))),
+      inv && inv.listeners ? listenerTable(inv.listeners)
+        : table(['Name', 'Address'], Object.entries(st.listeners).map(([k, v]) => [k, v])),
+      inv ? h('p', { class: 'muted mt-s' }, h('a', { href: '#listeners' }, 'every protocol, mode and guard')) : null),
     h('div', { class: 'card' }, h('h2', null, 'Denials by reason'),
       denies.length ? table(['Reason', { label: 'Count', num: true }], denies.map(([k, v]) => [k.replace('denied_', ''), fmtNum(v)])) : h('p', { class: 'muted' }, 'none')),
     operator() ? h('div', { class: 'card' }, h('h2', null, 'Actions'), h('div', { class: 'row' },
@@ -156,6 +159,491 @@ function actionButton(label, path, cls, confirmText) {
   });
   return b;
 }
+
+// ---- listeners: every protocol, its mode and its guards ----
+//
+// The mode is the field this page exists for. A listener an operator
+// believes is enforcing and is not is worse than no listener at all, so
+// anything but "enforce" is coloured and spelled out rather than left as
+// one word in a column of twenty rows.
+function modePill(mode) {
+  const cls = mode === 'enforce' ? 'ok' : 'warn';
+  return h('span', { class: 'pill ' + cls, title: mode === 'enforce' ? 'the policy is enforced'
+    : mode === 'shadow' ? 'the policy is evaluated and nothing is refused for it'
+    : 'the kind is in monitor_only: it reads and reports, and refuses nothing' }, mode);
+}
+
+// guardPills names the guards that are on, and says so when a protocol
+// has guards and none of them is on: an empty cell reads as "nothing to
+// report", which is the opposite of the finding.
+function guardPills(features) {
+  if (!features || !features.length) return h('span', { class: 'muted' }, '-');
+  const on = features.filter(f => f.enabled);
+  if (!on.length) return h('span', { class: 'warn', title: features.map(f => f.name).join(', ') + ' are available here' }, 'none of ' + features.length);
+  return h('span', null, on.map(f => h('span', { class: 'pill', title: f.mode ? f.name + ': ' + f.mode : f.name },
+    f.mode ? f.name + ' ' + f.mode : f.name)));
+}
+
+function listenerTable(ls) {
+  return table(['Listener', 'Kind', 'Address', 'Mode', 'TLS', 'Guards'], ls.map(l => [
+    l.bound ? l.name : h('span', { class: 'bad', title: 'configured but not holding a socket' }, l.name),
+    l.kind, h('span', { class: 'wrap' }, addressOf(l)), modePill(l.mode),
+    l.tls ? 'yes' : h('span', { class: 'muted' }, 'no'), guardPills(l.features),
+  ]));
+}
+
+// addressOf is the accept socket plus the further ports a kind took --
+// an HTTP/3 endpoint, a datagram port beside a stream one -- because a
+// page that showed one of two ports would be answering "what is open"
+// wrongly.
+function addressOf(l) {
+  const extra = Object.entries(l.extra_addresses || {}).sort();
+  if (!extra.length) return l.address;
+  return l.address + ' (' + extra.map(([k, v]) => k + ' ' + v).join(', ') + ')';
+}
+
+views.listeners = { refresh: 10000, async render() {
+  const [inv, stats] = await Promise.all([get('/api/listeners'), get('/api/stats').catch(() => null)]);
+  const ls = inv.listeners || [];
+  const kinds = inv.kinds || [];
+  clear(view);
+  view.append(h('div', { class: 'grid' }, [
+    ['Listeners', ls.length], ['Protocols', kinds.length],
+    ['Enforcing', ls.length ? inv.enforcing + ' of ' + ls.length : '-'],
+    ['Shadow mode', inv.shadowing || 0], ['Monitor only', inv.monitoring || 0],
+    ['Daemon', (inv.daemon || '-') + (inv.role ? ' (' + inv.role + ')' : '')],
+    ['Generation', inv.generation],
+  ].map(([k, v]) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k),
+    h('div', { class: k === 'Shadow mode' && inv.shadowing ? 'v warn' : 'v' }, v)))));
+
+  if (inv.shadowing || inv.monitoring) {
+    view.append(h('div', { class: 'card mt' }, h('h2', null, 'Not enforcing'),
+      h('p', null, 'These listeners evaluate their policy and refuse nothing for it. ',
+        'A malformed message, a failed authentication, a ban, a rate limit and a bound are still refused; ',
+        'the policy decisions are recorded instead. ',
+        h('a', { href: '#policy' }, 'What they would have refused')),
+      listenerTable(ls.filter(l => l.mode !== 'enforce'))));
+  }
+
+  view.append(h('div', { class: 'card mt' }, h('h2', null, 'Every listener'),
+    ls.length ? listenerTable(ls) : h('p', { class: 'muted' }, 'no listeners')));
+
+  view.append(h('div', { class: 'card' }, h('h2', null, 'Decisions by protocol'),
+    kinds.length ? table(['Kind', 'Daemon', { label: 'Listeners', num: true }, { label: 'Refused', num: true }, { label: 'Would refuse', num: true }],
+      kinds.map(k => [k.kind, k.daemon, k.listeners, fmtNum(k.refused),
+        k.would_refuse ? h('span', { class: 'warn' }, fmtNum(k.would_refuse)) : fmtNum(k.would_refuse)]))
+      : h('p', { class: 'muted' }, 'none'),
+    h('p', { class: 'muted mt-s' }, 'Refusals are counted per protocol, not per listener, so listeners of one kind share a row. Refused and would refuse are two tables and are never added together.')));
+
+  for (const k of kinds) {
+    const rows = (k.reasons || []).map(r => ['refused', r.reason, fmtNum(r.count)])
+      .concat((k.shadow_reasons || []).map(r => ['would refuse', r.reason, fmtNum(r.count)]));
+    if (!rows.length) continue;
+    view.append(h('div', { class: 'card' }, h('h2', null, k.kind + ': why'),
+      table(['Decision', 'Reason', { label: 'Count', num: true }], rows)));
+  }
+
+  const tech = stats && stats.techniques ? Object.entries(stats.techniques).sort((a, b) => b[1] - a[1]) : [];
+  if (tech.length) {
+    view.append(h('div', { class: 'card' }, h('h2', null, 'What the refusals meant (MITRE ATT&CK)'),
+      table(['Technique', { label: 'Refusals', num: true }], tech.map(([id, n]) => [id, fmtNum(n)])),
+      h('p', { class: 'muted mt-s' }, 'Counted on the enforced path only: a listener in shadow mode did not detect a technique, it decided not to act on one.')));
+  }
+}};
+
+// ---- policy: what the listeners in shadow mode would have refused ----
+//
+// This is the page a new policy is introduced through: put the listener in
+// shadow mode, run a week of real traffic, read what would have broken,
+// then enforce. Which makes the "would have refused" table the safest
+// thing in the product and the most misread: nothing here was refused.
+views.policy = { refresh: 15000, async render() {
+  const rep = await get('/api/policy');
+  const st = rep.status || {};
+  const entries = rep.entries || [];
+  clear(view);
+  view.append(h('div', { class: 'grid' }, [
+    ['Distinct decisions', st.entries || 0], ['Recorded', fmtNum(st.recorded || 0)],
+    ['Dropped by the bound', st.dropped || 0], ['Ledger', st.full ? 'full' : 'has room'],
+  ].map(([k, v]) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k), h('div', { class: 'v' }, v)))));
+  if (st.full) {
+    view.append(h('div', { class: 'card mt' }, h('h2', { class: 'warn' }, 'The report is not complete'),
+      h('p', null, 'The ledger is at its bound, so decisions after it were not recorded. Raise policy.max_reasons, or empty the ledger once the ones here are dealt with.')));
+  }
+  view.append(h('div', { class: 'card mt' }, h('h2', null, 'Would have been refused'),
+    entries.length ? table(['Kind', 'Listener', 'Reason', 'Rule', { label: 'Count', num: true }, 'First', 'Last', 'Example'],
+      entries.map(e => [e.kind, e.listener, e.reason, e.rule || '-', fmtNum(e.count), fmtTime(e.first), fmtTime(e.last),
+        h('code', { class: 'wrap' }, e.sample || '')]))
+      : h('p', { class: 'muted' }, 'nothing: either no listener is in shadow mode, or none of them has seen anything its policy would refuse'),
+    h('p', { class: 'muted mt-s' }, 'Nothing in this table was refused. The example came off the network and is shown clipped. ',
+      h('a', { href: '#listeners' }, 'Which listeners are in shadow mode')),
+    operator() ? h('div', { class: 'row mt-s' }, actionButton('Empty the ledger', '/api/policy/reset', 'secondary',
+      'Empty the shadow policy ledger? Do this after fixing a policy, so the next report is about the new one.')) : null));
+}};
+
+// ---- alarms: everything that is asking for attention, on one page ----
+//
+// Every fact here was already reachable, in eleven different places. An
+// operator who has to visit eleven pages to find out whether anything is
+// wrong visits none of them, so this page asks all of them and prints only
+// what is not normal. An empty page is the good answer and says so.
+//
+// What it does not do is invent a severity. `bad` is "something is not
+// working or not protected"; `warn` is "this will need attention"; `info`
+// is a state somebody chose and may have forgotten about -- maintenance
+// mode, a drain, a listener in shadow mode. A page that painted a chosen
+// state red would be crying wolf at its own operator.
+function alarm(level, what, detail, where) {
+  return { level, what, detail, where };
+}
+
+async function gatherAlarms() {
+  const names = ['status', 'listeners', 'policy', 'tls-expiring', 'advisories', 'packs',
+    'maintenance', 'degradation', 'drain', 'cluster', 'assets', 'sandbox'];
+  const got = await Promise.all(names.map(n => get('/api/' + n).then(d => d).catch(() => null)));
+  const d = {};
+  names.forEach((n, i) => { d[n] = got[i]; });
+  const out = [];
+
+  const st = d.status;
+  if (st && st.stats) {
+    const s = st.stats;
+    if (s.reload_failures) out.push(alarm('bad', 'A reload failed', s.reload_failures + ' failure(s) since start; the running configuration is the last one that validated', '#history'));
+    if (s.log_syslog_dropped || s.log_journald_dropped) out.push(alarm('bad', 'Log records were dropped', 'syslog ' + s.log_syslog_dropped + ', journald ' + s.log_journald_dropped + ' -- the record of what happened is incomplete', '#logs'));
+    if (s.refusals_untracked) out.push(alarm('warn', 'Refusals counted under no protocol', s.refusals_untracked + ' -- a reason table is full or a kind is not in the roster; the refusal happened, the label did not', '#listeners'));
+    if (s.shedding_classes && s.shedding_classes.length) out.push(alarm('warn', 'Load shedding', 'shedding ' + s.shedding_classes.join(', ') + ' at load ' + s.load_level.toFixed(2), '#graphs'));
+    if (s.upstream_errors || s.upstream_timeouts) out.push(alarm('info', 'Upstream errors', fmtNum(s.upstream_errors) + ' errors, ' + fmtNum(s.upstream_timeouts) + ' timeouts since start', '#upstreams'));
+  }
+  const sb = d.sandbox;
+  if (sb && sb.enabled) {
+    for (const m of sb.mechanisms || []) {
+      if (m.state === 'unavailable' || m.state === 'failed') {
+        out.push(alarm('bad', 'Hardening not in force: ' + m.name, m.state + (m.detail ? ' -- ' + m.detail : ''), '#subsystems'));
+      }
+    }
+  } else if (sb && sb.platform && !sb.enabled) {
+    out.push(alarm('warn', 'In-process hardening is disabled', 'no sandbox section, or sandbox.enabled: false', '#subsystems'));
+  }
+
+  const inv = d.listeners;
+  if (inv) {
+    const quiet = (inv.listeners || []).filter(l => l.mode !== 'enforce');
+    if (quiet.length) out.push(alarm('info', quiet.length + ' listener(s) are not enforcing', quiet.map(l => l.name + ' (' + l.kind + ', ' + l.mode + ')').join(', '), '#listeners'));
+    const unbound = (inv.listeners || []).filter(l => !l.bound);
+    if (unbound.length) out.push(alarm('bad', unbound.length + ' listener(s) are configured and not listening', unbound.map(l => l.name + ' (' + l.kind + ')').join(', '), '#listeners'));
+  }
+  if (d.policy && d.policy.status && d.policy.status.full) {
+    out.push(alarm('warn', 'The shadow policy ledger is full', 'decisions after the bound were not recorded, so the report is incomplete', '#policy'));
+  }
+
+  const exp = d['tls-expiring'];
+  if (exp) {
+    for (const ln of Object.keys(exp).sort()) {
+      out.push(alarm('bad', 'Certificates expiring or expired on ' + ln, (exp[ln] || []).join(', '), '#certificates'));
+    }
+  }
+
+  const adv = d.advisories;
+  if (adv && adv.assessments) {
+    const hit = adv.assessments.filter(a => a.state === 'affected');
+    if (hit.length) {
+      out.push(alarm('bad', hit.length + ' device(s) match a published advisory',
+        hit.slice(0, 8).map(a => a.asset + ' (' + [a.vendor, a.product, a.firmware].filter(Boolean).join(' ') + (a.worst_severity ? ', ' + a.worst_severity : '') + ')').join('; ')
+        + (hit.length > 8 ? ' and ' + (hit.length - 8) + ' more' : ''), '#plant'));
+    }
+  }
+
+  const packs = d.packs;
+  if (packs && packs.status) {
+    const ps = packs.status;
+    if (ps.quarantined) out.push(alarm('bad', ps.quarantined + ' actor(s) are quarantined by a behaviour pack', 'they are refused on every listener the pack covers until the quarantine lapses or an operator lifts it', '#plant'));
+    if (ps.evicted || ps.quarantines_refused) out.push(alarm('warn', 'A behaviour pack bound was reached', (ps.evicted || 0) + ' actor(s) evicted, ' + (ps.quarantines_refused || 0) + ' quarantine(s) not taken; raise packs.max_actors or packs.max_quarantined', '#plant'));
+    const unsigned = (packs.packs || []).filter(p => !p.signer);
+    if (unsigned.length) out.push(alarm('warn', unsigned.length + ' pack(s) are loaded unsigned', unsigned.map(p => p.id).join(', ') + ' -- a detection nobody signed', '#plant'));
+  }
+
+  if (d.maintenance && d.maintenance.on) out.push(alarm('info', 'Maintenance mode is on', 'every request but the allowlist is held behind a 503', '#overview'));
+  const deg = d.degradation;
+  if (Array.isArray(deg)) {
+    const applied = deg.filter(x => x.applied);
+    if (applied.length) out.push(alarm('info', 'Graduated degradation has applied', applied.map(x => x.name + ' ' + fmtNum(x.applied) + '×').join(', '), '#security'));
+  }
+  const dr = d.drain;
+  if (dr) {
+    const pools = Object.keys(dr.pools || {}).filter(k => dr.pools[k]);
+    const eps = [];
+    for (const p of Object.keys(dr.endpoints || {})) {
+      for (const e of Object.keys(dr.endpoints[p] || {})) if (dr.endpoints[p][e]) eps.push(p + '/' + e);
+    }
+    if (pools.length || eps.length) out.push(alarm('info', 'Taken out of rotation by an operator', pools.concat(eps).join(', ') + ' -- a drain survives a reload, so it stays until somebody undoes it', '#upstreams'));
+  }
+  const cl = d.cluster;
+  if (cl && (cl.peers || []).length) {
+    const down = cl.peers.filter(p => !p.connected);
+    if (down.length) out.push(alarm('warn', down.length + ' cluster peer(s) are down', down.map(p => p.address + (p.last_error ? ' (' + p.last_error + ')' : '')).join(', '), '#cluster'));
+  }
+  const as = d.assets && d.assets.summary;
+  if (as) {
+    if (as.frozen && as.new) out.push(alarm('warn', as.new + ' device(s) are not in the baseline', 'the estate was declared complete and these appeared after it', '#plant'));
+    if (as.dropped || as.refused) out.push(alarm('warn', 'The device inventory reached a bound', (as.dropped || 0) + ' dropped, ' + (as.refused || 0) + ' refused -- raise assets.max_assets', '#plant'));
+  }
+  const rank = { bad: 0, warn: 1, info: 2 };
+  out.sort((a, b) => rank[a.level] - rank[b.level]);
+  return out;
+}
+
+views.alarms = { refresh: 15000, async render() {
+  const rows = await gatherAlarms();
+  clear(view);
+  const counts = { bad: 0, warn: 0, info: 0 };
+  for (const r of rows) counts[r.level]++;
+  view.append(h('div', { class: 'grid' }, [
+    ['Not working or not protected', counts.bad], ['Will need attention', counts.warn],
+    ['States somebody chose', counts.info],
+  ].map(([k, v], i) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k),
+    h('div', { class: v ? ['v bad', 'v warn', 'v'][i] : 'v' }, v)))));
+  if (!rows.length) {
+    view.append(h('div', { class: 'card mt' }, h('h2', { class: 'ok' }, 'Nothing is asking for attention'),
+      h('p', { class: 'muted' }, 'Every listener is enforcing and listening, the hardening is in force, no certificate is near expiry, no device matches an advisory, nothing is quarantined, no bound has been reached and nothing is drained or in maintenance.')));
+    return;
+  }
+  view.append(h('div', { class: 'card mt' }, h('h2', null, 'Asking for attention'),
+    table(['', 'What', 'Detail', ''], rows.map(r => [
+      h('span', { class: 'pill ' + (r.level === 'info' ? 'muted' : r.level) },
+        r.level === 'bad' ? 'problem' : r.level === 'warn' ? 'warning' : 'chosen'),
+      r.what, h('span', { class: 'wrap' }, r.detail), h('a', { href: r.where }, 'look'),
+    ]))));
+}};
+
+// ---- plant: the OT half, which is a different estate with different questions ----
+// ---- work orders ----
+//
+// A work order is the change reference somebody filed against a device. It is
+// *not* a grant: nobody approves it and it permits nothing. What it changes is
+// how the engineering on that device is reported while it is open -- expected
+// work rather than work nobody wrote down.
+//
+// The page says so in as many words, above the form. The mistake worth
+// preventing is an operator filing one and believing the download is now
+// approved, and a form that only said "work order" would invite exactly that.
+function workOrderForm(refresh) {
+  const ref = h('input', { id: 'wo-ref', placeholder: 'WO-2026-0481', size: 18, required: '' });
+  const device = h('input', { id: 'wo-device', placeholder: 'device: pool, address or asset', size: 26, required: '' });
+  const listener = h('input', { id: 'wo-listener', placeholder: 'listener (any)', size: 14 });
+  const duration = h('input', { id: 'wo-duration', placeholder: '8h', size: 6, required: '' });
+  const note = h('input', { id: 'wo-note', placeholder: 'what the work is', size: 34 });
+  const file = h('button', null, 'File work order');
+  const form = h('form', { class: 'row tight' }, ref, device, listener, duration, note, file);
+  form.addEventListener('submit', async ev => {
+    ev.preventDefault();
+    file.disabled = true;
+    try {
+      const v = await post('/api/workorders', {
+        reference: ref.value, device: device.value, listener: listener.value,
+        duration: duration.value, note: note.value,
+      });
+      flash('work order ' + v.reference + ' on file for ' + v.device + ' (' + v.state + '); it permits nothing', 'ok');
+      ref.value = ''; device.value = ''; listener.value = ''; note.value = '';
+      await refresh();
+    } catch (e) { flash(e.message, 'bad'); }
+    file.disabled = false;
+  });
+  return h('div', null,
+    h('p', { class: 'muted' }, 'Filing a work order ',
+      h('strong', null, 'permits nothing'),
+      '. A listener with engineering restrictions still refuses an operation with no approved grant. ',
+      'What this changes is the tone: engineering on that device while the work order is open is reported as ',
+      'expected work, with the reference on the event, instead of as work nobody filed.'),
+    form);
+}
+
+function workOrderTable(orders, refresh) {
+  return table(['Reference', 'Device', 'Listener', 'State', 'From', 'Until', 'Filed by', 'Work', ''],
+    orders.map(o => [
+      o.reference, o.device, o.listener || h('span', { class: 'muted' }, 'any'),
+      h('span', { class: o.state === 'open' ? 'ok' : o.state === 'scheduled' ? 'warn' : 'muted' }, o.state),
+      fmtTime(o.not_before), fmtTime(o.expires), o.by, h('span', { class: 'wrap' }, o.note || ''),
+      o.state === 'open' || o.state === 'scheduled' ? closeOrderButton(o, refresh) : (o.closed ? h('span', { class: 'muted' }, 'closed by ' + o.closed.by) : ''),
+    ]));
+}
+
+function closeOrderButton(o, refresh) {
+  if (!operator()) return '';
+  const b = h('button', { class: 'secondary' }, 'Close');
+  b.addEventListener('click', async () => {
+    if (!confirm('Close work order ' + o.reference + '? Engineering on ' + o.device + ' is unfiled again from now on.')) return;
+    b.disabled = true;
+    try { await api('DELETE', '/api/workorders?reference=' + encodeURIComponent(o.reference)); flash('closed ' + o.reference, 'ok'); await refresh(); }
+    catch (e) { flash(e.message, 'bad'); b.disabled = false; }
+  });
+  return b;
+}
+
+views.plant = { refresh: 15000, async render() {
+  const [packs, access, assets, adv, orders] = await Promise.all([
+    get('/api/packs').catch(e => ({ e })), get('/api/access').catch(e => ({ e })),
+    get('/api/assets').catch(e => ({ e })), get('/api/advisories').catch(e => ({ e })),
+    get('/api/workorders').catch(e => ({ e }))]);
+  clear(view);
+
+  const wcard = h('div', { class: 'card' }, h('h2', null, 'Work orders'));
+  if (orders.e) wcard.append(h('p', { class: 'muted' }, 'no access ledger, so there is nowhere to file one (' + orders.e.message + ')'));
+  else {
+    const list = orders.work_orders || [];
+    wcard.append(h('div', { class: 'grid' }, [
+      ['On file', list.length], ['Open now', orders.open || 0],
+    ].map(([k, v]) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k), h('div', { class: 'v' }, v)))),
+      operator() ? workOrderForm(() => views.plant.render()) : h('p', { class: 'muted' }, 'filing a work order needs the operator role'),
+      list.length ? workOrderTable(list, () => views.plant.render()) : h('p', { class: 'muted mt-s' }, 'none on file'));
+  }
+  view.append(wcard);
+
+  const pcard = h('div', { class: 'card' }, h('h2', null, 'Behaviour packs'));
+  if (packs.e) pcard.append(h('p', { class: 'muted' }, 'not configured (' + packs.e.message + ')'));
+  else {
+    const ps = packs.status || {};
+    pcard.append(h('div', { class: 'grid' }, [
+      ['Packs', ps.packs || 0], ['Mode', ps.enforcing ? 'enforcing' : 'alert only'],
+      ['Actors tracked', ps.actors || 0], ['Quarantined', ps.quarantined || 0],
+    ].map(([k, v]) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k), h('div', { class: 'v' }, v)))),
+      table(['Pack', { label: 'Rev', num: true }, 'Technique', 'Severity', 'May', 'Protocols', { label: 'Findings', num: true }, 'Signer'],
+        (packs.packs || []).map(p => [p.id, p.revision, p.technique + (p.tactic ? ' (' + p.matrix + ', ' + p.tactic + ')' : ''),
+          h('span', { class: p.severity === 'critical' || p.severity === 'high' ? 'bad' : p.severity === 'medium' ? 'warn' : 'muted' }, p.severity),
+          p.enforcement, (p.kinds || []).join(' '), fmtNum(p.matches),
+          p.signer ? p.signer : h('span', { class: 'warn' }, 'unsigned')])),
+      h('p', { class: 'muted mt-s' }, 'A pack is signed data, not code and not configuration: the directory and the keys are in the configuration, and nothing here can add a detection nobody signed.'));
+  }
+  view.append(pcard);
+
+  const acard = h('div', { class: 'card' }, h('h2', null, 'Just-in-time access'));
+  if (access.e) acard.append(h('p', { class: 'muted' }, 'not configured (' + access.e.message + ')'));
+  else {
+    const as = access.stats || {};
+    acard.append(h('div', { class: 'grid' }, [
+      ['Requested', fmtNum(as.requests || 0)], ['Approved', fmtNum(as.approvals || 0)],
+      ['Denied', fmtNum(as.denials || 0)], ['Revoked', fmtNum(as.revocations || 0)],
+      ['Sessions opened', fmtNum(as.uses || 0)], ['Engineering operations', fmtNum(as.engineering || 0)],
+    ].map(([k, v]) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k), h('div', { class: 'v' }, v)))),
+      table(['State', 'Subject', 'Listener', 'Target', 'Reason', 'Asked by', 'Window', { label: 'Uses', num: true }, 'Approvals'],
+        (access.grants || []).map(g => [
+          h('span', { class: g.state === 'active' ? 'ok' : g.state === 'pending' ? 'warn' : 'muted' }, g.state),
+          g.subject, g.listener, g.target, h('span', { class: 'wrap' }, g.reason), g.by,
+          fmtTime(g.not_before) + ' to ' + fmtTime(g.expires),
+          g.max_uses ? (g.uses || 0) + ' / ' + g.max_uses : (g.uses || 0),
+          (g.approvals || []).map(a => a.by).join(', ') + ' of ' + g.need_approvals])),
+      h('p', { class: 'muted mt-s' }, 'A grant is four-eyes approved, time-boxed and can refuse. Engineering operations are reported whether or not a grant was open; the ones outside every window are the finding.'));
+  }
+  view.append(acard);
+
+  const icard = h('div', { class: 'card' }, h('h2', null, 'Device inventory'));
+  if (assets.e) icard.append(h('p', { class: 'muted' }, 'not configured (' + assets.e.message + ')'));
+  else {
+    const s = assets.summary || {};
+    icard.append(h('div', { class: 'grid' }, [
+      ['Devices', s.assets || 0], ['New', s.new || 0], ['Unclassified', s.unknown || 0],
+      ['Baseline', s.baseline_frozen ? 'frozen at ' + s.baseline_size : 'not frozen'],
+      ['Findings', fmtNum(s.findings || 0)],
+    ].map(([k, v]) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k), h('div', { class: 'v' }, v)))),
+      table(['Device', 'Addresses', 'Role', 'Vendor', 'Model', 'Firmware', 'Protocols', 'Last seen'],
+        (assets.assets || []).map(a => [
+          a.new ? h('span', { class: 'warn', title: 'not in the baseline' }, a.id) : a.id,
+          (a.addresses || []).join(' '), (a.classification || {}).role || '-',
+          a.vendor || a.maker || '-', a.model || '-', a.firmware || '-',
+          Object.keys(a.protocols || {}).sort().join(' '), fmtTime(a.last_seen)])),
+      assets.matched > (assets.assets || []).length
+        ? h('p', { class: 'muted mt-s' }, 'showing ' + assets.assets.length + ' of ' + assets.matched) : null);
+  }
+  view.append(icard);
+
+  const vcard = h('div', { class: 'card' }, h('h2', null, 'Published advisories against what is out there'));
+  if (adv.e) vcard.append(h('p', { class: 'muted' }, 'not configured (' + adv.e.message + ')'));
+  else {
+    const c = adv.counts || {};
+    vcard.append(h('div', { class: 'grid' }, [
+      ['Documents', c.documents || 0], ['Product records', c.records || 0],
+      ['Assessed', fmtNum(c.assessments || 0)], ['Affected', fmtNum(c.affected || 0)],
+      ['Loaded', fmtTime(c.loaded)],
+    ].map(([k, v]) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k), h('div', { class: 'v' }, v)))),
+      table(['Device', 'Vendor', 'Product', 'Firmware', 'State', 'Worst', { label: 'Advisories', num: true }, 'Why'],
+        (adv.assessments || []).map(a => [a.asset, a.vendor || '-', a.product || '-', a.firmware || '-',
+          h('span', { class: a.state === 'affected' ? 'bad' : a.state === 'unknown' ? 'warn' : 'ok' }, a.state),
+          a.worst_severity ? a.worst_severity + (a.worst_score ? ' ' + a.worst_score : '') : '-',
+          a.total || (a.advisories || []).length, h('span', { class: 'wrap' }, a.reason || '')])));
+  }
+  view.append(vcard);
+}};
+
+// ---- sessions: the ones being served now, not the recordings on disk ----
+views.sessions = { refresh: 5000, async render() {
+  const ss = await get('/api/sessions');
+  clear(view);
+  const rows = ss || [];
+  const byKind = {};
+  for (const s of rows) byKind[s.kind] = (byKind[s.kind] || 0) + 1;
+  view.append(h('div', { class: 'grid' }, [['Live sessions', rows.length]]
+    .concat(Object.keys(byKind).sort().map(k => [k, byKind[k]]))
+    .map(([k, v]) => h('div', { class: 'stat' }, h('div', { class: 'k' }, k), h('div', { class: 'v' }, v)))));
+  view.append(h('div', { class: 'card mt' }, h('h2', null, 'Being served now'),
+    rows.length ? table(['Kind', 'Listener', 'Client', 'Login', 'Target', 'Detail', 'Started', { label: 'Duration', num: true }],
+      rows.map(s => [s.kind, s.listener, s.client, s.user || '-', s.target || '-',
+        h('span', { class: 'wrap' }, s.detail || ''), fmtTime(s.started), fmtDur(s.duration_ms / 1000)]))
+      : h('p', { class: 'muted' }, 'none'),
+    h('p', { class: 'muted mt-s' }, 'Closing a session is an operation on the estate and is audited, so it is `xproxyctl sessions -kill ID`. These are the live ones; the recordings on disk are `xproxyctl session`.')));
+}};
+
+// ---- security: the guards that are not the WAF and not a protocol's own ----
+const securityPages = [
+  ['Virtual patches', '/api/patches', d => (d || []).length
+    ? table(['Patch', 'Action', { label: 'Status', num: true }, 'State', 'Expires', { label: 'Hits', num: true }, 'Last hit', 'Description'],
+      d.map(p => [p.id, p.action, p.status,
+        p.expired ? h('span', { class: 'muted' }, 'expired') : p.enabled ? h('span', { class: 'ok' }, 'enabled') : h('span', { class: 'warn' }, 'disabled'),
+        p.expires ? fmtTime(p.expires) : '-', fmtNum(p.hits), fmtTime(p.last_hit), p.description || '']))
+    : h('p', { class: 'muted' }, 'none configured')],
+  ['Deceptive answers', '/api/deceive', d => (d || []).length
+    ? table(['Route', { label: 'Status', num: true }, { label: 'Served', num: true }, { label: 'Body bytes', num: true }, 'Marks', 'From score'],
+      d.map(x => [x.route, x.status, fmtNum(x.served), x.body_bytes, x.marked ? 'yes' : 'no', x.bot_score_at || '-']))
+    : h('p', { class: 'muted' }, 'none configured')],
+  ['WebSocket guards', '/api/websocket', d => (d || []).length
+    ? table(['Route', 'Action', 'Compression', { label: 'Connections', num: true }, { label: 'Messages', num: true }, { label: 'Violations', num: true }, { label: 'Closed', num: true }, { label: 'Unknown type', num: true }],
+      d.map(g => [g.route, g.action, g.compression || 'strip', fmtNum(g.connections), fmtNum(g.messages),
+        g.violations ? h('span', { class: 'warn' }, fmtNum(g.violations)) : '0', fmtNum(g.closed),
+        g.unknown ? h('span', { class: 'warn' }, fmtNum(g.unknown)) : '0']))
+    : h('p', { class: 'muted' }, 'no route has a websocket_guard')],
+  // The message policy, which is the half an application's owner reads: one
+  // row per kind of message a route says it carries.
+  ['WebSocket message types', '/api/websocket', d => {
+    const rows = [];
+    for (const g of d || []) {
+      for (const t of g.types || []) {
+        rows.push([g.route, t.name, t.direction || 'both', t.max_bytes ? fmtBytes(t.max_bytes) : '-',
+          t.messages_per_second || '-', t.schema ? 'yes' : 'no', fmtNum(t.messages),
+          t.violations ? h('span', { class: 'warn' }, fmtNum(t.violations)) : '0']);
+      }
+    }
+    return rows.length
+      ? table(['Route', 'Type', 'Direction', 'Max bytes', { label: 'Per second', num: true }, 'Schema',
+        { label: 'Messages', num: true }, { label: 'Violations', num: true }], rows)
+      : h('p', { class: 'muted' }, 'no route names its message types');
+  }],
+  ['Graduated degradation', '/api/degradation', d => (d || []).length
+    ? table(['Level', { label: 'Applied', num: true }, 'Bytes per second', 'Delay', 'Close'],
+      d.map(x => [x.name, fmtNum(x.applied), x.bytes_per_second || '-', x.delay || '-', x.close ? 'yes' : 'no']))
+    : h('p', { class: 'muted' }, 'none configured')],
+  ['Handshake refusals', '/api/handshake', jsonView],
+  ['Account guard', '/api/accounts', jsonView],
+  ['Bot score', '/api/botscore', jsonView],
+  ['API inventory', '/api/api', jsonView],
+  ['Packet capture', '/api/capture', jsonView],
+];
+views.security = { refresh: 15000, async render() {
+  const results = await Promise.all(securityPages.map(([, path]) => get(path).then(d => ({ d })).catch(e => ({ e }))));
+  clear(view);
+  securityPages.forEach(([title, , render], i) => {
+    const r = results[i];
+    view.append(h('div', { class: 'card' }, h('h2', null, title),
+      r.e ? h('p', { class: 'muted' }, 'not configured (' + r.e.message + ')') : render(r.d)));
+  });
+}};
 
 views.upstreams = { refresh: 5000, async render() {
   const [ups, pools] = await Promise.all([get('/api/upstreams'), get('/api/pools').catch(() => ({}))]);
@@ -255,6 +743,13 @@ views.cluster = { refresh: 5000, async render() {
         (c.peers || []).map(p => [p.address, p.node_id || '-', p.connected ? h('span', { class: 'ok' }, 'connected') : h('span', { class: 'bad' }, 'down'), p.connected ? fmtTime(p.connected_at) : '-', fmtNum(p.messages_out), p.reconnects, p.last_error || '']))),
     h('div', { class: 'card' }, h('h2', null, 'Inbound'),
       table(['Remote', 'Node', 'Certificate', 'Since', 'Last seen'], (c.inbound || []).map(i => [i.remote, i.node_id || '-', i.cert_name, fmtTime(i.since), fmtTime(i.last_seen)]))));
+  // The fleet is the other estate view: a cluster shares decisions between
+  // proxies, a fleet collects status from nodes that need not share
+  // anything. Both belong on the page somebody opens to ask "what else is
+  // out there".
+  const fleet = await get('/api/fleet').catch(e => ({ e }));
+  view.append(h('div', { class: 'card' }, h('h2', null, 'Fleet'),
+    fleet.e ? h('p', { class: 'muted' }, 'not configured (' + fleet.e.message + ')') : jsonView(fleet)));
 }};
 
 views.certificates = { refresh: 30000, async render() {
@@ -490,7 +985,8 @@ const subsystems = [
     d.landlocked ? h('p', { class: 'muted' }, 'read: ' + (d.read_paths || []).join(', ') + ' — write: ' + (d.write_paths || []).join(', ')) : null)],
   ['Telemetry', '/api/telemetry', d => h('div', null, ...[['Metrics', d.metrics], ['Traces', d.traces], ['Logs', d.logs]].map(([k, v]) => h('div', null, h('h3', null, k), v ? jsonView(v) : h('p', { class: 'muted' }, 'not configured'))))],
   ['DNS', '/api/dns', d => (d || []).length ? h('div', null, ...d.map(l => h('div', null, h('h3', null, l.listener + (l.encrypted ? ' (DoT/DoH)' : '')), jsonView(l)))) : h('p', { class: 'muted' }, 'no dns listeners')],
-  ['ICAP', '/api/icap', jsonView],
+  // ICAP has a page of its own; this is the summary with the way to it.
+  ['ICAP', '/api/icap', d => h('div', null, jsonView(d), h('p', { class: 'muted mt-s' }, h('a', { href: '#icap' }, 'per service, with the scan counters')))],
   ['Cache', '/api/cache', jsonView],
   ['GeoIP', '/api/geoip', jsonView],
   ['Honeypots', '/api/honeypot', jsonView],

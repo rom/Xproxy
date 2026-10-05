@@ -1,6 +1,7 @@
 package rdp_test
 
 import (
+	"bytes"
 	"errors"
 	"net"
 	"testing"
@@ -300,15 +301,20 @@ func TestDataFromTheClientOnARefusedDynamicChannelIsDropped(t *testing.T) {
 	waitFor(t, "the refusal", func() bool {
 		return s.Stats().Refusals["rdp"]["dynamic_channel"] >= 1
 	})
-	before := len(d.seen(dynChannel))
-	// The client sends data up on the channel it was never given.
-	cl.send(dynChannel, chunkOf([]byte{dvcHead(rdp.DVCData), 0x06, 'u', 'p'}))
+	// The client sends data up on the channel it was never given. The payload
+	// is a distinctive string so that what is asserted is the absence of this
+	// data rather than a byte count: the refusal the relay sends to the desktop
+	// is counted before it is written, so a count taken here races it -- and a
+	// count that grew by the refusal's own fourteen octets reads as the client's
+	// data having been forwarded.
+	const smuggled = "SMUGGLED-UPWARD"
+	cl.send(dynChannel, chunkOf(append([]byte{dvcHead(rdp.DVCData), 0x06}, smuggled...)))
 	waitFor(t, "the dropped upward data to be counted", func() bool {
 		return s.Stats().Refusals["rdp"]["dynamic_channel_data"] >= 1
 	})
-	// And nothing of it reached the desktop beyond the refusal already sent.
-	if n := len(d.seen(dynChannel)); n != before {
-		t.Errorf("the desktop received %d more bytes on drdynvc", n-before)
+	// Nothing of it reached the desktop, whatever else did.
+	if bytes.Contains(d.seen(dynChannel), []byte(smuggled)) {
+		t.Errorf("the client's data on a refused channel reached the desktop:\n%q", d.seen(dynChannel))
 	}
 }
 

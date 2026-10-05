@@ -178,9 +178,12 @@ the mappings below are also the vocabulary a pack is written in.
 | [T1021.004](https://attack.mitre.org/techniques/T1021/004/) | Remote Services: SSH | lateral-movement | The same, over SSH: a shell, a forwarded port or an SFTP session on a machine the policy does not open to this client. |
 | [T1021.005](https://attack.mitre.org/techniques/T1021/005/) | Remote Services: VNC | lateral-movement | The same, over VNC or RFB: the framebuffer protocol an HMI is reached with, where a session is a hand on the plant's own screen. |
 | [T1040](https://attack.mitre.org/techniques/T1040/) | Network Sniffing | credential-access, discovery | A credential or a session put on the wire where anything on the segment can read it: a bind in the clear, a cleartext password, an authentication method downgraded, TLS not used where it was available. |
+| [T1041](https://attack.mitre.org/techniques/T1041/) | Exfiltration Over C2 Channel | exfiltration | Data leaving through the same connection that is carrying the instructions, so there is no second destination to notice: a long-lived response on a port that is already open and already allowed out. |
 | [T1046](https://attack.mitre.org/techniques/T1046/) | Network Service Discovery | discovery | Finding what answers: a client choosing destination after destination through a relay, a request for a name or a host this edge does not serve. |
 | [T1048](https://attack.mitre.org/techniques/T1048/) | Exfiltration Over Alternative Protocol | exfiltration | Data leaving over a protocol that exists for something else: a name query carrying payload in its labels, a tunnel inside a service the policy allows out. |
 | [T1059](https://attack.mitre.org/techniques/T1059/) | Command and Scripting Interpreter | execution | A command interpreter reached through a protocol that is not meant to be one: COPY ... PROGRAM, a LOAD from a program, xp_cmdshell, a Redis MODULE or SCRIPT, a shell command on a bastion the policy does not grant. |
+| [T1071](https://attack.mitre.org/techniques/T1071/) | Application Layer Protocol | command-and-control | An ordinary protocol carrying something else: a request through a forward proxy to a destination no egress rule covers, which is where a channel is built out of traffic that looks like browsing. |
+| [T1071.001](https://attack.mitre.org/techniques/T1071/001/) | Application Layer Protocol: Web Protocols | command-and-control | HTTP used as a channel rather than as a request and an answer: a response held open for hours carrying whatever the application chose to put in it, which is what an event stream is by design. |
 | [T1071.004](https://attack.mitre.org/techniques/T1071/004/) | Application Layer Protocol: DNS | command-and-control | Name resolution used as a channel rather than as a lookup: a name on a block list or a policy zone, a query whose shape is a tunnel. |
 | [T1078](https://attack.mitre.org/techniques/T1078/) | Valid Accounts | defense-evasion, initial-access, persistence, privilege-escalation | A real credential used where the policy does not grant it: an account, an application identity or a certificate that authenticates and is still not allowed here, now, or for this target. |
 | [T1078.001](https://attack.mitre.org/techniques/T1078/001/) | Valid Accounts: Default Accounts | defense-evasion, initial-access, persistence, privilege-escalation | A credential the equipment or the product shipped with: an SNMP community of `public`, a vendor account, a password this estate never set. |
@@ -189,15 +192,29 @@ the mappings below are also the vocabulary a pack is written in.
 | [T1098](https://attack.mitre.org/techniques/T1098/) | Account Manipulation | persistence, privilege-escalation | A change to who may do what, rather than a use of what one may: a directory write, a broker's user and permission administration, a password-modify operation. |
 | [T1105](https://attack.mitre.org/techniques/T1105/) | Ingress Tool Transfer | command-and-control | A file moved into or out of a session that is meant to be interactive: an SFTP or FTP transfer the policy refuses, a transfer the content scanner stopped. |
 | [T1110](https://attack.mitre.org/techniques/T1110/) | Brute Force | credential-access | Credentials tried rather than known: a failed authentication, a bind the directory refused, an identity nobody enrolled, the same source failing faster than a person types. |
+| [T1071.003](https://attack.mitre.org/techniques/T1071/003/) | Application Layer Protocol: Mail Protocols | command-and-control | A mail protocol used as a channel rather than for mail: a mailbox written to and read from as a drop box, which looks like a client that appends and fetches and never sends. |
+| [T1114](https://attack.mitre.org/techniques/T1114/) | Email Collection | collection | A mailbox read for what is in it rather than to read mail: a request that names most of a folder, a search across every mailbox an account can open, messages copied somewhere easier to fetch from. |
+| [T1114.002](https://attack.mitre.org/techniques/T1114/002/) | Email Collection: Remote Email Collection | collection | The mail server itself queried with a credential rather than a client's own mailbox being read on its own machine, which is what an IMAP or POP3 relay sees all of: the volume is the signal, because the access is legitimate. |
 | [T1133](https://attack.mitre.org/techniques/T1133/) | External Remote Services | initial-access, persistence | The estate's own remote access reached from where the policy does not allow it, or without the just-in-time grant that makes a session legitimate. |
 | [T1190](https://attack.mitre.org/techniques/T1190/) | Exploit Public-Facing Application | initial-access | A request shaped to make the service in front do something its author did not mean: a WAF rule or virtual patch matching, a smuggled message, a statement before authentication, a command inlined into another protocol. |
 | [T1213](https://attack.mitre.org/techniques/T1213/) | Data from Information Repositories | collection | The estate's own stores read past what the policy grants: a database, a directory or a broker queried for data this client has no business holding. |
 | [T1498](https://attack.mitre.org/techniques/T1498/) | Network Denial of Service | impact | This proxy or a service behind it made into an amplifier, or flooded from outside: a reflected query, an ANY over UDP, a mode-6 control request, an answer far larger than the question. |
 | [T1499](https://attack.mitre.org/techniques/T1499/) | Endpoint Denial of Service | impact | A bound reached rather than a packet crafted: connections, sessions, channels, in-flight requests or bodies past what the listener holds for everybody else. |
+| [T1529](https://attack.mitre.org/techniques/T1529/) | System Shutdown/Reboot | impact | A device told to restart over the protocol it is administered with: a `reload` authorised through TACACS+, an IED reinitialised, a controller reset. |
+| [T1548](https://attack.mitre.org/techniques/T1548/) | Abuse Elevation Control Mechanism | defense-evasion, privilege-escalation | The far end's own privilege ladder climbed: `enable` on a network device, a RADIUS or TACACS+ answer granting priv-lvl 15, Service-Type = Administrative-User -- a session that authenticated as somebody and ends up with more than that somebody has. |
+| [T1550](https://attack.mitre.org/techniques/T1550/) | Use Alternate Authentication Material | defense-evasion, lateral-movement | A ticket or a token used in place of a credential: a Kerberos delegation request, a forwarded or proxiable ticket presented from somewhere it was not issued to. |
+| [T1556](https://attack.mitre.org/techniques/T1556/) | Modify Authentication Process | credential-access, defense-evasion, persistence | The authentication decision itself interfered with rather than answered: a forged RADIUS reply, an authorization request that names no authenticated user, attributes added to a decision in flight. |
 | [T1557](https://attack.mitre.org/techniques/T1557/) | Adversary-in-the-Middle | credential-access, collection | Something answering in place of the service: a provisioning answer from an address the estate does not run, authentication stripped from a time exchange, a resolver answer that points a client somewhere else. |
+| [T1558](https://attack.mitre.org/techniques/T1558/) | Steal or Forge Kerberos Tickets | credential-access | A Kerberos ticket obtained for what can be done with it offline or elsewhere: a request for an encryption type whose ticket is crackable, a delegation that mints a ticket as somebody else, a lifetime nobody asked a KDC for by accident. |
+| [T1558.003](https://attack.mitre.org/techniques/T1558/003/) | Steal or Forge Kerberos Tickets: Kerberoasting | credential-access | A service ticket asked for so that its encrypted part can be cracked against the service account's password: an RC4-only TGS request, or a client collecting service tickets by the dozen. |
+| [T1558.004](https://attack.mitre.org/techniques/T1558/004/) | Steal or Forge Kerberos Tickets: AS-REP Roasting | credential-access | An AS exchange completed without pre-authentication, which means the account is exempt and the reply's encrypted part is an offline password-cracking target. |
+| [T1562](https://attack.mitre.org/techniques/T1562/) | Impair Defenses | defense-evasion | A change to what the estate's own equipment enforces or records: an access list edited, logging turned off, a configuration command on a device whose job is to filter. |
 | [T1565.001](https://attack.mitre.org/techniques/T1565/001/) | Data Manipulation: Stored Data Manipulation | impact | A write to a store the policy grants only reads of: the database, key space or directory changed rather than read. |
 | [T1565.002](https://attack.mitre.org/techniques/T1565/002/) | Data Manipulation: Transmitted Data Manipulation | impact | Data altered in flight rather than at rest: telemetry that repeats or has stopped moving as it crosses this relay, which is what an operator's screen is drawn from. |
+| [T1567](https://attack.mitre.org/techniques/T1567/) | Exfiltration Over Web Service | exfiltration | Data leaving through a service that exists to receive it: an upload to file sharing, a paste site, a webhook -- which is why an egress policy about a method and a destination category is worth more than one about addresses. |
 | [T1572](https://attack.mitre.org/techniques/T1572/) | Protocol Tunneling | command-and-control | A channel inside a channel: a forwarded port, an upgrade to a stream protocol, a datagram tunnel through a proxy that was asked for a request. |
+| [T1601](https://attack.mitre.org/techniques/T1601/) | Modify System Image | defense-evasion | An image written to a device that runs it: a firmware copy to flash, an upgrade command, a file put where the next boot will read it. |
+| [T1602](https://attack.mitre.org/techniques/T1602/) | Data from Configuration Repository | collection | A device's own configuration read out of it: `copy running-config tftp:`, an SNMP walk of the configuration tree, a file service reading the description the estate wrote of itself. |
 | [T1621](https://attack.mitre.org/techniques/T1621/) | Multi-Factor Authentication Request Generation | credential-access | A second factor asked for and not given: a push the person refused or was asked for too often, which is what it looks like when somebody else already has the password. |
 
 ## What maps to what
@@ -678,6 +695,149 @@ them, which is why an operations centre can filter on
 | `user_not_allowed` | T1078 |  |
 | `weak_auth` | T1040 | an authentication method that puts the password on the wire, offered where a stronger one was available |
 
+#### imap
+
+| Reason | Technique | Why this one |
+|--------|-----------|--------------|
+| `anomaly_new_device` | T1114 | a mailbox this account has not opened before |
+| `anomaly_new_pair` | T1114 |  |
+| `anomaly_new_point` | T1078 |  |
+| `anomaly_new_symbol` | T1114.002 |  |
+| `anomaly_new_talker` | T1133 |  |
+| `anomaly_off_hours` | T1114.002 |  |
+| `anomaly_quiet` | T1114 |  |
+| `anomaly_rate` | T1114.002 | a fetch volume this account has not reached before |
+| `anomaly_sequence_unseen` | T1114 |  |
+| `anomaly_value_jump` | T1114.002 |  |
+| `anomaly_value_range` | T1114.002 |  |
+| `anomaly_write_rate` | T1071.003 |  |
+| `append_too_large` | T1071.003, T1565.001 | a message written into a mailbox, which is how a mailbox becomes a drop box |
+| `auth_failed` | T1110 | a credential the mail server refused |
+| `client_not_allowed` | T1133 |  |
+| `command_denied` | T1114 |  |
+| `command_not_allowed` | T1114 |  |
+| `compression_not_allowed` | T1562 | a deflated connection cannot be inspected |
+| `default_deny` | T1114, T1213 |  |
+| `fetch_too_large` | T1114, T1114.002 | a request named more of a mailbox than the policy allows |
+| `idle_not_allowed` | T1499 |  |
+| `idle_too_long` | T1499 |  |
+| `line_too_long` | T1499 |  |
+| `auth_injection` | T1562, T1071.003 | a line sent inside a SASL exchange the server did not ask for, which the server reads as a command |
+| `literal_argument` | T1114, T1071.003 | a mailbox, a name or a sequence set sent as a literal, where the policy would read none |
+| `literal_too_large` | T1499 |  |
+| `mailbox_denied` | T1114 |  |
+| `mailbox_not_allowed` | T1114 |  |
+| `malformed_command` | T1190 |  |
+| `malformed_greeting` | T1190 |  |
+| `malformed_mailbox` | T1190 |  |
+| `malformed_response` | T1190 |  |
+| `malformed_sequence_set` | T1190 |  |
+| `max_connections` | T1499 |  |
+| `mechanism_not_allowed` | T1040 |  |
+| `not_done` | T1071.003 |  |
+| `open_sequence_set` | T1114, T1114.002 | a request named every message in the mailbox, so its size is the mailbox's |
+| `preauth_greeting` | T1556 | the server said the transport had authenticated somebody this relay never saw |
+| `rate_limited` | T1499 |  |
+| `read_only` | T1565.001 |  |
+| `response_too_long` | T1499 |  |
+| `rule_denied` | T1114, T1213 |  |
+| `session_timeout` | T1499 |  |
+| `starttls_injection` | T1557 | a command pipelined behind the upgrade, plaintext to one end and ciphertext to the other |
+| `starttls_not_offered` | T1040 |  |
+| `tls_required` | T1040 | a mailbox password on an unencrypted connection |
+| `too_many_commands` | T1499 |  |
+| `too_many_literals` | T1499 |  |
+| `too_many_pending` | T1499 |  |
+| `unknown_command` | T1071.003 | a command this relay cannot name, which it refuses rather than tunnel |
+| `user_not_allowed` | T1078 |  |
+| `wrong_state` | T1071.003 |  |
+
+#### pop3
+
+| Reason | Technique | Why this one |
+|--------|-----------|--------------|
+| `anomaly_new_device` | T1114 |  |
+| `anomaly_new_pair` | T1114 |  |
+| `anomaly_new_point` | T1078 |  |
+| `anomaly_new_symbol` | T1114.002 |  |
+| `anomaly_new_talker` | T1133 |  |
+| `anomaly_off_hours` | T1114.002 |  |
+| `anomaly_quiet` | T1114 |  |
+| `anomaly_rate` | T1114.002 |  |
+| `anomaly_sequence_unseen` | T1114 |  |
+| `anomaly_value_jump` | T1114.002 | a retrieval far larger than this account's own history |
+| `anomaly_value_range` | T1114.002 |  |
+| `anomaly_write_rate` | T1565.001 |  |
+| `auth_failed` | T1110 |  |
+| `client_not_allowed` | T1133 |  |
+| `command_denied` | T1114 |  |
+| `command_not_allowed` | T1114 |  |
+| `default_deny` | T1114, T1213 |  |
+| `line_too_long` | T1499 |  |
+| `malformed_command` | T1190 |  |
+| `malformed_greeting` | T1190 |  |
+| `malformed_line_count` | T1190 |  |
+| `malformed_message_number` | T1190 |  |
+| `malformed_reply` | T1190 |  |
+| `max_connections` | T1499 |  |
+| `mechanism_not_allowed` | T1040 |  |
+| `rate_limited` | T1499 |  |
+| `read_only` | T1565.001 | DELE and RSET, which decide what the mailbox holds after the update state |
+| `retrieval_too_large` | T1114, T1114.002 | the octets one connection retrieved, which on this protocol is the only copying bound there is |
+| `rule_denied` | T1114, T1213 |  |
+| `session_timeout` | T1499 |  |
+| `stls_injection` | T1557 |  |
+| `stls_not_offered` | T1040 |  |
+| `tls_required` | T1040 | USER and PASS put the password on the wire one line apart |
+| `too_many_messages` | T1114, T1114.002 |  |
+| `unknown_command` | T1071.003 |  |
+| `user_not_allowed` | T1078 |  |
+| `auth_no_mechanism` | T1071.003, T1040 | an AUTH naming no mechanism, which no credential check can be applied to |
+| `wrong_state` | T1071.003 |  |
+
+#### radius (shared: xrelay and xot)
+
+| Reason | Technique | Why this one |
+|--------|-----------|--------------|
+| `administrative_reply_not_allowed` | T1548 |  |
+| `anomaly_new_pair` | T1046 |  |
+| `anomaly_new_symbol` | T1040, T1556 |  |
+| `anomaly_new_talker` | T1133 | an estate's RADIUS clients are a list changed by a change request, so a new address authenticating against the directory is worth a line whatever the address lists say |
+| `anomaly_sequence_unseen` | T1078 |  |
+| `anomaly_write_burst` | T1110 |  |
+| `attribute_not_allowed` | T1556 |  |
+| `auth_type_not_allowed` | T1040 |  |
+| `bad_message_authenticator` | T1557, T1556 |  |
+| `bad_request_authenticator` | T1557, T1556 | an Accounting-Request and the dynamic authorization codes carry a computed authenticator rather than a nonce, which is the only integrity check they have when they carry no digest attribute |
+| `bad_response_authenticator` | T1557, T1556 |  |
+| `client_not_allowed` | T1078, T1133 |  |
+| `code_not_allowed` | T1078 |  |
+| `dynamic_authorization_not_allowed` | T1556, T1499 | RFC 5176's Disconnect-Request ends a live user's session and CoA-Request re-authorises it, from one datagram, running from the server towards the equipment |
+| `eap_type_not_allowed` | T1040 |  |
+| `identifier_in_use` | T1499 |  |
+| `malformed` | T1190 |  |
+| `malformed_reply` | T1190 |  |
+| `message_too_large` | T1499 |  |
+| `missing_message_authenticator` | T1557, T1556 | without RFC 3579's keyed digest a reply's only integrity check is MD5 with the secret appended, which a chosen-prefix collision forges (CVE-2024-3596) |
+| `nas_not_allowed` | T1078 |  |
+| `no_rule_matched` | T1078 |  |
+| `outside_schedule` | T1078 |  |
+| `plaintext_password` | T1040 | User-Password is XORed with MD5(secret || authenticator), so anybody holding the secret reads it -- which is everybody who can read the switch's configuration |
+| `privilege_too_high` | T1548, T1078 | the grant is in the reply: a Cisco av-pair saying shell:priv-lvl=15 is enable on every router that receives it |
+| `proxy_state_not_allowed` | T1090 |  |
+| `rate_limited` | T1110, T1499 | on this protocol the rate limit is also what stands between a credential-stuffing run and a server doing a key derivation per attempt |
+| `realm_not_allowed` | T1090, T1078 | a realm is routing: a server proxies by it, so a name carrying one asks this estate to forward the credential somewhere else |
+| `realm_required` | T1078 |  |
+| `reply_attribute_not_allowed` | T1556 | Tunnel-Private-Group-Id is the VLAN a RADIUS answer puts a port in, which is authorisation rather than authentication |
+| `reply_too_large` | T1499 |  |
+| `rule_denied` | T1078 |  |
+| `too_many_attributes` | T1499 |  |
+| `too_many_pending` | T1499 |  |
+| `unsolicited_reply` | T1557 |  |
+| `user_not_allowed` | T1078 |  |
+| `weak_eap_type` | T1040, T1556 | a client that Naks its way down to EAP-MD5 has downgraded the estate's authentication to a hash somebody can crack on a laptop |
+| `wrong_direction` | T1557 |  |
+
 #### redis
 
 | Reason | Technique | Why this one |
@@ -743,6 +903,53 @@ them, which is why an operations centre can filter on
 | `queue_full` | T1499 |  |
 | `rate_limit` | T1499 |  |
 
+#### tacacs (shared: xrelay and xot)
+
+| Reason | Technique | Why this one |
+|--------|-----------|--------------|
+| `anomaly_new_pair` | T1046 |  |
+| `anomaly_new_symbol` | T1059, T1078 | the symbol is the command, so a user who has only ever run show commands and runs `configure terminal` is a new symbol |
+| `anomaly_new_talker` | T1133 |  |
+| `anomaly_new_write_point` | T1562 |  |
+| `anomaly_sequence_unseen` | T1059 | device administration has a shape -- log in, enable, look, change, save -- and a session that skips the looking is worth a line |
+| `anomaly_write_burst` | T1562 |  |
+| `authen_service_not_allowed` | T1548, T1078 |  |
+| `authen_type_not_allowed` | T1040 |  |
+| `body_too_large` | T1499 |  |
+| `change_password_not_allowed` | T1098 |  |
+| `client_not_allowed` | T1078, T1133 |  |
+| `command_not_allowed` | T1059, T1078 |  |
+| `engineering_configuration` | T1562 | the device whose job is to filter, reconfigured: an access list edited, logging turned off, a route changed |
+| `engineering_file_transfer` | T1602, T1105 | `copy running-config tftp:` is the estate's own description of its network leaving it |
+| `engineering_firmware` | T1601, T1105 |  |
+| `engineering_no_grant` | T0859, T1078 | an engineering operation with no approved work order open for it, on a listener that requires one |
+| `engineering_restart` | T1529 |  |
+| `engineering_ungranted` | T0859, T1078 | the same operation on a listener that only asks to be told: it happened, and it happened outside every window |
+| `exchange_not_allowed` | T1078 |  |
+| `follow_not_allowed` | T1557, T1090 | a FOLLOW reply carries another server's address, port and key, and a client that follows one sends its next credential there |
+| `idle_timeout` | T1499 |  |
+| `malformed` | T1190 |  |
+| `malformed_reply` | T1190 |  |
+| `no_rule_matched` | T1078 |  |
+| `no_such_session` | T1557 |  |
+| `outside_schedule` | T1078 | a configuration command outside the change window: the schedule is what a change window is written as |
+| `plaintext_password` | T1040 |  |
+| `privilege_grant_too_high` | T1548 | priv-lvl in an authorization response is a mandatory argument, and a device that receives a mandatory argument must apply it |
+| `privilege_too_high` | T1548 |  |
+| `rate_limited` | T1110, T1499 |  |
+| `rule_denied` | T1078 |  |
+| `sendauth_not_allowed` | T1213, T1040 | a SENDAUTH session asks the server for a credential to send onwards, which in a modern estate is either dead configuration or credential extraction |
+| `sequence_out_of_order` | T1557 |  |
+| `service_not_allowed` | T1078 |  |
+| `session_in_use` | T1557 |  |
+| `tls_required` | T1040 |  |
+| `too_many_arguments` | T1499 |  |
+| `too_many_sessions` | T1499 |  |
+| `unauthenticated_authorization` | T1556, T1078 | a device asking whether an unnamed user may run a command, and being told yes, has authorised it for whoever is on the port |
+| `unencrypted_body` | T1040 | RFC 8907 allows the flag only on a secured transport; on bare TCP an administrative login's user name and password are on the wire |
+| `user_not_allowed` | T1078 |  |
+| `wrong_direction` | T1557 |  |
+
 #### tds
 
 | Reason | Technique | Why this one |
@@ -802,9 +1009,13 @@ them, which is why an operations centre can filter on
 
 | Reason | Technique | Why this one |
 |--------|-----------|--------------|
+| `bad_request` | T1190 | a head inside a tunnel that the two ends would frame differently -- a length and a chunked encoding both -- is the smuggling shape, and an intercepting proxy is the only place it can be seen at all |
+| `host_mismatch` | T1572, T1090 | the same disagreement one layer in: a request inside an intercepted tunnel naming a host the tunnel was not opened to is one name's permission being spent on another |
 | `masque_context` | T1090 |  |
 | `masque_spoofed` | T1090 |  |
 | `masque_unsolicited` | T1090 |  |
+| `no_rule` | T1071, T1090 | a destination no egress rule covers is the one an estate has not decided about, which is where a tool that brought its own destination list goes first |
+| `rule_deny` | T1048, T1567, T1071 | an egress rule refusing names what was being sent and where: a body to a destination nobody approved is exfiltration over an alternative protocol or over a web service, and the proxy is the application layer it went through |
 | `sni_mismatch` | T1572, T1090 | the name in the handshake and the name in the CONNECT disagreeing is a tunnel to one host hidden behind permission for another |
 | `tunnel_limit` | T1499 |  |
 | `udp_disabled` | T1572 |  |
@@ -821,15 +1032,77 @@ them, which is why an operations centre can filter on
 | `body_size` | T1499 |  |
 | `concurrency` | T1499 |  |
 | `honeytoken` | T1078 | a credential that exists only to be stolen: whoever used it did not get it from the person it was issued to |
-| `max_connections` | T1499 |  |
 | `max_connections_per_ip` | T1499 |  |
+| `max_connections` | T1499 |  |
 | `no_route` | T1046 |  |
 | `normalization` | T1190 | double encoding, overlong UTF-8 and traversal are ways to make two readers of one request disagree about what it asks for |
 | `rate_limit` | T1499 |  |
+| `sse_control_character` | T1071.001 | a control character in an event name, which is either a mistake or an attempt to confuse something downstream that logs it |
+| `sse_encoding_not_allowed` | T1562 | a compressed event stream cannot be read, so offering one is an offer to stop inspecting |
+| `sse_encoding_not_readable` | T1562 |  |
+| `sse_event_denied` | T1071.001, T1213 |  |
+| `sse_event_not_allowed` | T1071.001, T1213 | an event name this route does not carry, which is the stream being used for something other than its purpose |
+| `sse_event_rate` | T1499 |  |
+| `sse_event_too_large` | T1041, T1048, T1567 | one event carrying more than this stream's events are shaped to carry |
+| `sse_id_too_long` | T1071.001 |  |
+| `sse_json` | T1071.001 |  |
+| `sse_last_event_id_not_allowed` | T1213 |  |
+| `sse_last_event_id_repeated` | T1213, T1190 | two resumption cursors on one request, so the one checked need not be the one used |
+| `sse_last_event_id_shape` | T1213, T1190 | a resumption cursor of a shape this estate does not issue |
+| `sse_line_too_long` | T1071.001 |  |
+| `sse_malformed_stream` | T1071.001 |  |
+| `sse_name_too_long` | T1071.001 |  |
+| `sse_not_inspectable` | T1071.001 | an event too large to have been read, so the checks that depend on reading it cannot run |
+| `sse_not_utf8` | T1071.001 |  |
+| `sse_pattern` | T1041, T1048, T1567 | an event whose payload matched a pattern the route refuses to let leave |
+| `sse_schema` | T1071.001 |  |
+| `sse_stream_idle` | T1071.001 |  |
+| `sse_stream_too_large` | T1041, T1048, T1567 | a stream past the octets a route carries |
+| `sse_stream_too_long` | T1071.001 | a response held open past max_duration, which is the shape of a channel rather than a feed |
+| `sse_too_many_events` | T1041, T1048, T1567 | a stream past the number of events a route carries, which is the bound that makes it finite |
+| `sse_too_many_fields` | T1071.001 |  |
 | `virtual_patch` | T1190 | a virtual patch matches the shape of a known vulnerability in the application behind, which is the exploit attempt itself |
 | `waf` | T1190 |  |
 | `websocket` | T1572 |  |
 | `webtransport` | T1572 |  |
+
+#### kkdcp (shared: xproxy and xrelay)
+
+| Reason | Technique | Why this one |
+|--------|-----------|--------------|
+| `anomaly_new_pair` | T1046 |  |
+| `anomaly_new_symbol` | T1558 |  |
+| `anomaly_new_talker` | T1133 |  |
+| `anomaly_new_write_point` | T1558.003 |  |
+| `anomaly_sequence_unseen` | T1558 |  |
+| `anomaly_write_burst` | T1558.003 |  |
+| `anonymous_not_allowed` | T1078 |  |
+| `body_too_large` | T1499 |  |
+| `etype_not_allowed` | T1558, T1040 |  |
+| `forwarded_ticket_not_allowed` | T1550 |  |
+| `lifetime_too_long` | T1558 |  |
+| `malformed_envelope` | T1190 |  |
+| `malformed_message` | T1190 |  |
+| `malformed_reply` | T1190 |  |
+| `message_type_not_allowed` | T1078 |  |
+| `no_rule_matched` | T1078 |  |
+| `option_not_allowed` | T1558 |  |
+| `outside_schedule` | T1078 |  |
+| `password_change_not_allowed` | T1098 |  |
+| `preauth_failure_burst` | T1110 | per client rather than per account, because a sprayer tries one password against a thousand accounts and the account lockout is what it wanted |
+| `preauth_not_required` | T1558.004 | a KDC that answers a request with no pre-authentication with a ticket has said the account is exempt, and the reply is an offline cracking target |
+| `principal_not_allowed` | T1078 |  |
+| `rate_limited` | T1110, T1499 |  |
+| `realm_mismatch` | T1090, T1557 | the envelope's realm is what the proxy routes by and the inner one is what the KDC decides on; a client that sends two different ones is asking the two to disagree |
+| `realm_not_allowed` | T1090 | a KDC proxy with no realm policy relays Kerberos for any realm a client names, from this estate's address |
+| `rule_denied` | T1078 |  |
+| `s4u2proxy_not_allowed` | T1558, T1550 |  |
+| `s4u2self_not_allowed` | T1558, T1550 | PA-FOR-USER names the impersonated user in the clear: a service account asking the KDC for a ticket to itself as anybody in the realm |
+| `service_not_allowed` | T1078 |  |
+| `service_ticket_enumeration` | T1558.003, T1046 | forty different service principals in a minute is the realm's service accounts being collected, whatever encryption was asked for |
+| `target_domain_required` | T1090 |  |
+| `weak_etype_only` | T1558.003 | a TGS request offering nothing but RC4 has asked for a ticket it can crack offline against the service account's password |
+| `weak_ticket_etype` | T1558.003 |  |
 
 #### tcp
 

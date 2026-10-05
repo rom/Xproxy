@@ -206,11 +206,16 @@ func TestTerminatingRefusesTermsItCannotMeet(t *testing.T) {
 			}
 		})
 	}
+	// Waited for, not read once. NTSKENoTerms is counted before the answer is
+	// written and the reason after it, so a client that has read its refusal
+	// has seen the first and not the second: read straight through, this
+	// assertion failed with `refusals: map[no_terms:1]` for a relay that had
+	// refused both.
+	if got := refused(t, s, "no_terms", 2); got["no_terms"] != 2 {
+		t.Errorf("refusals: %+v", got)
+	}
 	if got := s.Stats().NTSKENoTerms; got != 2 {
 		t.Errorf("no-terms counter: %d", got)
-	}
-	if got := s.Stats().Refusals["ntske"]["no_terms"]; got != 2 {
-		t.Errorf("refusals: %+v", s.Stats().Refusals["ntske"])
 	}
 }
 
@@ -273,20 +278,7 @@ func TestTerminatingAnswersABadRequestWithTheRightCode(t *testing.T) {
 			if kerr.Code != tc.want {
 				t.Errorf("error code %d, want %d", kerr.Code, tc.want)
 			}
-			// Polled rather than read once: the answer is written before the
-			// refusal is counted, so a client that read its error has not
-			// waited for the counter. The first failure of this assertion
-			// printed a map that already held the count it had just found
-			// missing.
-			for deadline := time.Now().Add(10 * time.Second); ; {
-				if s.Stats().Refusals["ntske"][tc.refusal] != 0 {
-					break
-				}
-				if time.Now().After(deadline) {
-					t.Fatalf("refusals: %+v", s.Stats().Refusals["ntske"])
-				}
-				time.Sleep(10 * time.Millisecond)
-			}
+			refused(t, s, tc.refusal, 1)
 		})
 	}
 }
@@ -312,15 +304,7 @@ func TestTerminatingClosesAClientThatSaysNothing(t *testing.T) {
 		t.Fatalf("a silent client was answered with %q", buf[:n])
 	}
 	_ = c.Close()
-	for deadline := time.Now().Add(10 * time.Second); ; {
-		if s.Stats().Refusals["ntske"]["no_request"] == 1 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("refusals: %+v", s.Stats().Refusals["ntske"])
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	refused(t, s, "no_request", 1)
 	if s.Stats().NTSKEHandshakes != 0 {
 		t.Errorf("the handshake slot was not released: %d", s.Stats().NTSKEHandshakes)
 	}
@@ -352,15 +336,7 @@ logging: {access: {enabled: false}}
 	if _, _, err := establish(t, addr, cert, "ke.test", ke.ClientRequest()); err != nil {
 		t.Fatal(err)
 	}
-	for deadline := time.Now().Add(10 * time.Second); ; {
-		if s.Stats().Refusals["ntske"]["server_name_not_allowed"] == 1 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("refusals: %+v", s.Stats().Refusals["ntske"])
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	refused(t, s, "server_name_not_allowed", 1)
 }
 
 // The cookie keys are written at the first start, not at the first rotation. A

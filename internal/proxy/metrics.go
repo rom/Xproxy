@@ -325,6 +325,40 @@ func (s *Server) Collect(e metrics.Collector) {
 			"Engineering operations recognised: program downloads and uploads, mode changes, restarts, configuration writes, firmware pushes, method calls and file transfers. Not refusals -- what was refused is in xproxy_refusals_total.",
 			L{"kind": kind, "operation": class}, float64(sn.EngineeringOps[k]))
 	}
+	// The subset nobody filed: carried, and worth a graph of its own, because
+	// "engineering is happening outside the windows" is the trend that decides
+	// whether an estate is ready to start refusing.
+	outside := make([]string, 0, len(sn.EngineeringOutside))
+	for k := range sn.EngineeringOutside {
+		outside = append(outside, k)
+	}
+	sort.Strings(outside)
+	for _, k := range outside {
+		kind, class, ok := strings.Cut(k, "/")
+		if !ok {
+			continue
+		}
+		e.Counter("xproxy_engineering_outside_window_total",
+			"Engineering operations that happened outside every approved grant window, on a listener that does not require one. They were carried: this is not a refusal, and the refusals are xproxy_refusals_total with reason engineering_no_grant.",
+			L{"kind": kind, "operation": class}, float64(sn.EngineeringOutside[k]))
+	}
+	// And the subset somebody filed a work order for, which is the other half
+	// of the same question: the difference between this and
+	// xproxy_engineering_total is the list an operations centre works through.
+	filed := make([]string, 0, len(sn.EngineeringFiled))
+	for k := range sn.EngineeringFiled {
+		filed = append(filed, k)
+	}
+	sort.Strings(filed)
+	for _, k := range filed {
+		kind, class, ok := strings.Cut(k, "/")
+		if !ok {
+			continue
+		}
+		e.Counter("xproxy_engineering_filed_total",
+			"Engineering operations that happened while a work order was on file for the device. A subset of xproxy_engineering_total, not an alternative to it: the difference between the two is the engineering nobody wrote down. A work order is not an approval and permits nothing.",
+			L{"kind": kind, "operation": class}, float64(sn.EngineeringFiled[k]))
+	}
 	// The pack engine's own numbers. The evictions are the one worth an alert:
 	// past the actor bound a sequence spanning the eviction stops being
 	// detectable, and the packs are then answering from part of their window.
@@ -438,6 +472,8 @@ func (s *Server) Collect(e metrics.Collector) {
 	e.Counter("xproxy_forward_intercept_refused_total", "Tunnels refused rather than intercepted: the destination did not verify, the handshake named another host, or the client did not trust the CA.", nil, float64(sn.InterceptRefused))
 	e.Counter("xproxy_forward_intercept_passed_total", "Tunnels passed through untouched because they were not carrying TLS.", nil, float64(sn.InterceptPassed))
 	e.Counter("xproxy_forward_intercept_bytes_total", "Plaintext bytes relayed through an intercepted tunnel.", nil, float64(sn.InterceptBytes))
+	e.Counter("xproxy_forward_intercept_requests_total", "Requests read inside intercepted tunnels and decided about by the egress rules.", nil, float64(sn.InterceptRequests))
+	e.Counter("xproxy_forward_intercept_bytes_only_total", "Intercepted tunnels relayed as bytes rather than read as HTTP: h2 was negotiated, the stream was not HTTP, or intercept.http did not ask.", nil, float64(sn.InterceptBytesOnly))
 	for name, st := range s.ECH() {
 		e.Counter("xproxy_tls_ech_total", "TLS handshakes by Encrypted Client Hello outcome.", L{"listener": name, "outcome": "accepted"}, float64(st.Accepted))
 		e.Counter("xproxy_tls_ech_total", "TLS handshakes by Encrypted Client Hello outcome.", L{"listener": name, "outcome": "not_used"}, float64(st.Rejected))

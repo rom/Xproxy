@@ -59,6 +59,34 @@ func TestTheEncryptionAnswerIsDecidedAndNotForwarded(t *testing.T) {
 // With the requirement off, a client that wants encryption still gets it. A
 // relay that answered `off` to everybody because the listener did not insist
 // would be performing the downgrade itself.
+// An observe rule records and decides nothing, so the rules below it still
+// decide -- and on a listener that denies by default, the default does.
+func TestAnObserveRuleIsRecordedAndDecidesNothing(t *testing.T) {
+	p := mustCompile(t, &config.TDSListener{Upstream: "sql", DefaultAction: "deny",
+		Rules: []config.TDSRule{{Name: "trial", Users: []string{"app"}, Action: "observe"}}})
+	s := sess("app", "sales", "report.exe")
+	sts, lexed := sqlkind.Statements(sqlkind.TSQL, "SELECT 1", 4)
+	if !lexed || len(sts) == 0 {
+		t.Fatal("the statement did not lex")
+	}
+	d := p.Statement(s, sts[0], "SELECT 1")
+	if d.Allow {
+		t.Fatalf("a trial rule decided, by allowing: %+v", d)
+	}
+	if len(d.Observed) != 1 || d.Observed[0] != "trial" {
+		t.Errorf("the rule being tried was not recorded: %+v", d.Observed)
+	}
+	// And the deny rule under it decides.
+	p = mustCompile(t, &config.TDSListener{Upstream: "sql", DefaultAction: "allow",
+		Rules: []config.TDSRule{
+			{Name: "trial", Users: []string{"app"}, Action: "observe"},
+			{Name: "lockdown", Users: []string{"app"}, Action: "deny"},
+		}})
+	if d := p.Statement(s, sts[0], "SELECT 1"); d.Allow || d.Rule != "lockdown" {
+		t.Errorf("the trial rule shadowed the deny rule: %+v", d)
+	}
+}
+
 func TestAClientThatWantsEncryptionIsNotTalkedOutOfIt(t *testing.T) {
 	no := false
 	p := mustCompile(t, &config.TDSListener{Upstream: "u", RequireTLS: &no})

@@ -60,6 +60,16 @@ T}	T{
 Counters only
 T}
 T{
+\fBlisteners\fR [\fB\-\:kind\fR \fIK\fR] [\fB\-\:mode\fR \fIM\fR] [\fB\-\:reasons\fR]
+T}	T{
+Every listener this daemon serves: the protocol,\: the address it bound,\: the enforcement mode (\fBenforce\fR,\: \fBshadow\fR or the kind\(aqs own \fBmonitor\fR),\: whether it terminates TLS,\: and which of the protocol\(aqs guards are on with what each does. Then the refusals per protocol and,\: from a separate table that is never added to it,\: what the listeners in shadow mode would have refused;\: \fB\-\:reasons\fR breaks both down by reason. A protocol with guards and none of them on reads \fBnone of N\fR,\: because an empty column reads as nothing to report
+T}
+T{
+\fBworkorder\fR [\fB\-\:state\fR \fIS\fR] [\fB\-\:device\fR \fID\fR] |\: \fBfile\fR \fIREFERENCE\fR \fB\-\:device\fR \fID\fR \fB\-\:duration\fR \fIT\fR [\fB\-\:listener\fR \fIL\fR] [\fB\-\:note\fR \fITEXT\fR] [\fB\-\:by\fR \fINAME\fR] [\fB\-\:start\fR \fIRFC3339\fR] |\: \fBclose\fR \fIREFERENCE\fR [\fB\-\:note\fR \fITEXT\fR] [\fB\-\:by\fR \fINAME\fR]
+T}	T{
+Change references filed against a device,\: in the hash\-chained access ledger. \fBA work order is not a grant and permits nothing\fR: a listener with \fBengineering.\:require_\:grant\fR still refuses an operation with no approved grant whatever work orders are open. What one changes is the reporting \-\- while it is open,\: every engineering event on that device carries \fBwork_\:order\fR and says \fBseverity:\: notice\fR instead of \fBwarning\fR,\: and the operation counts under \fBxproxy_\:engineering_\:filed_\:total\fR. \fB\-\:device\fR is matched literally against the listener\(aqs upstream pool,\: an endpoint address or a device address;\: \fB\-\:duration\fR is bounded by \fBaccess.\:max_\:work_\:order\fR
+T}
+T{
 \fBupstreams\fR
 T}	T{
 Endpoints with health,\: ejection,\: active requests,\: request and error counts

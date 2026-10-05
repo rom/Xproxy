@@ -24,6 +24,7 @@ import (
 	_ "github.com/rom/xproxy/internal/kinds/dns"     // listener kind: dns
 	_ "github.com/rom/xproxy/internal/kinds/forward" // listener kind: forward
 	_ "github.com/rom/xproxy/internal/kinds/http"    // listener kind: http, and the data plane behind it
+	_ "github.com/rom/xproxy/internal/kinds/kkdcp"   // listener kind: kkdcp
 	_ "github.com/rom/xproxy/internal/kinds/tcp"     // listener kind: tcp
 	_ "github.com/rom/xproxy/internal/kinds/udp"     // listener kind: udp
 	"github.com/rom/xproxy/internal/listener"

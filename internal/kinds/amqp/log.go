@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/netip"
 	"strconv"
+	"strings"
 
 	wire "github.com/rom/xproxy/internal/amqpwire"
 	"github.com/rom/xproxy/internal/textsafe"
@@ -62,6 +63,12 @@ func (t *server) refused(se *session, d Decision, what string) {
 	}
 	if d.Rule != "" {
 		attrs = append(attrs, "rule", d.Rule)
+	}
+	if len(d.Observed) > 0 {
+		// The rules being tried on live traffic. They decided nothing -- the
+		// rule above did, or the default -- and this is where an operator reads
+		// what one of them would have covered.
+		attrs = append(attrs, "observed", strings.Join(d.Observed, ","))
 	}
 	if d.Detail != "" {
 		attrs = append(attrs, "detail", textsafe.Clip64(d.Detail))

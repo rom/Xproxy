@@ -33,6 +33,12 @@ type fakeMTA struct {
 	tlsCfg *tls.Config
 	// garbage replaces every reply with something unparseable.
 	garbage bool
+	// authChallenges is how many 334 challenges AUTH is answered with before
+	// the 235, and authForever keeps challenging.
+	authChallenges int
+	authForever    bool
+	// refuseXClient answers XCLIENT with a refusal rather than 250.
+	refuseXClient bool
 }
 
 func startMTA(t *testing.T, m *fakeMTA) *fakeMTA {
@@ -120,6 +126,32 @@ func (m *fakeMTA) session(c net.Conn) {
 			c = tc
 			br = bufio.NewReader(c)
 		case "AUTH":
+			if m.authForever {
+				// Challenge, read the answer, challenge again: a server that
+				// never finishes, which is what the relay's own bound is for.
+				for {
+					if !write("334 VXNlcm5hbWU6\r\n") {
+						return
+					}
+					_ = c.SetReadDeadline(time.Now().Add(10 * time.Second))
+					if _, rerr := br.ReadString('\n'); rerr != nil {
+						return
+					}
+				}
+			}
+			for i := 0; i < m.authChallenges; i++ {
+				if !write("334 VXNlcm5hbWU6\r\n") {
+					return
+				}
+				_ = c.SetReadDeadline(time.Now().Add(10 * time.Second))
+				l, rerr := br.ReadString('\n')
+				if rerr != nil {
+					return
+				}
+				m.mu.Lock()
+				m.commands = append(m.commands, strings.TrimRight(l, "\r\n"))
+				m.mu.Unlock()
+			}
 			if !write("235 2.7.0 authenticated\r\n") {
 				return
 			}
@@ -143,6 +175,16 @@ func (m *fakeMTA) session(c net.Conn) {
 			m.messages = append(m.messages, body.String())
 			m.mu.Unlock()
 			if !write("250 2.0.0 queued as ABC123\r\n") {
+				return
+			}
+		case "XCLIENT":
+			if m.refuseXClient {
+				if !write("550 5.7.0 no\r\n") {
+					return
+				}
+				continue
+			}
+			if !write("250 2.0.0 ok\r\n") {
 				return
 			}
 		case "QUIT":
@@ -566,4 +608,185 @@ upstreams:
 	s := proxytest.Start(t, yaml)
 	c := dialSMTP(t, s.Addrs()["mail"])
 	c.expect(421, "no upstream tls")
+}
+
+// A SASL exchange is carried a challenge at a time, which is the only way a
+// relay can carry one at all: the mechanisms are opaque to it, so it forwards
+// the client's answer to the server's challenge without reading either, and the
+// one thing it tracks is whether the exchange ended in a 235.
+//
+// That last part is what the test is for. `authed` is what the second AUTH is
+// refused on and what `require_auth` reads, so a relay that did not notice the
+// 235 would be a relay whose authentication state is whatever the client claims.
+func TestAnAuthExchangeIsCarriedAChallengeAtATime(t *testing.T) {
+	m := startMTA(t, &fakeMTA{caps: []string{"AUTH PLAIN LOGIN", "STARTTLS"}, authChallenges: 2})
+	_, addr, pool := smtpServerFor(t, m, "")
+	c := dialSMTP(t, addr)
+	c.expect(220, "the greeting")
+	c.send("EHLO client.test")
+	c.expect(250, "EHLO")
+	// require_tls defaults on wherever TLS is reachable, so the credential
+	// goes after the upgrade. That is the ordinary submission session.
+	c.send("STARTTLS")
+	c.expect(220, "STARTTLS")
+	c.starttls(pool)
+	c.send("EHLO client.test")
+	c.expect(250, "EHLO after the upgrade")
+
+	// Two challenges, each answered by the client, then the success.
+	c.send("AUTH LOGIN")
+	c.expect(334, "the first challenge")
+	c.send("dXNlcg==")
+	c.expect(334, "the second challenge")
+	c.send("cGFzcw==")
+	c.expect(235, "the authentication")
+
+	// The relay noticed, so a second AUTH is refused rather than forwarded --
+	// and the refusal is the relay's own, which the upstream never sees.
+	c.send("AUTH LOGIN")
+	c.expect(503, "a second AUTH")
+	cmds, _ := m.got()
+	auths := 0
+	for _, cmd := range cmds {
+		if strings.HasPrefix(strings.ToUpper(cmd), "AUTH") {
+			auths++
+		}
+	}
+	if auths != 1 {
+		t.Errorf("the upstream saw %d AUTH commands, want 1: %v", auths, cmds)
+	}
+	// And the client's answers reached the upstream unread: the relay has no
+	// business decoding a mechanism it does not implement.
+	for _, want := range []string{"dXNlcg==", "cGFzcw=="} {
+		if !containsLine(cmds, want) {
+			t.Errorf("the upstream never saw %q: %v", want, cmds)
+		}
+	}
+}
+
+// A server that keeps challenging is not going to stop, so the exchange is
+// ended rather than followed forever.
+func TestAnAuthExchangeThatNeverEndsIsEnded(t *testing.T) {
+	m := startMTA(t, &fakeMTA{caps: []string{"AUTH PLAIN LOGIN", "STARTTLS"}, authForever: true})
+	_, addr, pool := smtpServerFor(t, m, "")
+	c := dialSMTP(t, addr)
+	c.expect(220, "the greeting")
+	c.send("EHLO client.test")
+	c.expect(250, "EHLO")
+	c.send("STARTTLS")
+	c.expect(220, "STARTTLS")
+	c.starttls(pool)
+	c.send("EHLO client.test")
+	c.expect(250, "EHLO after the upgrade")
+	c.send("AUTH LOGIN")
+	// Answer every challenge the relay passes on. It stops at its own bound,
+	// with a 454 rather than a hang.
+	for i := 0; i < 32; i++ {
+		code, line := c.reply()
+		if code == 334 {
+			c.send("Zm9v")
+			continue
+		}
+		if code != 454 {
+			t.Fatalf("round %d answered %d %q, want 334 or the 454 that ends it", i, code, line)
+		}
+		return
+	}
+	t.Fatal("the exchange was still going after 32 rounds")
+}
+
+// AUTH is refused before the credential travels, for the two reasons that are
+// about the session rather than about the credential.
+func TestAuthIsRefusedBeforeTheCredentialTravels(t *testing.T) {
+	m := startMTA(t, &fakeMTA{caps: []string{"AUTH PLAIN LOGIN"}})
+	_, addr, _ := smtpServerFor(t, m, "")
+	c := dialSMTP(t, addr)
+	c.expect(220, "the greeting")
+	// Before EHLO there is no session to authenticate in.
+	c.send("AUTH LOGIN")
+	c.expect(503, "AUTH before EHLO")
+	if cmds, _ := m.got(); containsPrefix(cmds, "AUTH") {
+		t.Errorf("an AUTH sent before EHLO reached the upstream: %v", cmds)
+	}
+
+	// And the credential is refused on a connection in the clear, which is the
+	// refusal that cannot wait: by the time any list is consulted the password
+	// has travelled. require_tls is forced on here by the defaults, because a
+	// listener that offers STARTTLS and does not insist on it is one downgrade
+	// away from sending the password in clear.
+	tlsM := startMTA(t, &fakeMTA{caps: []string{"AUTH PLAIN LOGIN", "STARTTLS"}})
+	_, tlsAddr, _ := smtpServerFor(t, tlsM, "")
+	tc := dialSMTP(t, tlsAddr)
+	tc.expect(220, "the greeting")
+	tc.send("EHLO client.test")
+	tc.expect(250, "EHLO")
+	tc.send("AUTH LOGIN")
+	tc.expect(538, "AUTH in the clear")
+	if cmds, _ := tlsM.got(); containsPrefix(cmds, "AUTH") {
+		t.Errorf("an AUTH in the clear reached the upstream: %v", cmds)
+	}
+}
+
+// With `xclient` the upstream is told which client the session is for, so its
+// own logs and policies see the real address rather than the proxy's.
+func TestTheUpstreamIsToldWhichClientTheSessionIsFor(t *testing.T) {
+	m := startMTA(t, &fakeMTA{caps: []string{"XCLIENT ADDR PORT"}})
+	_, addr, _ := smtpServerFor(t, m, "        xclient: true")
+	c := dialSMTP(t, addr)
+	c.expect(220, "the greeting")
+	c.send("EHLO client.test")
+	c.expect(250, "EHLO")
+
+	cmds, _ := m.got()
+	var xclient string
+	for _, cmd := range cmds {
+		if strings.HasPrefix(strings.ToUpper(cmd), "XCLIENT") {
+			xclient = cmd
+		}
+	}
+	if xclient == "" {
+		t.Fatalf("the upstream was never told the client: %v", cmds)
+	}
+	// The client here is the test's own loopback connection, so the address is
+	// 127.0.0.1 and the port is whatever the kernel gave it -- what matters is
+	// that both are there and neither is the proxy's own.
+	if !strings.Contains(xclient, "ADDR=127.0.0.1") || !strings.Contains(xclient, "PORT=") {
+		t.Errorf("XCLIENT reads %q", xclient)
+	}
+	if strings.Contains(xclient, "PORT=0") {
+		t.Errorf("XCLIENT names no port: %q", xclient)
+	}
+
+	// An upstream that refuses XCLIENT is an upstream this session cannot be
+	// honest with, so the session fails rather than continuing under the
+	// proxy's own address.
+	ref := startMTA(t, &fakeMTA{caps: []string{"XCLIENT ADDR PORT"}, refuseXClient: true})
+	_, refAddr, _ := smtpServerFor(t, ref, "        xclient: true")
+	rc := dialSMTP(t, refAddr)
+	code, line := rc.reply()
+	if code == 220 {
+		rc.send("EHLO client.test")
+		code, line = rc.reply()
+	}
+	if code/100 != 4 && code/100 != 5 {
+		t.Errorf("a refused XCLIENT left the session answering %d %q", code, line)
+	}
+}
+
+func containsLine(list []string, want string) bool {
+	for _, s := range list {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
+func containsPrefix(list []string, prefix string) bool {
+	for _, s := range list {
+		if strings.HasPrefix(strings.ToUpper(s), prefix) {
+			return true
+		}
+	}
+	return false
 }

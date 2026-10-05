@@ -41,9 +41,11 @@ import (
 	_ "github.com/rom/xproxy/internal/kinds/ntp"    // listener kind: ntp
 	_ "github.com/rom/xproxy/internal/kinds/ntske"  // listener kind: ntske
 	_ "github.com/rom/xproxy/internal/kinds/opcua"  // listener kind: opcua
+	_ "github.com/rom/xproxy/internal/kinds/radius" // listener kind: radius
 	_ "github.com/rom/xproxy/internal/kinds/s7"     // listener kind: s7
 	_ "github.com/rom/xproxy/internal/kinds/snmp"   // listener kind: snmp
 	_ "github.com/rom/xproxy/internal/kinds/syslog" // listener kind: syslog
+	_ "github.com/rom/xproxy/internal/kinds/tacacs" // listener kind: tacacs
 	_ "github.com/rom/xproxy/internal/kinds/tftp"   // listener kind: tftp
 	"github.com/rom/xproxy/internal/listener"
 )

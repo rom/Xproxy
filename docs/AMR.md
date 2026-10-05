@@ -1802,6 +1802,153 @@ two users with two sandboxes, and the plant-facing host runs only one.
 
 **Status.** Accepted.
 
+---
+
+## AMR-053: The authentication relays hold a secret; the KDC proxy holds none
+
+**Context.** RADIUS, TACACS+ and Kerberos are what an estate's own
+equipment authenticates against, and all three were missing. They do not
+divide the way the other relay kinds do. RADIUS and TACACS+ are
+symmetric-secret protocols: the integrity of a RADIUS reply and the
+confidentiality of a TACACS+ body are both an MD5 construction over a
+shared secret, so a proxy that renumbers a RADIUS identifier or reads a
+TACACS+ argument list has to hold a secret for each leg and re-sign what
+it forwards. Kerberos is the opposite: every interesting field a policy
+decides about -- the principals, the encryption types offered, whether
+pre-authentication is present -- is in the cleartext part of the message,
+and everything else is encrypted in keys that belong to the KDC and the
+service.
+
+**Decision.** Three kinds, with the key material split accordingly.
+`radius` and `tacacs` hold a secret per leg, read from a file with
+owner-only permissions enforced at load, and re-originate: a RADIUS
+packet is renumbered and both authenticators recomputed, a TACACS+ body
+is deobfuscated, decided about and reobfuscated under the upstream key.
+`kkdcp` holds **no Kerberos key at all** and performs no Kerberos
+cryptography: it parses the KDC-PROXY-MESSAGE envelope and the cleartext
+of the message inside it, decides, and either forwards the bytes it
+received or mints a KRB-ERROR of its own. An encrypted part is recognised
+and its encryption type read, never decrypted.
+
+`kkdcp` is also the first kind shared by `xproxy` and `xrelay` rather
+than by the two service-facing daemons, and the first relay-shaped kind
+whose transport is HTTPS. MS-KKDCP exists so that a client outside the
+network can reach a KDC inside it, so the deployment it was designed for
+is an internet-facing endpoint; the roster makes the edge its default
+owner and an estate that runs one in front of its own domain controllers
+writes `daemon: xrelay`.
+
+**Alternatives.** *Terminating Kerberos properly* -- holding the krbtgt
+or a service key so the proxy could read an encrypted part -- was
+rejected outright: a box that holds the key to a domain's tickets is a
+higher-value target than the domain controller it protects, and nothing a
+policy needs is behind that key. *Refusing to carry RADIUS at all*,
+on the grounds that its integrity check is optional, was rejected for the
+opposite reason: the estates that run it cannot stop, and
+`require_message_authenticator` lets a proxy make the protocol's own
+mitigation mandatory where the equipment supports it, which is more than
+the equipment does for itself. *Making `kkdcp` an HTTP route with a
+filter* rather than a listener kind was rejected because the policy is
+about Kerberos messages, not about requests: a route cannot refuse an
+AS-REP, and the refusal has to be a KRB-ERROR.
+
+**Consequences.** Two kinds in this set can read a credential's envelope
+and one cannot, which is visible in what each can police: `radius` and
+`tacacs` decide about authentication methods, privilege grants and
+individual commands, and `kkdcp` decides about who is asking for what
+kind of ticket with which encryption types. The secret files are the
+operational cost -- a RADIUS or TACACS+ listener cannot be configured
+without them, and rotating one is a reload. And `xproxy` now links a kind
+that speaks a protocol other than HTTP, DNS or raw sockets; it does so
+over its own TLS listener and its own HTTP server, which is why the kind
+refuses to build without a certificate.
+
+**Status.** Accepted.
+
+## AMR-054: On a mailbox, the bound is on what a request names
+
+**Context.** Every other protocol-aware kind in this project decides
+about the *shape* of a request: a function code that must not be written,
+a statement whose form is not on the list, a path that is not the
+device's, a command a person may not run. The mailbox protocols do not
+offer that decision, because the request worth stopping is well formed.
+`UID FETCH 1:* (BODY[])` is what a mail client sends the first time it
+synchronises an account, and it is also what collecting a mailbox with a
+stolen password looks like — character for character, with a valid
+credential, against a server that will answer it. The access is
+legitimate; the volume is the signal. A kind built the usual way would
+have a complete command policy and would stop nothing that matters.
+
+**Decision.** The centre of gravity of both mailbox kinds is a bound on
+**how much one request names**, and three choices follow from making that
+the primary check rather than an afterthought.
+
+*It is counted before the server reads anything.* On IMAP,
+`max_fetch_messages` is applied to the sequence set on the command line
+— the number of messages the request *names*, not the number that come
+back — and a set is counted without being expanded, so `1:20000` costs
+nothing to refuse. An open-ended set (`1:*`, `*`) is refused outright
+rather than counted, because the size of that request is a property of
+the mailbox and not of the client; `allow_open_sets` and a `rules` entry
+for the one account that legitimately synchronises everything are the
+two ways to write the exception down, and naming the account is the
+better of them.
+
+*A declared size is the only size there is in time.* RFC 7888's LITERAL+
+lets a client write `{310+}` and send the octets without waiting for a
+continuation request, so `max_append_bytes` has to be checked against
+the declaration. A refused command's octets are then read and dropped
+rather than left in the socket: the client announced them and is going to
+send them whatever it is told, and a connection left mid-literal is a
+desynchronised one.
+
+*On POP3 the bound is a running total, enforced mid-transfer.* There is
+no sequence set to look at — one message at a time, and the only measure
+of volume the protocol offers is the octets of a multi-line reply as they
+pass. A bound applied only before a command is one a client walks past
+one message at a time, and a single `RETR` of a very large message is a
+mailbox copy by itself, so `max_retr_bytes` and `max_messages` are
+counted as the copy happens. Crossing the message bound is a refusal the
+connection survives; crossing the byte bound inside a message ends the
+connection, because a truncated message presented to a client as whole
+would be the worse outcome.
+
+Two refusals are deliberately **not shadowable**, which is a departure
+from the project's rule that any policy can be tried in `monitor_only`
+first. A credential about to cross an unencrypted connection — `LOGIN`,
+`AUTHENTICATE` with a plaintext mechanism, `USER`/`PASS`, `APOP` — is
+refused in shadow mode too, because by the time a policy could be
+consulted the password has already travelled and observing it does not
+un-send it. The honest shadow-mode question is "what would this have
+refused", and for a plaintext password the answer arrives too late to be
+one.
+
+And the policy is enforced twice on purpose: a mechanism `mechanisms`
+does not name is removed from the capability list the client reads as
+well as refused when it is used, `LOGINDISABLED` is added where `LOGIN`
+would be refused (RFC 3501 §6.2.3 makes that the way a server says so),
+and `COMPRESS=DEFLATE` is removed always. Narrowing what the server says
+it can do is not defence in depth here — it is the difference between a
+client asking for something it can use and a client sending a password
+into a refusal.
+
+**Consequences.** The configuration has a number in it that an estate
+has to choose, and choosing it wrong is visible as support tickets rather
+than as a breach: that is why the anomaly action on both kinds is
+ordinarily `alert`, why `log_fetches` and `log_retrievals` exist to tell
+an operator what the ordinary volume actually is before a bound is set,
+and why `examples/mail/mailbox.yaml` writes the archiver's exemption as a
+rule. The decision also means a mailbox name must be compared on its
+**decoded** form, since RFC 3501 §5.1.3's modified UTF-7 spells one
+mailbox two ways and a bound attached to the wrong mailbox is no bound;
+and it means neither kind reads a message. The octets of a `FETCH` or a
+`RETR` are counted and copied, never held or inspected — content
+scanning on mail belongs on the SMTP path, where a message is one object,
+rather than on a protocol that delivers arbitrary fragments of arbitrary
+messages on request.
+
+**Status.** Accepted.
+
 ## Open items
 
 | Item | Owner | Needed by |

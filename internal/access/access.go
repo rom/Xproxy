@@ -112,6 +112,12 @@ type Policy struct {
 	// request queue nobody drains is how an approval system becomes a
 	// rubber stamp.
 	MaxOpen int
+	// MaxWorkOrder bounds the window a work order may cover; 0 is the
+	// package default of thirty days. It is separate from MaxDuration
+	// because the two measure different things: a grant is a window
+	// somebody is admitted through and is short by design, while a work
+	// order is how long the work lasts and a plant shutdown is a fortnight.
+	MaxWorkOrder time.Duration
 	// SelfApproval lets the requester approve their own request. It exists
 	// because a single-operator estate that cannot make a grant at all
 	// would simply turn the requirement off, and an explicit, logged,

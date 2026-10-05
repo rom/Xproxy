@@ -10,7 +10,7 @@ xproxy.yaml \- configuration of xproxy
 \fB/etc/xproxy/xproxy.yaml\fR
 .SH "DESCRIPTION"
 .PP
-Four daemons read this format: \fBxproxy\fR (the edge: \fBhttp\fR, \fBforward\fR, \fBtcp\fR, \fBdns\fR), \fBxgate\fR (the gate: \fBssh\fR), \fBxrelay\fR (the relay: \fBsmtp\fR, \fBftp\fR, the databases) and \fBxot\fR (the plant: \fBmodbus\fR, \fBiec104\fR, \fBs7\fR, \fBmms\fR, \fBbacnet\fR, \fBopcua\fR, \fBcoap\fR). Every one of them validates the whole file \[u2014] a listener kind a sibling serves is checked as carefully here as at home \[u2014] and binds only the listeners it owns, saying in the log which it left to whom. That is what lets an estate keep its common parts in \fBincludes\fR that they all pull in.
+Four daemons read this format: \fBxproxy\fR (the edge: \fBhttp\fR, \fBforward\fR, \fBtcp\fR, \fBdns\fR, \fBkkdcp\fR), \fBxgate\fR (the gate: \fBssh\fR), \fBxrelay\fR (the relay: \fBsmtp\fR, \fBftp\fR, the databases, \fBradius\fR, \fBtacacs\fR) and \fBxot\fR (the plant: \fBmodbus\fR, \fBiec104\fR, \fBs7\fR, \fBmms\fR, \fBbacnet\fR, \fBopcua\fR, \fBcoap\fR). Every one of them validates the whole file \[u2014] a listener kind a sibling serves is checked as carefully here as at home \[u2014] and binds only the listeners it owns, saying in the log which it left to whom. That is what lets an estate keep its common parts in \fBincludes\fR that they all pull in.
 .PP
 What they cannot share is a file: \fBmanagement.socket\fR, \fBmetrics.listen\fR and \fBlogging.directory\fR each name something only one process can own. So each daemon reads a file of its own \[u2014] \fB/etc/xproxy/xproxy.yaml\fR, \fB/etc/xproxy/xgate.yaml\fR, \fB/etc/xproxy/xrelay.yaml\fR, \fB/etc/xproxy/xot.yaml\fR \[u2014] carrying those three sections and pulling the rest in with \fBincludes\fR. Nothing stops you pointing two daemons at one file; they will then fight over the socket, and the second to start will lose.
 .PP
@@ -596,16 +596,16 @@ bool
 T}	T{
 \fBfalse\fR
 T}	T{
-Read a PROXY protocol v1 or v2 header at the start of every connection from a peer in \fBtrusted_\:proxies\fR: the client address it carries becomes the peer for limits,\: bans,\: ACLs,\: logs and forwarding headers,\: and the per address connection count moves to it. A trusted peer that sends no header,\: or a malformed one,\: is dropped without a response (\fBdrop_\:connection\fR with reason \fBproxy_\:protocol\fR,\: counted in \fBrejected_\:connections\fR);\: \fBLOCAL\fR headers keep the balancer\(aqs address;\: connections from other peers are served unchanged,\: so a client cannot choose its own address. Requires \fBtrusted_\:proxies\fR;\: read on \fBkind:\fR \fBhttp\fR,\: \fBforward\fR,\: \fBssh\fR,\: \fBtelnet\fR,\: \fBvnc\fR,\: \fBrdp\fR,\: \fBsmtp\fR,\: \fBmqtt\fR,\: \fBftp\fR,\: \fBsyslog\fR and \fBmodbus\fR,\: and not on \fBtcp\fR (which reads the first bytes itself to route by server name,\: and forwards a header instead),\: \fBdns\fR,\: \fBudp\fR,\: \fBntp\fR,\: \fBntske\fR,\: \fBdhcp\fR or \fBdhcp6\fR \-\- the datagram kinds have no connection to put a header at the start of,\: and the key establishment relay reads the ClientHello.
+Read a PROXY protocol v1 or v2 header at the start of every connection from a peer in \fBtrusted_\:proxies\fR: the client address it carries becomes the peer for limits,\: bans,\: ACLs,\: logs and forwarding headers,\: and the per address connection count moves to it. A trusted peer that sends no header,\: or a malformed one,\: is dropped without a response (\fBdrop_\:connection\fR with reason \fBproxy_\:protocol\fR,\: counted in \fBrejected_\:connections\fR);\: \fBLOCAL\fR headers keep the balancer\(aqs address;\: connections from other peers are served unchanged,\: so a client cannot choose its own address. Requires \fBtrusted_\:proxies\fR;\: read on \fBkind:\fR \fBhttp\fR,\: \fBforward\fR,\: \fBssh\fR,\: \fBtelnet\fR,\: \fBvnc\fR,\: \fBrdp\fR,\: \fBsmtp\fR,\: \fBmqtt\fR,\: \fBftp\fR,\: \fBsyslog\fR,\: \fBmodbus\fR,\: \fBtacacs\fR and \fBkkdcp\fR,\: and not on \fBtcp\fR (which reads the first bytes itself to route by server name,\: and forwards a header instead),\: \fBdns\fR,\: \fBudp\fR,\: \fBntp\fR,\: \fBntske\fR,\: \fBdhcp\fR,\: \fBdhcp6\fR or \fBradius\fR \-\- the datagram kinds have no connection to put a header at the start of,\: and the key establishment relay reads the ClientHello.
 T}
 T{
 \fBkind\fR
 T}	T{
-\fBhttp\fR,\: \fBtcp\fR,\: \fBudp\fR,\: \fBforward\fR,\: \fBdns\fR,\: \fBsmtp\fR,\: \fBmqtt\fR,\: \fBftp\fR,\: \fBsyslog\fR,\: \fBmodbus\fR,\: \fBntp\fR,\: \fBntske\fR,\: \fBdhcp\fR,\: \fBdhcp6\fR,\: \fBssh\fR,\: \fBtelnet\fR,\: \fBvnc\fR,\: \fBrdp\fR
+\fBhttp\fR,\: \fBtcp\fR,\: \fBudp\fR,\: \fBforward\fR,\: \fBdns\fR,\: \fBkkdcp\fR,\: \fBsmtp\fR,\: \fBmqtt\fR,\: \fBftp\fR,\: \fBsyslog\fR,\: \fBmodbus\fR,\: \fBntp\fR,\: \fBntske\fR,\: \fBdhcp\fR,\: \fBdhcp6\fR,\: \fBradius\fR,\: \fBtacacs\fR,\: \fBssh\fR,\: \fBtelnet\fR,\: \fBvnc\fR,\: \fBrdp\fR
 T}	T{
 \fBhttp\fR
 T}	T{
-\fBtcp\fR is a layer 4 stream listener and \fBudp\fR its datagram counterpart,\: \fBforward\fR an explicit proxy for clients,\: \fBdns\fR a DNS proxy,\: \fBsmtp\fR a protocol\-aware SMTP and submission proxy,\: \fBmqtt\fR an MQTT proxy,\: \fBftp\fR an FTP proxy,\: \fBsyslog\fR a syslog relay,\: \fBmodbus\fR a Modbus relay,\: \fBntp\fR an NTP and NTS time gateway with \fBntske\fR its key establishment relay,\: and \fBssh\fR,\: \fBtelnet\fR,\: \fBvnc\fR and \fBrdp\fR the access gateways;\: see below. The kind also decides which daemon serves the listener: \fBhttp\fR,\: \fBforward\fR,\: \fBtcp\fR,\: \fBudp\fR and \fBdns\fR are xproxy\(aqs;\: \fBssh\fR,\: \fBtelnet\fR,\: \fBvnc\fR and \fBrdp\fR are xgate\(aqs;\: \fBsmtp\fR,\: \fBftp\fR,\: \fBldap\fR,\: \fBpostgres\fR,\: \fBmysql\fR,\: \fBtds\fR,\: \fBredis\fR and \fBamqp\fR are xrelay\(aqs;\: \fBmodbus\fR,\: \fBiec104\fR,\: \fBs7\fR,\: \fBmms\fR,\: \fBbacnet\fR,\: \fBopcua\fR and \fBcoap\fR are xot\(aqs;\: and \fBmqtt\fR,\: \fBsyslog\fR,\: \fBsnmp\fR,\: \fBtftp\fR,\: \fBdhcp\fR,\: \fBdhcp6\fR,\: \fBntp\fR and \fBntske\fR are served by both relays,\: xrelay\(aqs unless the listener\(aqs \fBdaemon\fR says otherwise. A daemon handed a listener of another kind validates it and leaves it alone;\: it is never served by the wrong data plane
+\fBtcp\fR is a layer 4 stream listener and \fBudp\fR its datagram counterpart,\: \fBforward\fR an explicit proxy for clients,\: \fBdns\fR a DNS proxy,\: \fBsmtp\fR a protocol\-aware SMTP and submission proxy,\: \fBmqtt\fR an MQTT proxy,\: \fBftp\fR an FTP proxy,\: \fBsyslog\fR a syslog relay,\: \fBmodbus\fR a Modbus relay,\: \fBntp\fR an NTP and NTS time gateway with \fBntske\fR its key establishment relay,\: \fBradius\fR and \fBtacacs\fR the two protocols that authenticate network equipment,\: \fBkkdcp\fR a Kerberos KDC proxy over HTTPS,\: and \fBssh\fR,\: \fBtelnet\fR,\: \fBvnc\fR and \fBrdp\fR the access gateways;\: see below. The kind also decides which daemon serves the listener: \fBhttp\fR,\: \fBforward\fR,\: \fBtcp\fR,\: \fBudp\fR and \fBdns\fR are xproxy\(aqs;\: \fBssh\fR,\: \fBtelnet\fR,\: \fBvnc\fR and \fBrdp\fR are xgate\(aqs;\: \fBsmtp\fR,\: \fBftp\fR,\: \fBldap\fR,\: \fBpostgres\fR,\: \fBmysql\fR,\: \fBtds\fR,\: \fBredis\fR and \fBamqp\fR are xrelay\(aqs;\: \fBmodbus\fR,\: \fBiec104\fR,\: \fBs7\fR,\: \fBmms\fR,\: \fBbacnet\fR,\: \fBopcua\fR and \fBcoap\fR are xot\(aqs;\: \fBkkdcp\fR is xproxy\(aqs and xrelay\(aqs;\: and \fBmqtt\fR,\: \fBsyslog\fR,\: \fBsnmp\fR,\: \fBtftp\fR,\: \fBdhcp\fR,\: \fBdhcp6\fR,\: \fBntp\fR,\: \fBntske\fR,\: \fBradius\fR and \fBtacacs\fR are served by both relays,\: xrelay\(aqs unless the listener\(aqs \fBdaemon\fR says otherwise. A daemon handed a listener of another kind validates it and leaves it alone;\: it is never served by the wrong data plane
 T}
 T{
 \fBdaemon\fR
@@ -614,7 +614,7 @@ T}	T{
 T}	T{
 the kind\(aqs own
 T}	T{
-Which program binds this listener,\: for the eight kinds both relays serve (\fBmqtt\fR,\: \fBsyslog\fR,\: \fBsnmp\fR,\: \fBtftp\fR,\: \fBdhcp\fR,\: \fBdhcp6\fR,\: \fBntp\fR,\: \fBntske\fR). Naming a daemon that does not carry that kind\(aqs code is a load error,\: because the alternative is a port nobody binds and a policy nobody enforces. Naming the only daemon that serves a kind is allowed and warned about. Left unset,\: the eight are xrelay\(aqs and every other kind belongs to the one daemon that serves it. MQTT is in that set because Sparkplug B telemetry is a plant\(aqs own and the device inventory collects what one daemon saw,\: so an estate whose device births arrive over MQTT wants that listener on the daemon serving its control protocols
+Which program binds this listener,\: for the eleven kinds more than one daemon serves (\fBmqtt\fR,\: \fBsyslog\fR,\: \fBsnmp\fR,\: \fBtftp\fR,\: \fBdhcp\fR,\: \fBdhcp6\fR,\: \fBntp\fR,\: \fBntske\fR,\: \fBradius\fR,\: \fBtacacs\fR \-\- xrelay\(aqs by default,\: and xot\(aqs where a plant\(aqs own network equipment is behind them \-\- and \fBkkdcp\fR,\: which is xproxy\(aqs by default because MS\-KKDCP exists so that a client outside the network can reach a KDC inside it). Naming a daemon that does not carry that kind\(aqs code is a load error,\: because the alternative is a port nobody binds and a policy nobody enforces. Naming the only daemon that serves a kind is allowed and warned about. Left unset,\: those ten are xrelay\(aqs,\: \fBkkdcp\fR is xproxy\(aqs,\: and every other kind belongs to the one daemon that serves it. MQTT is in that set because Sparkplug B telemetry is a plant\(aqs own and the device inventory collects what one daemon saw,\: so an estate whose device births arrive over MQTT wants that listener on the daemon serving its control protocols
 T}
 T{
 \fBredirect_\:to_\:https\fR
@@ -818,7 +818,7 @@ T}
 .PP
 Endpoints are picked with the upstream\(aqs balancer (hash on the client address for \fBhash\fR), dial failures try the next endpoint and feed outlier ejection; active health checks run as configured on the upstream \[u2014] for a pool with no HTTP behind it, \fBhealth_check.type: tcp\fR is the probe that fits.
 .PP
-\fBA server that speaks first is relayed on a default\-only listener.\fR When no SNI routes are configured, the listener waits about a second for a ClientHello before selecting the default, so SSH, SMTP, FTP, MySQL and PostgreSQL \[u2014] all of which greet the client before it says anything \[u2014] reach their client rather than deadlocking against a peek that is waiting for bytes the client is waiting to be greeted before sending. A listener with SNI routes waits for the ClientHello hard timeout instead: initial silence cannot select the default and bypass those routes. Every connection writes one \fBtcp\fR line to the access log with the name, upstream, endpoint, bytes and duration (\fBproto: quic\fR for QUIC flows). Counters: \fBtcp_connections\fR, \fBtcp_rejected\fR, \fBtcp_errors\fR, \fBtcp_bounded\fR (ended by \fBsession_timeout\fR or a byte bound rather than by a peer; the access log\(aqs \fBclosed\fR field says which), \fBtcp_bytes_in\fR, \fBtcp_bytes_out\fR, \fBquic_flows\fR, \fBquic_rejected\fR, \fBquic_flows_open\fR; \fBxproxy_tcp_*\fR and \fBxproxy_quic_*\fR metrics. QUIC flows are keyed by client address, so a client that migrates to a new address starts a new flow (its first packet is not an Initial and is dropped; the client falls back or retries); QUIC versions other than 1 are dropped. Changing a tcp listener needs a restart.
+\fBA server that speaks first is relayed on a default\-only listener.\fR When no SNI routes are configured, the listener waits about a second for a ClientHello before selecting the default, so SSH, SMTP, FTP, MySQL and PostgreSQL \[u2014] all of which greet the client before it says anything \[u2014] reach their client rather than deadlocking against a peek that is waiting for bytes the client is waiting to be greeted before sending. A listener with SNI routes waits for the ClientHello hard timeout instead: initial silence cannot select the default and bypass those routes. Every connection writes one \fBtcp\fR line to the access log with the name, upstream, endpoint, bytes and duration (\fBproto: quic\fR for QUIC flows). Counters: \fBtcp_connections\fR, \fBtcp_rejected\fR, \fBtcp_errors\fR, \fBtcp_bounded\fR (ended by \fBsession_timeout\fR or a byte bound rather than by a peer; the access log\(aqs \fBclosed\fR field says which), \fBtcp_bytes_in\fR, \fBtcp_bytes_out\fR, \fBquic_flows\fR, \fBquic_rejected\fR, \fBquic_flows_open\fR; \fBxproxy_tcp_*\fR and \fBxproxy_quic_*\fR metrics. QUIC flows are keyed by client address, so a client that migrates to a new address starts a new flow (its first packet is not an Initial and is dropped; the client falls back or retries); QUIC versions other than 1 are dropped. A tcp listener\(aqs settings reload like any other; with \fBquic: true\fR a change on the same address needs a restart instead, because the flows are state inside the socket\(aqs transport.
 .SS "Transparent interception"
 .PP
 Two socket tricks for the deployment where the client does not know the proxy is there. Both are \fBLinux only\fR and refused at load elsewhere, and \fBtransparent\fR needs \fBCAP_NET_ADMIN\fR, which is checked at load rather than discovered on the first connection.
@@ -1093,8 +1093,8 @@ A \fBkind: forward\fR listener is an explicit proxy that clients configure in th
 .PP
 .TS
 allbox;
-lbw(1.0i) lbw(0.9i) lbw(0.9i) lbx
-lw(1.0i) lw(0.9i) lw(0.9i) lx.
+lbw(1.1i) lbw(0.9i) lbw(0.9i) lbx
+lw(1.1i) lw(0.9i) lw(0.9i) lx.
 T{
 Key
 T}	T{
@@ -1166,6 +1166,42 @@ T}	T{
 \fBproxy\fR
 T}	T{
 Sent in \fBProxy\-\:Authenticate\fR with 407
+T}
+T{
+\fBauth.\:groups\fR
+T}	T{
+map
+T}	T{
+none
+T}	T{
+Group name to member names,\: so a rule is written about the build agents rather than about eleven accounts;\: also what the estate\(aqs \fBauthorization\fR section compares its \fBgroups\fR selector against on this listener
+T}
+T{
+\fBsni\fR
+T}	T{
+enum
+T}	T{
+\fBobserve\fR
+T}	T{
+What to do when a tunnel this listener is \fInot\fR intercepting carries a TLS handshake whose server name is not the destination the CONNECT asked for: \fBenforce\fR refuses it,\: \fBobserve\fR records it and relays it,\: \fBoff\fR does not look. See below
+T}
+T{
+\fBcategories\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Named sets of destinations an egress rule can talk about;\: see below
+T}
+T{
+\fBrules\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The egress policy: who may send what,\: where and when;\: see below
 T}
 T{
 \fBconnect_\:timeout\fR
@@ -1240,6 +1276,301 @@ T}	T{
 Terminate TLS inside a CONNECT tunnel and read what passes through it;\: see below
 T}
 .TE
+.SS "Egress rules: who may send what, where, and when"
+.PP
+\fBallow\fR and \fBdeny\fR answer whether a destination exists for this listener at all. \fBrules\fR answer the question after that, which is the one an estate running a forward proxy actually has: the build agents may reach the package mirrors and nothing else, nobody may POST to file sharing, the vendor\(aqs support portal is reachable during the change window.
+.PP
+.RS 4
+.nf
+.ft CR
+forward:
+  auth:
+    users_file: /etc/xproxy/proxy.htpasswd
+    groups:
+      agents: [build1, build2, build3]
+      staff: [alice, bob]
+  categories:
+    \- name: mirrors
+      hosts: ["*.debian.org", "proxy.golang.org", "registry.npmjs.org"]
+    \- name: file\-sharing
+      file: /etc/xproxy/categories/file\-sharing.txt   # one pattern per line
+  rules:
+    # The denials come first. First match decides, so a broad deny written
+    # underneath an allow is a deny the allow has already decided for.
+    \- name: no\-uploads\-to\-file\-sharing
+      action: deny
+      categories: [file\-sharing]
+      methods: [POST, PUT, PATCH]
+      comment: "change 2026\-41"
+    \- name: no\-executables\-back
+      action: deny
+      response_types: ["application/octet\-stream", "application/x\-dosexec"]
+    \- name: no\-large\-uploads
+      action: deny
+      request_bytes_over: 10485760
+
+    \- name: agents\-to\-mirrors
+      action: allow
+      groups: [agents]
+      categories: [mirrors]
+    \- name: staff\-reads
+      action: allow
+      groups: [staff]
+      methods: [GET, HEAD, CONNECT]
+    \- name: vendor\-in\-the\-change\-window
+      action: allow
+      hosts: ["support.vendor.example"]
+      schedule: {days: [tue], from: "02:00", to: "04:00", timezone: Europe/Stockholm}
+      comment: "CR\-2026\-118"
+
+    # Nothing else is permitted. This rule only makes that visible in the
+    # report; without it the refusal is the same, under the reason no_rule.
+    \- name: everything\-else
+      action: observe
+.ft
+.fi
+.RE
+.PP
+\fBFirst match decides, and a destination no rule matched is refused\fR, under the reason \fBno_rule\fR \[u2014] the same shape the OT relays use, for the same reason: a policy that permits what nobody wrote a rule for is a policy whose gaps are invisible. A \fBrules\fR list therefore needs a rule that allows, or the listener refuses everything.
+.PP
+An \fBallow\fR rule means this policy has nothing to object to; it does not skip what comes after it. The imported threat lists and the estate\(aqs own \fBauthorization\fR section still decide, so a listener\(aqs rule can narrow the estate\(aqs policy and never widen it.
+.PP
+.TS
+allbox;
+lbw(1.4i) lbw(0.7i) lbw(0.9i) lbx
+lw(1.4i) lw(0.7i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBcategories[].\:name\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+What a rule names;\: compared without case and never globbed,\: so a typo is refused by validation rather than becoming a rule about nothing
+T}
+T{
+\fBcategories[].\:hosts\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Destination patterns in the \fBallow\fR/\:\fBdeny\fR spelling: an exact name,\: \fB*.\:suffix\fR,\: an address or a CIDR
+T}
+T{
+\fBcategories[].\:file\fR
+T}	T{
+path
+T}	T{
+none
+T}	T{
+Further patterns,\: one per line,\: \fB#\fR for a comment;\: absolute,\: read at start and on reload,\: and a file that cannot be read fails the load
+T}
+T{
+\fBrules[].\:name\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+What the security event,\: the shadow ledger and the report call this rule
+T}
+T{
+\fBrules[].\:action\fR
+T}	T{
+enum
+T}	T{
+\fBdeny\fR
+T}	T{
+\fBallow\fR,\: \fBdeny\fR or \fBobserve\fR;\: \fBobserve\fR records a match and keeps looking
+T}
+T{
+\fBrules[].\:users\fR,\: \fBnot_\:users\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The name the proxy authenticated,\: compared without case
+T}
+T{
+\fBrules[].\:groups\fR,\: \fBnot_\:groups\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Groups from \fBauth.\:groups\fR
+T}
+T{
+\fBrules[].\:networks\fR,\: \fBnot_\:networks\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Client addresses or CIDRs
+T}
+T{
+\fBrules[].\:categories\fR,\: \fBnot_\:categories\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Category names this listener defines
+T}
+T{
+\fBrules[].\:hosts\fR,\: \fBnot_\:hosts\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Destination patterns,\: as for a category
+T}
+T{
+\fBrules[].\:ports\fR
+T}	T{
+list of int
+T}	T{
+\fB[]\fR
+T}	T{
+Destination ports
+T}
+T{
+\fBrules[].\:methods\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+HTTP methods,\: upper case
+T}
+T{
+\fBrules[].\:paths\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Request path globs: \fB*\fR within one segment,\: \fB**\fR across segments
+T}
+T{
+\fBrules[].\:request_\:types\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Request media types;\: \fBtype/\:*\fR for a whole tree. The parameters are dropped,\: so \fBtext/\:html; charset=\:utf\-\:8\fR is \fBtext/\:html\fR,\: and a header that is not a media type matches nothing
+T}
+T{
+\fBrules[].\:response_\:types\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Response media types,\: decided when the response head arrives
+T}
+T{
+\fBrules[].\:request_\:bytes_\:over\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Match a request body larger than this
+T}
+T{
+\fBrules[].\:response_\:bytes_\:over\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Match a response body larger than this
+T}
+T{
+\fBrules[].\:schedule\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Hours the rule is in force,\: in the spelling \fBmodbus\fR uses;\: outside them the rule does not match
+T}
+T{
+\fBrules[].\:comment\fR
+T}	T{
+string
+T}	T{
+none
+T}	T{
+Carried into the event and the ledger,\: which is where a change number belongs
+T}
+.TE
+.PP
+##### What a rule can be decided from
+.PP
+A forward proxy sees two different things, and this is the limit to understand before writing a policy here.
+.PP
+A \fBplain request\fR through the proxy carries its method, its path, its content type and usually its length, so every selector above can be decided about it.
+.PP
+A \fBCONNECT tunnel\fR carries a destination and nothing else. The method and the content types are inside TLS. So a rule naming \fBmethods\fR, \fBpaths\fR, \fBrequest_types\fR, \fBresponse_types\fR or a byte bound \fBdecides nothing for a destination reached through a tunnel, unless this listener is reading inside it\fR \[u2014] which is \fBintercept\fR with \fBhttp\fR left at its default, and is where those rules are worth what they look like they are worth. The messages in a tunnel that is being decrypted are ordinary HTTP, and the same rules decide about them in the same phases, so a policy means one thing on port 80 and the same thing on port 443. Reading HTTP inside the tunnel is what that path does and does not cover.
+.PP
+Without interception the limit stands, and it is not left to be discovered. Validation names the rules in that position \[u2014] including on a listener that intercepts with \fBhttp: off\fR, which is the same silence written differently \[u2014] \fBxproxyctl listeners\fR shows the listener\(aqs rule count, and \fBGET /v1/listeners\fR carries an \fBegress\fR section with how many of them need a visible request and whether this listener reads inside its tunnels.
+.PP
+The three honest limits of the rest:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+A \fBresponse\fR rule is decided when the response head arrives, which is after the destination was contacted. A body nobody is allowed to receive still does not have to arrive, but the request did leave.
+.PP
+.ti -3n
+\(bu
+A \fBbyte bound\fR on a body whose length was declared is decided before anything is sent. On a body with no declared length \[u2014] a chunked upload \[u2014] the bytes are counted as they travel and the connection is cut past the bound. What has already gone cannot be recalled, which is why a size rule is worth less on egress than a destination rule.
+.PP
+.ti -3n
+\(bu
+A rule about \fBusers or groups\fR on a listener with no \fBauth\fR matches nobody, because there is no name. Validation warns rather than guessing.
+.RE
+.PP
+.SS "The server name inside a tunnel"
+.PP
+A client allowed to reach \fBcdn.example.com\fR can open a tunnel there and then handshake for anything else that address serves \[u2014] which on a shared CDN is a great many things, and is how domain fronting works. The destination policy then decided about a name nobody used.
+.PP
+\fBsni\fR is the check that closes it, and it needs no interception: the first bytes of the tunnel are a ClientHello the client was going to send anyway, and the name in it either is the destination or is not.
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBenforce\fR refuses a mismatch (\fBforward_sni_mismatch\fR, reason \fBsni_mismatch\fR, and the client address observed for a ban).
+.PP
+.ti -3n
+\(bu
+\fBobserve\fR, the default, records it and relays it. A name that disagrees is almost always fronting and occasionally a client with a stale DNS answer, so an estate reads its own traffic before this refuses any of it.
+.PP
+.ti -3n
+\(bu
+\fBoff\fR does not look.
+.RE
+.PP
+.PP
+A handshake with \fBno\fR server name is not a mismatch and is never refused by this: that is what Encrypted Client Hello looks like from here, and refusing it would be refusing a client for using a privacy feature. A tunnel opened to an address rather than a name is not a mismatch either \[u2014] there the policy checked the address, and the bytes go to that address whatever the handshake says.
+.PP
+\fBintercept\fR has carried this check for its own tunnels since it was written; \fBsni\fR is the same check for the tunnels nothing is decrypting.
 .SS "TLS interception on a forward listener"
 .PP
 A CONNECT tunnel is opaque by design: the proxy sees a name and a byte count and nothing else, so a destination policy is the only policy it can apply. \fBintercept\fR changes that. The proxy answers the client\(aqs handshake with a certificate it signs itself, opens its own TLS connection to the destination, and relays the plaintext between the two \[u2014] which is what lets YARA rules, and everything else that reads bytes, see inside HTTPS.
@@ -1350,6 +1681,15 @@ T}	T{
 Offered to the destination and accepted from the client;\: \fBh2\fR warns
 T}
 T{
+\fBhttp\fR
+T}	T{
+enum
+T}	T{
+\fBauto\fR
+T}	T{
+Read the plaintext as HTTP,\: so that a rule about a method,\: a path,\: a content type or a body size decides inside the tunnel too: \fBauto\fR does it when the listener has such a rule,\: \fBon\fR always,\: \fBoff\fR never. See below
+T}
+T{
 \fByara\fR
 T}	T{
 object
@@ -1373,6 +1713,50 @@ The issued certificate carries the \fIreal\fR certificate\(aqs names \[u2014] it
 \fBsocks5\fR tunnels on the same listener are intercepted by the same rules: a destination reachable in either protocol on one port under one policy is not a policy if one of the two walks past it.
 .PP
 An intercepted connection writes a \fBforward_intercept\fR access line with the client, user, destination, negotiated ALPN and the TLS version reached upstream. Counters: \fBforward_intercepted\fR, \fBforward_intercept_refused\fR, \fBforward_intercept_passed\fR and \fBforward_intercept_bytes\fR.
+.PP
+##### Reading HTTP inside the tunnel
+.PP
+Decrypting a tunnel is what makes the rest of this listener\(aqs policy possible; reading it as HTTP is what makes the egress rules decide in there. \fBhttp\fR says whether to:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBauto\fR, the default, reads when there is something to decide \[u2014] when the listener has at least one rule naming a method, a path, a content type or a body size. A policy that is only about destinations gains nothing from parsing, and an estate that upgrades does not get a behaviour it did not ask for.
+.PP
+.ti -3n
+\(bu
+\fBon\fR reads every intercepted tunnel, which is what to set while writing those rules so that the access log carries the requests before any rule refuses one.
+.PP
+.ti -3n
+\(bu
+\fBoff\fR never reads, and the tunnel is relayed as bytes to YARA and the rest exactly as before. Validation warns if rules that need a request are written on a listener set this way, because that combination is a policy that cannot fire.
+.RE
+.PP
+.PP
+What is read is \fBHTTP/1.1\fR, which is what \fBalpn\fR offers. Three things are relayed as bytes instead, and each is counted, so "nothing was read" is never a silent answer:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+a tunnel that negotiated \fBh2\fR, because this reads HTTP/1 and a proxy guessing at HTTP/2 framing is a proxy that breaks sites;
+.PP
+.ti -3n
+\(bu
+a tunnel whose first bytes are \fBnot a request line\fR, because SSH, a database session and a line protocol inside TLS all happen, and answering one with a 400 breaks it for no reason. The decision is the version at the end of the line rather than a list of methods, so \fBPROPFIND\fR and anything else an extension invented is still HTTP;
+.PP
+.ti -3n
+\(bu
+everything \fBafter a 101\fR, because the connection has stopped being request\-and\-response. A WebSocket through an intercepting proxy is ordinary traffic and is relayed as such \[u2014] what its messages carry is the WebSocket guard\(aqs question rather than this one.
+.RE
+.PP
+.PP
+Those two counters are \fBforward_intercept_requests\fR, the requests read, and \fBforward_intercept_bytes_only\fR, the tunnels relayed without being read.
+.PP
+\fBA refusal is an HTTP response on the client\(aqs own connection\fR: 403 with the reason, and then the connection closes, because keeping it alive would mean reading the rest of a body nobody is allowed to send. The access line is \fBforward_intercept_request\fR with the method, the destination and the status \[u2014] the method and not the path, because this listener logs destinations rather than URLs everywhere else, and an intercepted connection is the last place to start writing down more of what somebody asked for.
+.PP
+\fBRequests are relayed as they arrived.\fR Nothing is added: no \fBVia\fR, no forwarded headers, because the point of interception here is that the destination sees what the client sent and judges the message the client wrote. What the parse does refuse is framing it cannot agree with \[u2014] a request carrying both a length and a chunked encoding is the request\-smuggling shape, and it is answered with 400, counted as \fBbad_request\fR, and logged as \fBforward_tunnel_bad_request\fR rather than being passed on for the destination to disagree about.
+.PP
+\fBThe \fBHost\fR a request names has to be the host the tunnel was opened to\fR, under the same \fBsni\fR setting and for the same reason: otherwise a client permitted to reach one name uses the connection to that name\(aqs address to ask for another. \fBenforce\fR answers 403 with reason \fBhost_mismatch\fR, \fBobserve\fR records \fBforward_tunnel_host_mismatch\fR and relays it, \fBoff\fR does not look; a tunnel opened to an address is the same exception as it is for \fBsni\fR.
 .PP
 .RS 4
 .nf
@@ -1484,10 +1868,10 @@ A policy refusal is answered with the closest SOCKS reply code rather than a bla
 .PP
 \fBUDP associations\fR (\fBsocks_udp: true\fR) are how DNS and QUIC travel through a SOCKS proxy. Each association binds its own socket, is fixed to the client address that opened it (the first datagram sets it), only relays answers from destinations that client has actually sent to, and dies with its TCP control connection \[u2014] which is what RFC 1928 requires and what keeps the socket from becoming an open reflector. Datagram headers are parsed with the same care as the handshake: fragments are dropped rather than reassembled, and the peer table is bounded. \fBforward_udp_associations\fR, \fBforward_udp_open\fR and \fBforward_udp_dropped\fR count the association and everything refused.
 .PP
-Each request writes one \fBforward\fR line to the access log with the client address, user, method, destination, status, bytes and duration. SOCKS connections write the same line with \fBprotocol: socks5\fR. Counters: \fBforward_requests\fR, \fBforward_tunnels\fR, \fBforward_tunnels_open\fR, \fBforward_denied\fR, \fBforward_auth_failed\fR, \fBforward_rejected\fR, \fBforward_errors\fR, \fBforward_bytes_in\fR, \fBforward_bytes_out\fR, \fBforward_socks\fR, \fBforward_udp_associations\fR, \fBforward_udp_open\fR, \fBforward_udp_dropped\fR, \fBforward_intercepted\fR, \fBforward_intercept_refused\fR, \fBforward_intercept_passed\fR, \fBforward_intercept_bytes\fR; \fBxproxy_forward_*\fR metrics. The policy and the users file reload; the address and TLS settings need a restart like every listener.
+Each request writes one \fBforward\fR line to the access log with the client address, user, method, destination, status, bytes and duration. SOCKS connections write the same line with \fBprotocol: socks5\fR. Counters: \fBforward_requests\fR, \fBforward_tunnels\fR, \fBforward_tunnels_open\fR, \fBforward_denied\fR, \fBforward_auth_failed\fR, \fBforward_rejected\fR, \fBforward_errors\fR, \fBforward_bytes_in\fR, \fBforward_bytes_out\fR, \fBforward_socks\fR, \fBforward_udp_associations\fR, \fBforward_udp_open\fR, \fBforward_udp_dropped\fR, \fBforward_intercepted\fR, \fBforward_intercept_refused\fR, \fBforward_intercept_passed\fR, \fBforward_intercept_bytes\fR, \fBforward_intercept_requests\fR, \fBforward_intercept_bytes_only\fR; \fBxproxy_forward_*\fR metrics. The policy and the users file apply in place, without touching a connection; the TLS settings and the address reload too, by rebuilding the listener on the socket it already holds (or binding the new address and draining the old one), so neither needs a restart.
 .SS "server.listeners[].dns (kind: dns)"
 .PP
-A \fBkind: dns\fR listener is a forwarding DNS proxy on the listener address over UDP and TCP. Queries are answered from a bounded cache when they can be, refused or blocked by policy, and otherwise forwarded to the upstream resolvers with a fresh transaction id on a fresh socket (random source port) per query; the answer must echo the id and the question. A truncated UDP answer is retried over TCP to the upstream, and an answer larger than the client\(aqs UDP size (512 bytes or its EDNS advertisement, honoured up to 1232 bytes per RFC 9715 so a spoofed source cannot draw a large reply) is truncated so the client retries over TCP. Only one question per query and the QUERY opcode are handled (FORMERR and NOTIMP otherwise); responses arriving as queries and packets from banned clients are dropped. A dns listener takes \fBaddress\fR, \fBdns\fR and optionally \fBtls\fR; bans and the global connection limits apply to TCP clients as on every listener. The policy, upstreams and cache bounds reload (the cache is kept); the address needs a restart.
+A \fBkind: dns\fR listener is a forwarding DNS proxy on the listener address over UDP and TCP. Queries are answered from a bounded cache when they can be, refused or blocked by policy, and otherwise forwarded to the upstream resolvers with a fresh transaction id on a fresh socket (random source port) per query; the answer must echo the id and the question. A truncated UDP answer is retried over TCP to the upstream, and an answer larger than the client\(aqs UDP size (512 bytes or its EDNS advertisement, honoured up to 1232 bytes per RFC 9715 so a spoofed source cannot draw a large reply) is truncated so the client retries over TCP. Only one question per query and the QUERY opcode are handled (FORMERR and NOTIMP otherwise); responses arriving as queries and packets from banned clients are dropped. A dns listener takes \fBaddress\fR, \fBdns\fR and optionally \fBtls\fR; bans and the global connection limits apply to TCP clients as on every listener. The policy, upstreams and cache bounds apply in place and the cache is kept. Anything else about the listener reloads by rebuilding it on the datagram socket it already holds, which is handed from one generation to the next: no query is lost and no restart is needed. With \fBdoq\fR that handover is not possible \-\- a QUIC connection is state inside the transport \-\- so a change on the same address asks for a restart.
 .PP
 With \fBtls\fR (certificates only, no ACME) the listener is encrypted: no plain UDP is bound, the TCP port serves DNS over TLS (RFC 7858, ALPN \fBdot\fR or none) and DNS over HTTPS (RFC 8484, ALPN \fBh2\fR or \fBhttp/1.1\fR) at \fBdoh_path\fR, chosen per connection by the negotiated protocol. The same policy, cache and counters serve both; \fBqueries_dot\fR and \fBqueries_doh\fR count them, and \fBxproxyctl tls\fR shows the certificate. Run a plain listener on 53 and an encrypted one on 853 (and 443 when browsers should use it) side by side.
 .PP
@@ -5346,7 +5730,11 @@ T}
 .PP
 \fBTwo things are refusable, and they are different.\fR \fBrequire_grant: true\fR refuses an operation with no open, approved grant covering it, reason \fBengineering_no_grant\fR. On a listener that does \fInot\fR require one, an operation that happens outside every approved window is still alerted \[u2014] \fBengineering_ungranted\fR \[u2014] because an engineering action nobody filed is worth telling somebody about even where the policy allows it, and that alert is the step every estate takes before it starts refusing. \fBaction: alert\fR keeps \fBrequire_grant\fR\(aqs bookkeeping and drops its refusal, which is how to run the policy for a fortnight and read the report before it can stop a commissioning.
 .PP
-\fBA grant is a work order.\fR It is requested and approved through the same \fB/v1/access\fR machinery and \fBxproxyctl access\fR as a bastion session, against this listener\(aqs name, and its reason is the change reference. The reason goes into the security event as \fBwork_order\fR and into the ledger beside the operation, so "who downloaded what, when, under which work order" has an answer that is not a person\(aqs memory. A listener with \fBrequire_grant: true\fR on a daemon with no ledger \fBfails closed at startup\fR rather than at four in the afternoon, the same way the gate kinds do.
+\fBengineering_ungranted\fR is \fBnot\fR a refusal and is not counted as one. The operation was carried \[u2014] that is the whole difference between the two reasons \[u2014] so it has a counter of its own, \fBxproxy_engineering_outside_window_total\fR, beside \fBxproxy_engineering_total\fR. The refusals stay in \fBxproxy_refusals_total\fR, where \fBengineering_no_grant\fR is the only engineering reason that belongs. The ATT&CK technique is observed either way: an operation outside every window is a detection whether or not anybody refused it.
+.PP
+\fBThe grant is the approval.\fR It is requested and approved through the same \fB/v1/access\fR machinery and \fBxproxyctl access\fR as a bastion session, against this listener\(aqs name, and its reason says what the change is. The event carries \fBgrant\fR and \fBgrant_reason\fR, and the ledger records them beside the operation, so "who downloaded what, when, under whose approval" has an answer that is not a person\(aqs memory. A listener with \fBrequire_grant: true\fR on a daemon with no ledger \fBfails closed at startup\fR rather than at four in the afternoon, the same way the gate kinds do.
+.PP
+\fBThe work order is a different thing, and is not an approval.\fR A work order is the change reference somebody filed against the device \[u2014] nobody approves it and it permits nothing. Where one is open, every engineering event on that device carries \fBwork_order\fR and \fBwork_order_by\fR, its \fBseverity\fR is \fBnotice\fR rather than \fBwarning\fR, and the operation counts under \fBxproxy_engineering_filed_total\fR as well as \fBxproxy_engineering_total\fR. Where none is, the event says \fBseverity: warning\fR and names no reference. That is the whole of what a work order does: a listener with \fBrequire_grant: true\fR refuses an operation with no grant whatever work orders are open.
 .PP
 \fBThe refusal is the protocol\(aqs own.\fR It answers the way that kind answers a refused request \[u2014] a Modbus exception, an S7 error class, an OPC UA service fault \[u2014] and it does \fBnot\fR feed the ban ladder: an engineer who forgot to file a change should be told no, not locked out of the plant. In shadow mode, or a learning run without \fBenforce\fR, nothing is refused and the would\-be refusals go to the shadow report like every other decision on the listener.
 .PP
@@ -10442,7 +10830,7 @@ enum
 T}	T{
 \fBallow\fR
 T}	T{
-\fBallow\fR,\: \fBdeny\fR or \fBobserve\fR. \fBobserve\fR logs and counts and then keeps looking,\: which is how a rule is tried on live traffic before it decides anything
+\fBallow\fR,\: \fBdeny\fR or \fBobserve\fR. \fBobserve\fR records the rule and decides nothing,\: so the rules below it still decide \[u2014] and on a listener whose \fBdefault_\:action\fR is \fBdeny\fR,\: the default does. That is what lets a rule be tried on live traffic without the trial changing what happens
 T}
 T{
 \fBclients\fR
@@ -11251,6 +11639,2075 @@ T}
 Counters: \fBmms_associations\fR, \fBmms_sessions\fR, \fBmms_selections\fR, and \[u2014] the one to read first on a new deployment \[u2014] \fBmms_plaintext_passwords\fR, the associations whose ACSE authentication value was a password in the clear. A high count is not a fault in this relay; it is the estate\(aqs own state. \fBmms_opaque_contexts\fR counts the data values that arrived on a presentation context the association never defined, which are the messages no service rule decided about. \fBmms_server_errors\fR is the IED refusing what this relay allowed \[u2014] the number that says the two policies disagree \[u2014] and \fBmms_server_refusals\fR the IED refusing the association itself.
 .PP
 Refusals are \fBmms_denied\fR for the ban triggers, and the fine\-grained reason is in the refusal counters: \fBclient_not_allowed\fR, \fBclient_denied\fR, \fBunreadable_transport\fR, \fBunexpected_transport\fR, \fBunreadable_session\fR, \fBunreadable_presentation\fR, \fBunknown_context\fR, \fBno_associate_request\fR, \fBunreadable_associate\fR, \fBunexpected_associate\fR, \fBno_ap_title\fR, \fBap_title_denied\fR, \fBap_title_not_allowed\fR, \fBno_ae_qualifier\fR, \fBae_qualifier_not_allowed\fR, \fBplaintext_password\fR, \fBunreadable_service\fR, \fBunexpected_pdu\fR, \fBno_service\fR, \fBservice_unknown\fR, \fBservice_denied\fR, \fBservice_not_allowed\fR, \fBservice_class_denied\fR, \fBservice_class_not_allowed\fR, \fBread_only\fR, \fBdomain_services_not_allowed\fR, \fBrule_denied\fR, \fBno_rule\fR, \fBdomain_denied\fR, \fBdomain_not_allowed\fR, \fBobject_denied\fR, \fBobject_not_allowed\fR, \fBwrite_object_not_allowed\fR, \fBconstraint_denied\fR, \fBconstraint_unknown\fR, \fBconstraint_not_allowed\fR, \fBwrite_constraint_not_allowed\fR, \fBoperate_not_allowed\fR, \fBnot_selected\fR, \fBselection_expired\fR, \fBfile_denied\fR, \fBfile_not_allowed\fR, \fBfile_unreadable\fR, \fBtoo_many_names\fR, \fBtoo_many_requests\fR, \fBrate_limited\fR, \fBunreadable_frame\fR, \fBupstream_unavailable\fR.
+.SS "server.listeners[].radius (kind: radius)"
+.PP
+RADIUS on UDP 1812 and 1813: what authenticates most of the network equipment in most estates \[u2014] every 802.1X switch port, every VPN concentrator, every wireless controller, and on the routers that do not run TACACS+ the administrative logins too.
+.PP
+\fBThis listener\(aqs value is that it holds the shared secret.\fR Without one it can read a packet\(aqs code, identifier and attributes \[u2014] all of that is in the clear \[u2014] but it cannot tell a packet the server will accept from one it will not. With one, every arriving packet\(aqs integrity is checked before anything is forwarded, which is the difference between a relay that filters and a relay that filters \fIand\fR authenticates. So \fBsecret_file\fR is not optional in any deployment worth the name, and the validator warns when it is missing.
+.PP
+\fB\fBrequire_message_authenticator\fR defaults on, and that is the Blast\-RADIUS answer.\fR The Response Authenticator is MD5 over the reply with the request\(aqs authenticator spliced in and the secret appended; a chosen\-prefix MD5 collision turns an Access\-Reject into an Access\-Accept on the wire, which is CVE\-2024\-3596. RFC 3579\(aqs Message\-Authenticator is a keyed HMAC over the whole packet and the attack does not reach it. Every current server and NAS can send one; requiring it is the published mitigation.
+.PP
+\fBThe reply leg is where privilege is granted.\fR A client asks for access by logging in; the \fIserver\(aqs\fR answer is what says this login gets the enable prompt \[u2014] \fBService\-Type = Administrative\-User\fR, or \fBshell:priv\-lvl=15\fR in a Cisco av\-pair. So \fBmax_privilege_level\fR and \fBdeny_administrative_replies\fR are checks on what comes back, and they are the ones that bound what a compromised or spoofed RADIUS server can hand out across a whole estate of routers.
+.PP
+\fBA password is read, never recovered.\fR \fBUser\-Password\fR is XORed with MD5(secret \[u2016] authenticator), so anybody holding the secret can recover it \[u2014] including this relay. It does not: it records that a request carried one and how long it was. \fBrefuse_plaintext_passwords\fR defaults off for the same reason the knob on the \fBmms\fR listener does: PAP is most of the installed base, refusing it removes the only authentication a lot of equipment has, and counting it does not.
+.PP
+\fBThis listener takes no \fBtls\fR section.\fR RADIUS is UDP and has no transport security of any kind. RadSec (RFC 6614) puts it inside TLS on TCP 2083, which is a different transport with a different trust model rather than a flag on this one.
+.PP
+.TS
+allbox;
+lbw(1.6i) lbw(0.9i) lbw(0.9i) lbx
+lw(1.6i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBupstream\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+The RADIUS server pool
+T}
+T{
+\fBaccounting_\:upstream\fR
+T}	T{
+string
+T}	T{
+\fB""\fR
+T}	T{
+The pool \fBAccounting\-\:Request\fR goes to,\: where an estate separates them. Empty sends accounting to \fBupstream\fR
+T}
+T{
+\fBsecret_\:file\fR
+T}	T{
+absolute path
+T}	T{
+none (warned about)
+T}	T{
+The shared secret,\: one line,\: readable only by its owner \[u2014] a file rather than a value here,\: because a secret written in this section is a secret in the configuration management,\: the backups and every review of the change that added it
+T}
+T{
+\fBupstream_\:secret_\:file\fR
+T}	T{
+absolute path
+T}	T{
+\fB""\fR
+T}	T{
+The secret towards the servers,\: where it differs. Setting it makes this listener a secret boundary: the equipment\(aqs secret never reaches the server and the server\(aqs never reaches the equipment. The cost is that the obfuscated \fBUser\-\:Password\fR has to be re\-obfuscated under the new secret,\: which means this relay recovers it in memory for the length of one packet;\: a listener that does not set this never does
+T}
+T{
+\fBallow_\:clients\fR,\: \fBdeny_\:clients\fR
+T}	T{
+list of CIDR
+T}	T{
+\fB[]\fR
+T}	T{
+The networks a client may send from;\: deny is evaluated first. On a protocol where the client is a switch at a fixed address this is the cheapest line in the section
+T}
+T{
+\fBcodes\fR,\: \fBdeny_\:codes\fR
+T}	T{
+list
+T}	T{
+the four a client sends
+T}	T{
+The packet codes carried,\: by name (\fBaccess\-\:request\fR,\: \fBaccounting\-\:request\fR,\: \fBstatus\-\:server\fR) or number. Empty allows authentication,\: accounting and the two status queries \[u2014] and not the dynamic authorization codes
+T}
+T{
+\fBrequire_\:message_\:authenticator\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse a packet with no valid RFC 3579 digest. Turning it off on a listener that has a secret means accepting replies whose only integrity check is a collidable MD5;\: name the equipment too old to send one in a rule instead
+T}
+T{
+\fBverify_\:response_\:authenticator\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Check RFC 2865\(aqs own authenticator on a reply. It is the weaker of the two \[u2014] it is what the collision forges \[u2014] and still worth running: it catches a mismatched secret,\: a corrupted packet and an answer from the wrong server
+T}
+T{
+\fBallow_\:dynamic_\:authorization\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Carry RFC 5176\(aqs \fBDisconnect\-\:Request\fR and \fBCoA\-\:Request\fR. Each ends or re\-authorises a live user\(aqs session from one datagram,\: and they run from the server towards the equipment rather than the other way
+T}
+T{
+\fBauth_\:types\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+The credential shapes carried: \fBpap\fR,\: \fBchap\fR,\: \fBmschap\fR,\: \fBeap\fR,\: \fBnone\fR
+T}
+T{
+\fBrefuse_\:plaintext_\:passwords\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse an \fBAccess\-\:Request\fR carrying \fBUser\-\:Password\fR;\: see above for why it defaults off
+T}
+T{
+\fBeap_\:types\fR,\: \fBdeny_\:eap_\:types\fR
+T}	T{
+list
+T}	T{
+any not weak
+T}	T{
+The EAP methods carried,\: by name (\fBpeap\fR,\: \fBtls\fR,\: \fBttls\fR,\: \fBmschapv2\fR) or number
+T}
+T{
+\fBrefuse_\:weak_\:eap\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse the methods with no server authentication and no key material,\: crackable offline from one observed exchange: EAP\-MD5,\: LEAP,\: and the bare one\-time\-password and token\-card types. A client that Naks its way down to EAP\-MD5 has downgraded the estate\(aqs authentication to a hash somebody can crack on a laptop
+T}
+T{
+\fBusers\fR,\: \fBdeny_\:users\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The \fBUser\-\:Name\fR values carried,\: matched case\-insensitively on the whole name
+T}
+T{
+\fBrealms\fR,\: \fBdeny_\:realms\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The realms a name may carry,\: in all three forms the installed base uses: \fBuser@realm\fR,\: \fBrealm\euser\fR and \fBrealm/\:user\fR. A realm is routing \[u2014] a server proxies by it \[u2014] so an allow list here is a say in where a credential goes
+T}
+T{
+\fBrequire_\:realm\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse a user name with no realm in it,\: which is where a misconfigured supplicant and a hand\-typed login both land
+T}
+T{
+\fBnas_\:identifiers\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The \fBNAS\-\:Identifier\fR values carried. It is a claim rather than a fact,\: so it is worth pairing with \fBallow_\:clients\fR rather than trusting alone
+T}
+T{
+\fBmax_\:privilege_\:level\fR
+T}	T{
+int
+T}	T{
+\fB15\fR (no bound)
+T}	T{
+The administrative privilege a \fIreply\fR may grant,\: 0 to 15,\: read from a Cisco av\-pair\(aqs \fBpriv\-\:lvl\fR. Setting it to 1 on the listener in front of the switches means no RADIUS answer crossing this relay can hand out enable,\: whatever the server says. Every av\-pair on the reply is read,\: and every pair inside one,\: and the highest grant found is the one bounded \[u2014] including the NUL\-separated spelling several platforms use,\: and a value outside 0\[u2013]15. Which pair a given platform acts on is the platform\(aqs business,\: so all of them are this relay\(aqs
+T}
+T{
+\fBdeny_\:administrative_\:replies\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse a reply carrying \fBService\-\:Type =\: Administrative\-\:User\fR,\: which is the standard attribute\(aqs spelling of the same grant
+T}
+T{
+\fBdeny_\:attributes\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Attribute types a request may not carry,\: by name or number
+T}
+T{
+\fBdeny_\:reply_\:attributes\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Attribute types a reply may not carry. The interesting one is \fBTunnel\-\:Private\-\:Group\-\:Id\fR: the VLAN a RADIUS answer puts a port in,\: which a listener whose job is authentication rather than authorisation can refuse to carry
+T}
+T{
+\fBrefuse_\:proxy_\:state\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse a request carrying \fBProxy\-\:State\fR. The attribute exists so a proxy can recognise its own forwarded requests,\: and a client sending one is either a proxy or something putting state into a server\(aqs reply path
+T}
+T{
+\fBmax_\:attributes\fR
+T}	T{
+int
+T}	T{
+\fB255\fR
+T}	T{
+The attributes one packet may carry \[u2014] more than any real packet,\: and far short of what 4096 octets of empty attributes holds
+T}
+T{
+\fBmax_\:message_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB4096\fR
+T}	T{
+One datagram;\: RFC 2865\(aqs own maximum
+T}
+T{
+\fBmax_\:pending\fR
+T}	T{
+int
+T}	T{
+\fB256\fR
+T}	T{
+The requests waiting for answers,\: bounded by the width of the identifier space
+T}
+T{
+\fBrequest_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB10s\fR
+T}	T{
+How long a request\(aqs slot is held
+T}
+T{
+\fBrate_\:limit\fR,\: \fBrate_\:burst\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (off)
+T}	T{
+Requests a second per client address. Here this is also the only thing between a credential\-stuffing run and a server doing a key derivation per attempt
+T}
+T{
+\fBdefault_\:action\fR
+T}	T{
+enum
+T}	T{
+\fBdeny\fR
+T}	T{
+\fBdeny\fR or \fBallow\fR for a request no rule matched
+T}
+T{
+\fBdeny_\:response\fR
+T}	T{
+enum
+T}	T{
+\fBreject\fR
+T}	T{
+\fBreject\fR (an \fBAccess\-\:Reject\fR,\: which the client reports as a failed login and stops on) or \fBdrop\fR. An \fBAccounting\-\:Request\fR has nothing useful to refuse with,\: so a refused one is always dropped
+T}
+T{
+\fBlog_\:requests\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A line per request and per answer: who,\: from where,\: which method,\: and what was granted
+T}
+T{
+\fBalert_\:on_\:deny\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A security event for every refusal
+T}
+T{
+\fBmonitor_\:only\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Evaluate and enforce nothing,\: the same as \fBpolicy:\: {mode:\: shadow}\fR. The bounds,\: the integrity checks and the malformed\-packet refusals still apply: a packet whose digest does not verify is not a policy question
+T}
+T{
+\fBanomaly\fR
+T}	T{
+object
+T}	T{
+off
+T}	T{
+Behavioural models over what each piece of equipment has been doing;\: see \fBanomaly\fR
+T}
+.TE
+.PP
+Counters: \fBradius_requests\fR, \fBradius_bad_digest\fR, \fBradius_no_digest\fR, \fBradius_plaintext_passwords\fR, \fBradius_privilege_grants\fR and \fBradius_unsolicited\fR. \fBradius_bad_digest\fR is the one to alert on \[u2014] a packet whose Message\-Authenticator or Response Authenticator did not verify is either a mismatched secret or somebody forging answers, and a relay cannot tell which. \fBradius_plaintext_passwords\fR is a fact about the estate\(aqs equipment rather than about this relay.
+.SS "server.listeners[].radius.rules[]"
+.PP
+.TS
+allbox;
+lbw(1.4i) lbw(0.7i) lbw(1.0i) lbx
+lw(1.4i) lw(0.7i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+Names the rule in the logs and the counters
+T}
+T{
+\fBaction\fR
+T}	T{
+enum
+T}	T{
+\fBallow\fR
+T}	T{
+\fBallow\fR,\: \fBdeny\fR or \fBobserve\fR. \fBobserve\fR records the rule in the access line and decides nothing,\: so the rules below it still decide: the whole point is to try a rule on live traffic without it changing what happens,\: and a rule that decided \[u2014] by allowing what it covers \[u2014] would make trying one out the way to switch off every deny rule under it
+T}
+T{
+\fBclients\fR
+T}	T{
+list of CIDR
+T}	T{
+\fB[]\fR
+T}	T{
+The networks the client is in
+T}
+T{
+\fBcodes\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The packet codes this rule covers
+T}
+T{
+\fBauth_\:types\fR,\: \fBeap_\:types\fR
+T}	T{
+list
+T}	T{
+inherited
+T}	T{
+The credential shapes and EAP methods this rule covers
+T}
+T{
+\fBusers\fR,\: \fBrealms\fR,\: \fBnas_\:identifiers\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Select by who is asking
+T}
+T{
+\fBmax_\:privilege_\:level\fR
+T}	T{
+int
+T}	T{
+inherited
+T}	T{
+The rule\(aqs own bound on what a reply may grant,\: which is how the one jump host that really does get enable is written down
+T}
+T{
+\fBrequire_\:message_\:authenticator\fR
+T}	T{
+bool
+T}	T{
+inherited
+T}	T{
+The rule\(aqs own answer,\: which is how the one piece of equipment too old to send a digest is admitted without turning the check off for the estate
+T}
+T{
+\fBschedule\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Limit the rule to a time window
+T}
+.TE
+.SS "server.listeners[].tacacs (kind: tacacs)"
+.PP
+TACACS+ on TCP 49 (RFC 8907): device administration. Where RADIUS answers "may this user onto the network", TACACS+ answers "may this user, at this privilege level, run \fBconfigure terminal\fR on this router" \[u2014] it authorises each command separately, and the command is in the packet. Of every protocol in this reference it is the one where a policy is worth the most per line.
+.PP
+\fBThe shared key is what makes the rest possible.\fR RFC 8907 calls its MD5 construction "obfuscation", not encryption, and \[u00A7]10.3 says it is "not cryptographically sound": the pad is a chain of MD5 digests over the session identifier, the key, the version and the sequence number, so anybody with the key reads everything. This listener uses that. With \fBsecret_file\fR it reads the user, the command and the privilege level; without one it reads the twelve\-octet header and forwards the body unexamined \[u2014] which is a bound and an audit of sessions, and not a policy on commands. Naming \fBcommands\fR or \fBusers\fR without a key is a load error rather than a setting that silently matches nothing.
+.PP
+\fBThe command patterns are the point.\fR They match the command line a device sends split across \fBcmd\fR and one \fBcmd\-arg\fR per word, so a rule is written the way the command is typed and the listener reassembles it. The grammar is words with an optional trailing \fB...\fR meaning "and anything after": \fBshow ...\fR covers every show command, \fBshow running\-config\fR covers exactly that, and a wildcard in the middle is refused at load \[u2014] a pattern whose author and whose reader disagree about what it covers is worse than no pattern on a protocol that authorises each command separately. Matching is case\-insensitive, because a device\(aqs command line is. Abbreviations are \fInot\fR expanded: a user may type \fBconf t\fR, but what reaches the server is what the device sends, and every platform worth naming sends the expanded form.
+.PP
+\fBPrivilege is granted in the reply, and bounded here.\fR An authorization response carries \fBpriv\-lvl=15\fR as a mandatory argument, and a device that receives a mandatory argument must apply it. So \fBmax_privilege_level\fR is checked on the server\(aqs answer as well as on the request\(aqs own field: the first is a grant, the second only a claim.
+.PP
+\fBA \fBFOLLOW\fR reply is refused by default.\fR RFC 8907 \[u00A7]5.2\(aqs \fBTAC_PLUS_AUTHEN_STATUS_FOLLOW\fR redirects the client to a different server, and the reply\(aqs data field carries that server\(aqs address, port and \fIkey\fR. It is a server\-chosen redirect to an arbitrary host after which the client sends its next credential there; the standard deprecates it and says a client should treat it as a failure.
+.PP
+\fBDevice administration is engineering activity.\fR The \fBengineering\fR block applies here for the same reason it applies to a PLC download: a \fBconfigure terminal\fR on a core router at three in the morning is either a change with a work order behind it or an incident. A \fBshow\fR is not engineering and is not reported as one.
+.PP
+A \fBtls\fR section is allowed and means TACACS+ over TLS, which is the fix for everything \[u00A7]10.3 admits. Almost no equipment speaks it yet, which is why \fBrefuse_unencrypted\fR exists as the weaker thing it is.
+.PP
+.TS
+allbox;
+lbw(1.7i) lbw(0.9i) lbw(0.9i) lbx
+lw(1.7i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBupstream\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+The TACACS+ server pool
+T}
+T{
+\fBsecret_\:file\fR
+T}	T{
+absolute path
+T}	T{
+none (warned about)
+T}	T{
+The shared key,\: one line,\: readable only by its owner
+T}
+T{
+\fBupstream_\:secret_\:file\fR
+T}	T{
+absolute path
+T}	T{
+\fB""\fR
+T}	T{
+The key towards the servers,\: where it differs. Setting it makes this listener a key boundary: a device\(aqs key never reaches the server and the server\(aqs never reaches a device
+T}
+T{
+\fBallow_\:clients\fR,\: \fBdeny_\:clients\fR
+T}	T{
+list of CIDR
+T}	T{
+\fB[]\fR
+T}	T{
+The networks a device may connect from;\: deny is evaluated first
+T}
+T{
+\fBexchanges\fR
+T}	T{
+list
+T}	T{
+all three
+T}	T{
+\fBauthentication\fR,\: \fBauthorization\fR,\: \fBaccounting\fR. Naming fewer is a real control: a listener in front of equipment managed from a bastion and nowhere else can carry accounting and authorization and refuse authentication,\: so no login can be attempted through it at all
+T}
+T{
+\fBrefuse_\:unencrypted\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse a packet whose \fBTAC_\:PLUS_\:UNENCRYPTED_\:FLAG\fR is set,\: meaning the body arrived in the clear. RFC 8907 \[u00A7]4.5 allows it only on a secured transport;\: on bare TCP it is either a mistake or somebody stripping the obfuscation,\: and either way an administrative login\(aqs user name and password are on the wire
+T}
+T{
+\fBallow_\:follow\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Carry a \fBFOLLOW\fR status;\: see above
+T}
+T{
+\fBallow_\:change_\:password\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Carry an authentication session whose action is \fBCHPASS\fR. It changes a credential on the server,\: and most estates do password changes elsewhere entirely
+T}
+T{
+\fBallow_\:sendauth\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Carry a \fBSENDAUTH\fR session,\: which asks the server for a credential to send onwards to a peer. RFC 8907 \[u00A7]5.4.3 keeps it for outbound CHAP and PAP on dial links;\: in a modern estate a request for one is either dead configuration or somebody extracting credentials from the server
+T}
+T{
+\fBauthen_\:types\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+The credential shapes carried: \fBascii\fR,\: \fBpap\fR,\: \fBchap\fR,\: \fBmschap\fR,\: \fBmschapv2\fR
+T}
+T{
+\fBrefuse_\:plaintext_\:passwords\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse a session whose type puts the password in the body \[u2014] \fBascii\fR and \fBpap\fR. It defaults off for the reason the knob on \fBmms\fR does: on a lot of equipment interactive login is the only authentication there is. What this listener does by default is count every session that carries one
+T}
+T{
+\fBallow_\:unauthenticated_\:authorization\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Carry an authorization request whose \fBauthen_\:method\fR says the device authenticated nobody: not\-set,\: none,\: guest,\: or the line password. This is a whole attack in one octet \[u2014] a device that asks "may this unnamed user run this command" and is told yes has authorised a command for whoever is on the port
+T}
+T{
+\fBservices\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+The \fBservice\fR argument values carried: \fBshell\fR,\: \fBppp\fR,\: or a vendor\(aqs own
+T}
+T{
+\fBauthen_\:services\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+The protocol\(aqs own \fBauthen_\:service\fR field: \fBlogin\fR,\: \fBenable\fR,\: \fBppp\fR,\: \fBrcmd\fR. \fBenable\fR is the one to think about \[u2014] it is the privilege escalation inside an existing session,\: and a separate decision from the login
+T}
+T{
+\fBusers\fR,\: \fBdeny_\:users\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The user names carried
+T}
+T{
+\fBcommands\fR
+T}	T{
+list
+T}	T{
+any
+T}	T{
+The command lines carried,\: written the way they are typed;\: empty allows any
+T}
+T{
+\fBdeny_\:commands\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Checked first,\: and no rule overrides it,\: which is how an exception inside an allowed set is written: \fBshow .\:.\:.\fR allowed,\: \fBshow running\-\:config\fR denied. A deny pattern covers the command it names \fBand whatever is appended to it\fR,\: because a device\(aqs command line takes suffixes: \fBshow running\-\:config\fR denies \fBshow running\-\:config | include password\fR and \fBcopy running\-\:config\fR denies it to any destination. An allow pattern is read exactly,\: unless it ends in \fB.\:.\:.\fR \[u2014] allowing more than was asked for is the unsafe direction
+T}
+T{
+\fBmax_\:privilege_\:level\fR
+T}	T{
+int
+T}	T{
+\fB15\fR (no bound)
+T}	T{
+The privilege level,\: 0 to 15,\: checked on a request\(aqs own field and on a \fBpriv\-\:lvl\fR argument in the server\(aqs response
+T}
+T{
+\fBmax_\:args\fR
+T}	T{
+int
+T}	T{
+\fB64\fR
+T}	T{
+The arguments one request may carry;\: the protocol\(aqs own bound is 255
+T}
+T{
+\fBmax_\:body_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB32768\fR
+T}	T{
+One packet\(aqs body. RFC 8907 \[u00A7]4.1 says a server should refuse one past 65536,\: and nothing legitimate is near either number
+T}
+T{
+\fBmax_\:sessions\fR,\: \fBmax_\:sessions_\:per_\:client\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (off)
+T}	T{
+Concurrent connections
+T}
+T{
+\fBmax_\:sessions_\:per_\:connection\fR
+T}	T{
+int
+T}	T{
+\fB64\fR
+T}	T{
+The sessions one TCP connection may carry. A connection carries more than one only when both ends set \fBTAC_\:PLUS_\:SINGLE_\:CONNECT_\:FLAG\fR,\: which is ordinary \[u2014] so this is a bound rather than a refusal
+T}
+T{
+\fBidle_\:timeout\fR,\: \fBsession_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB5m\fR,\: \fB1h\fR
+T}	T{
+How long a connection may sit silent,\: and how long it may live
+T}
+T{
+\fBrate_\:limit\fR,\: \fBrate_\:burst\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (off)
+T}	T{
+Connections a second per client address
+T}
+T{
+\fBrequire_\:tls\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse a connection that is not TLS. Requires a \fBtls\fR section on the listener
+T}
+T{
+\fBupstream_\:tls_\:mode\fR
+T}	T{
+enum
+T}	T{
+\fBdisable\fR
+T}	T{
+\fBdisable\fR,\: \fBprefer\fR or \fBrequire\fR towards the servers. \fBprefer\fR tries TLS and falls back,\: which is what an estate migrating its equipment needs
+T}
+T{
+\fBupstream_\:tls\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Client\-side TLS settings for that leg;\: see \fBupstreams[].\:tls\fR
+T}
+T{
+\fBdefault_\:action\fR
+T}	T{
+enum
+T}	T{
+\fBdeny\fR
+T}	T{
+\fBdeny\fR or \fBallow\fR for a request no rule matched
+T}
+T{
+\fBdeny_\:response\fR
+T}	T{
+enum
+T}	T{
+\fBfail\fR
+T}	T{
+\fBfail\fR (an authentication FAIL,\: an authorization FAIL or an accounting ERROR,\: each carrying a message saying which proxy refused it) or \fBdrop\fR. \fBfail\fR is the right default here in a way it is not on every protocol: the person refused is an engineer at a terminal,\: and a line saying \fBrefused by xproxy:\: command_\:not_\:allowed\fR is the difference between a policy they can work with and a router they report as broken
+T}
+T{
+\fBlog_\:requests\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A line per request and per answer
+T}
+T{
+\fBlog_\:accounting\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Every accounting record as its own line. This is the estate\(aqs own copy of the device\-\:administration audit trail \[u2014] who ran what,\: on which device,\: at what privilege level \[u2014] worth having separately from the server\(aqs because it is in a different place,\: written by a different program,\: and whoever has just got privileged access to the routers does not have it
+T}
+T{
+\fBalert_\:on_\:deny\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A security event for every refusal
+T}
+T{
+\fBmonitor_\:only\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Evaluate and enforce nothing,\: the same as \fBpolicy:\: {mode:\: shadow}\fR. The bounds,\: the session limits and the malformed\-packet refusals still apply,\: and so do the refusals about what the \fIserver\fR sent: carrying a \fBFOLLOW\fR to see what would have happened is the thing being prevented
+T}
+T{
+\fBanomaly\fR
+T}	T{
+object
+T}	T{
+off
+T}	T{
+Behavioural models over what each device and each user has been doing;\: see \fBanomaly\fR
+T}
+T{
+\fBengineering\fR
+T}	T{
+object
+T}	T{
+reports,\: no grant required
+T}	T{
+Report configuration commands as their own class of event and,\: with \fBrequire_\:grant\fR,\: refuse one with no approved work order open;\: see \fBaccess\fR
+T}
+.TE
+.PP
+Counters: \fBtacacs_sessions\fR, \fBtacacs_commands\fR, \fBtacacs_accounting\fR, \fBtacacs_header_only\fR, \fBtacacs_plaintext_passwords\fR and \fBtacacs_privilege_grants\fR. \fBtacacs_commands\fR is the audit number \[u2014] how many command authorizations crossed this listener \[u2014] and \fBtacacs_header_only\fR is the one that says a command policy is deciding nothing, because it counts the packets whose body this listener could not read.
+.SS "server.listeners[].tacacs.rules[]"
+.PP
+.TS
+allbox;
+lbw(1.1i) lbw(0.7i) lbw(1.1i) lbx
+lw(1.1i) lw(0.7i) lw(1.1i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+Names the rule in the logs and the counters
+T}
+T{
+\fBaction\fR
+T}	T{
+enum
+T}	T{
+\fBallow\fR
+T}	T{
+\fBallow\fR,\: \fBdeny\fR or \fBobserve\fR. \fBobserve\fR records the rule in the access line and decides nothing,\: so the rules below it still decide: the whole point is to try a rule on live traffic without it changing what happens,\: and a rule that decided \[u2014] by allowing what it covers \[u2014] would make trying one out the way to switch off every deny rule under it
+T}
+T{
+\fBclients\fR
+T}	T{
+list of CIDR
+T}	T{
+\fB[]\fR
+T}	T{
+The networks the device is in
+T}
+T{
+\fBexchanges\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The exchanges this rule covers
+T}
+T{
+\fBusers\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The user names this rule covers
+T}
+T{
+\fBcommands\fR,\: \fBdeny_\:commands\fR
+T}	T{
+list
+T}	T{
+added to the listener\(aqs
+T}	T{
+The command lines this rule covers,\: and the ones it does not cover even when \fBcommands\fR would match. A rule whose command list does not cover a command does not decide it,\: so a rule written to allow \fBshow .\:.\:.\fR is not the rule that allows \fBreload\fR. The lists \fBadd to\fR the listener\(aqs rather than standing in for them: both deny lists are checked and both allow lists have to be satisfied,\: so a rule can only ever narrow. A rule that replaced the listener\(aqs deny list would be a hole in the sentence "no router behind this relay accepts \fBwrite erase\fR",\: opened by writing a deny
+T}
+T{
+\fBservices\fR,\: \fBauthen_\:services\fR
+T}	T{
+list
+T}	T{
+inherited
+T}	T{
+The service values this rule covers
+T}
+T{
+\fBauthen_\:types\fR
+T}	T{
+list
+T}	T{
+inherited
+T}	T{
+The credential shapes this rule covers
+T}
+T{
+\fBmax_\:privilege_\:level\fR
+T}	T{
+int
+T}	T{
+inherited
+T}	T{
+The rule\(aqs own bound
+T}
+T{
+\fBschedule\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Limit the rule to a time window,\: which is what a change window is: configuration commands allowed while the engineers are on shift and not at three in the morning
+T}
+.TE
+.SS "server.listeners[].kkdcp (kind: kkdcp)"
+.PP
+A Kerberos KDC proxy: HTTPS in, TCP to the KDC, and the answer wrapped back. MS\-KKDCP exists because Kerberos is UDP and TCP on port 88 and the places people work from are not on the network the KDC is on; Windows has shipped the client since 2012, and MIT and Heimdal both speak it.
+.PP
+It is the only listener here that translates one protocol into another, and it is one of the few places an estate\(aqs Kerberos traffic can be read at all.
+.PP
+\fBEverything a policy needs is in the clear.\fR Which realm, which client principal, which service principal, which encryption types the client will take, which pre\-authentication it brought: those are the fields the KDC itself decides on, and they are readable because they have to be \[u2014] they are how the two ends agree what to encrypt. What is encrypted is the ticket and the reply\(aqs enc\-part, and no setting here needs those. One limit worth stating: a request wrapped in RFC 6113\(aqs FAST armour shows this relay the armour and not what is inside it.
+.PP
+\fBA proxy with no realm policy is an open relay.\fR \fBrealms\fR is required. A request whose envelope and inner message name different realms is refused rather than resolved: the outer one is what the proxy routes by and the inner one is what the KDC decides on, so a proxy that picked one would be deciding about a different realm than the KDC.
+.PP
+\fBThe interesting attacks are visible, and three have knobs of their own.\fR
+.RS 3n
+.PP
+.ti -3n
+\(bu
+A TGS\-REQ offering \fBnothing but RC4\fR is Kerberoasting: an RC4 service ticket\(aqs encrypted part is crackable offline against the service account\(aqs NT hash. \fBrefuse_weak_etypes\fR refuses those. "Nothing but" rather than "any", and the distinction is the whole setting \[u2014] a Windows client lists aes256, aes128 and rc4 and the KDC takes the first it can, so refusing a request that \fImentions\fR RC4 would refuse the estate. "Nothing but" is read as "offers no type this estate is content with", not as "every type is on a list of bad ones": the field is integers a client chooses, and a number nobody has assigned is not a strong offer just because this proxy has no name for it.
+.PP
+.ti -3n
+\(bu
+An \fBAS\-REP for a request whose pre\-authentication cannot be seen to have been acted on\fR means the account is pre\-authentication exempt, and the reply\(aqs encrypted part is an offline password\-cracking target. That is AS\-REP roasting, and \fBrefuse_preauth_exempt\fR refuses the \fIreply\fR \[u2014] because the question cannot be answered on the request: a bare AS\-REQ is the normal first message of every exchange, and the KDC answers one with \fBKDC_ERR_PREAUTH_REQUIRED\fR. It cannot be answered by the request\(aqs own padata either, which is a field the client writes and this relay holds no key to check: what is read instead is the pair of messages, so a claim the KDC must decrypt to act on counts, and a PKINIT claim counts when the reply carries the KDC\(aqs own half of it.
+.PP
+.ti -3n
+\(bu
+A TGS\-REQ carrying \fBPA\-FOR\-USER\fR or \fBPA\-S4U\-X509\-USER\fR is \fBS4U2Self\fR and one carrying the constrained\-delegation option with an additional ticket is \fBS4U2Proxy\fR, the two primitives behind most delegation abuse. Both default off, and S4U2Proxy needs both halves to be recognised as one: the option alone is a client setting a reserved bit, and an additional ticket alone is a user\-to\-user request.
+.RE
+.PP
+.PP
+\fBA run of failures is the other half.\fR An internet\-facing KDC proxy is where password spraying lands, and the signal is a burst of \fBKDC_ERR_PREAUTH_FAILED\fR. \fBmax_preauth_failures\fR counts them per client over a window and refuses past the bound, which is a control the KDC\(aqs own lockout policy cannot give \[u2014] it locks the account, which is what the sprayer wanted.
+.PP
+\fBA \fBtls\fR section is required\fR, not optional: the protocol is HTTPS, and the message it carries holds a value derived from the user\(aqs password. A listener without one is refused at load.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.9i) lbw(0.9i) lbx
+lw(1.2i) lw(0.9i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBupstream\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+The KDC pool,\: reached over TCP
+T}
+T{
+\fBpassword_\:upstream\fR
+T}	T{
+string
+T}	T{
+\fB""\fR
+T}	T{
+The pool kpasswd requests go to,\: which is a different service on a different port. Required when \fBallow_\:password_\:change\fR is set
+T}
+T{
+\fBpath\fR
+T}	T{
+path
+T}	T{
+\fB/\:KdcProxy\fR
+T}	T{
+The HTTP path served,\: which is what Windows asks for. Everything else gets a 404 with no body
+T}
+T{
+\fBrealms\fR
+T}	T{
+list
+T}	T{
+required
+T}	T{
+The realms carried,\: matched case\-insensitively against both the envelope\(aqs target domain and the inner message\(aqs realm
+T}
+T{
+\fBrequire_\:target_\:domain\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse an envelope that names no target domain. The field is optional in MS\-KKDCP and MIT\(aqs client omits it,\: so requiring it refuses real traffic;\: without it the decision is made on the inner realm,\: which is the realm the KDC will use
+T}
+T{
+\fBmessage_\:types\fR
+T}	T{
+list
+T}	T{
+\fBas\-\:req\fR,\: \fBtgs\-\:req\fR
+T}	T{
+The request types carried;\: \fBap\-\:req\fR is admitted only when \fBallow_\:password_\:change\fR is set
+T}
+T{
+\fBetypes\fR,\: \fBdeny_\:etypes\fR
+T}	T{
+list
+T}	T{
+any not weak
+T}	T{
+The encryption types a request may ask for,\: by name (\fBaes256\-\:cts\-\:hmac\-\:sha1\-\:96\fR,\: \fBrc4\-\:hmac\fR) or number
+T}
+T{
+\fBrefuse_\:weak_\:etypes\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse a request that offers the KDC nothing it could issue a ticket in that an estate is content with: aes128 or aes256 (RFC 3962 or RFC 8009) or camellia. The test is "offers no strong type" rather than "every type is weak",\: because the etype field is a list of integers the client chooses: under the other reading one number the registry has never assigned \[u2014] appended to \fBrc4\-\:hmac\fR and discarded by the KDC \[u2014] made the list look mixed and the control a formality
+T}
+T{
+\fBrefuse_\:weak_\:ticket_\:etypes\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse a \fIreply\fR whose ticket was encrypted in a weak type. The same finding from the other end,\: off by default because by then the KDC has minted the ticket;\: the counter is worth reading either way
+T}
+T{
+\fBrefuse_\:preauth_\:exempt\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse an AS\-REP the KDC cannot be seen to have pre\-authenticated;\: see above. "Cannot be seen to" rather than "said it did not": a request\(aqs padata is written by the client and this relay holds no key,\: so the test pairs the claim with the KDC\(aqs own answer \[u2014] an encrypted timestamp or an encrypted challenge is one the KDC must decrypt before it issues anything,\: and a PKINIT claim is proven by the \fBPA\-\:PK\-\:AS\-\:REP\fR in the reply rather than by the asking
+T}
+T{
+\fBallow_\:s4u2self\fR,\: \fBallow_\:s4u2proxy\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Carry MS\-SFU\(aqs protocol transition and constrained delegation. Protocol transition is recognised in both of its spellings,\: \fBPA\-\:FOR\-\:USER\fR and \fBPA\-\:S4U\-\:X509\-\:USER\fR,\: because a KDC honours either and the impersonated name is read from whichever arrived
+T}
+T{
+\fBallow_\:anonymous\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Carry a request asking for the anonymous principal (RFC 8062). It is authentication with no identity in it,\: and a proxy carrying it carries something nobody can attribute afterwards
+T}
+T{
+\fBallow_\:password_\:change\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Carry RFC 3244\(aqs kpasswd exchange,\: which arrives as an AP\-REQ for \fBkadmin/\:changepw\fR
+T}
+T{
+\fBallow_\:forwarded_\:tickets\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Carry a request with the \fBforwarded\fR or \fBproxy\fR option set. It is how ordinary delegation works,\: and an estate that does none can turn it off
+T}
+T{
+\fBdeny_\:options\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+KDC options a request may not set,\: by the standard\(aqs names: \fBrenew\fR,\: \fBvalidate\fR,\: \fBenc\-\:tkt\-\:in\-\:skey\fR,\: \fBdisable\-\:transited\-\:check\fR,\: \fBpostdated\fR
+T}
+T{
+\fBprincipals\fR,\: \fBdeny_\:principals\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The client principals carried,\: by name without the realm. \fBdeny_\:principals\fR is where the names nobody should be authenticating as from outside go: the built\-in administrator,\: the service accounts,\: \fBkrbtgt\fR itself
+T}
+T{
+\fBservices\fR,\: \fBdeny_\:services\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The service principals a TGS\-REQ may ask for,\: matched on the whole name or on the service class alone \[u2014] so \fBMSSQLSvc\fR covers every SQL Server instance and \fBhost/\:dc1.\:corp.\:example\fR covers one host
+T}
+T{
+\fBmax_\:ticket_\:lifetime\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR (off)
+T}	T{
+The validity a request may ask for
+T}
+T{
+\fBmax_\:distinct_\:services\fR,\: \fBservice_\:window\fR
+T}	T{
+int,\: duration
+T}	T{
+\fB0\fR (off),\: \fB5m\fR
+T}	T{
+How many different service principals one client may ask for inside a window. This is the behavioural half of the Kerberoasting control and catches what the encryption rules cannot: a client asking for forty service tickets in a minute is enumerating the realm\(aqs service accounts whatever encryption it asked for them in
+T}
+T{
+\fBmax_\:preauth_\:failures\fR,\: \fBfailure_\:window\fR
+T}	T{
+int,\: duration
+T}	T{
+\fB0\fR (off),\: \fB5m\fR
+T}	T{
+How many \fBKDC_\:ERR_\:PREAUTH_\:FAILED\fR replies one client may collect before this listener stops carrying its requests
+T}
+T{
+\fBmax_\:message_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB131072\fR
+T}	T{
+One inner Kerberos message,\: each way. The bound has to be generous: a Windows reply for a user in several hundred groups carries a PAC of tens of kilobytes,\: and a listener that refused one would refuse exactly the users whose group membership matters most. The HTTP body is bounded separately and more tightly
+T}
+T{
+\fBmax_\:requests_\:per_\:connection\fR
+T}	T{
+int
+T}	T{
+\fB64\fR
+T}	T{
+The POSTs one keep\-alive connection may make
+T}
+T{
+\fBupstream_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB10s\fR
+T}	T{
+How long this listener waits for the KDC
+T}
+T{
+\fBmax_\:sessions\fR,\: \fBmax_\:sessions_\:per_\:client\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (off)
+T}	T{
+Concurrent connections
+T}
+T{
+\fBrate_\:limit\fR,\: \fBrate_\:burst\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (off)
+T}	T{
+Requests a second per client address. Worth setting here more than on most kinds: this listener\(aqs whole purpose is to be reachable from the open internet,\: and every request it carries costs the KDC a cryptographic operation
+T}
+T{
+\fBdefault_\:action\fR
+T}	T{
+enum
+T}	T{
+\fBdeny\fR
+T}	T{
+\fBdeny\fR or \fBallow\fR for a request no rule matched
+T}
+T{
+\fBdeny_\:response\fR
+T}	T{
+enum
+T}	T{
+\fBerror\fR
+T}	T{
+\fBerror\fR (a KRB\-ERROR with \fBKDC_\:ERR_\:POLICY\fR and a text saying which proxy refused it,\: wrapped in the envelope the client expects) or \fBstatus\fR (HTTP 403 and no Kerberos message). \fBerror\fR is the better default,\: because silence on this protocol is a client that falls back to port 88 \[u2014] where there is no relay \[u2014] and then reports a network fault to whoever is sitting at it. The text names the proxy and \fBnot\fR the control that fired: on this protocol the reason a refusal happened is usually the intelligence the refusal exists to deny \[u2014] \fBpreauth_\:not_\:required\fR would confirm to a roaster that the account exists and is exempt,\: which is a cleaner answer than the AS\-REP it was refused. The reason is in this proxy\(aqs security log and counters instead
+T}
+T{
+\fBlog_\:requests\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A line per request and per reply: the realm,\: the principal,\: the service,\: the encryption types,\: and what the KDC answered
+T}
+T{
+\fBalert_\:on_\:deny\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A security event for every refusal
+T}
+T{
+\fBmonitor_\:only\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Evaluate and enforce nothing,\: the same as \fBpolicy:\: {mode:\: shadow}\fR. The bounds,\: the realm check and the malformed\-message refusals still apply \[u2014] forwarding a message for a realm this proxy does not serve would make it the open relay the realm list exists to prevent
+T}
+T{
+\fBanomaly\fR
+T}	T{
+object
+T}	T{
+off
+T}	T{
+Behavioural models over what each client has been doing;\: see \fBanomaly\fR
+T}
+.TE
+.PP
+Counters: \fBkkdcp_requests\fR, \fBkkdcp_preauth_failures\fR, \fBkkdcp_weak_tickets\fR, \fBkkdcp_preauth_exempt\fR, \fBkkdcp_delegations\fR and \fBkkdcp_realm_mismatch\fR. \fBkkdcp_preauth_failures\fR is password spraying seen from the one place it is visible, and \fBkkdcp_weak_tickets\fR counts the tickets that left in RC4 \[u2014] the Kerberoasting target \[u2014] whether or not this listener was configured to refuse them.
+.SS "server.listeners[].kkdcp.rules[]"
+.PP
+.TS
+allbox;
+lbw(1.1i) lbw(0.9i) lbw(1.0i) lbx
+lw(1.1i) lw(0.9i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+Names the rule in the logs and the counters
+T}
+T{
+\fBaction\fR
+T}	T{
+enum
+T}	T{
+\fBallow\fR
+T}	T{
+\fBallow\fR,\: \fBdeny\fR or \fBobserve\fR. \fBobserve\fR records the rule in the access line and decides nothing,\: so the rules below it still decide: the whole point is to try a rule on live traffic without it changing what happens,\: and a rule that decided \[u2014] by allowing what it covers \[u2014] would make trying one out the way to switch off every deny rule under it
+T}
+T{
+\fBclients\fR
+T}	T{
+list of CIDR
+T}	T{
+\fB[]\fR
+T}	T{
+The networks the client is in. On an internet\-facing listener this will usually be empty;\: on one in front of a branch office it is the strongest line in the rule
+T}
+T{
+\fBrealms\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The realms this rule covers
+T}
+T{
+\fBmessage_\:types\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The request types this rule covers
+T}
+T{
+\fBprincipals\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The client principals this rule covers
+T}
+T{
+\fBservices\fR,\: \fBdeny_\:services\fR
+T}	T{
+list
+T}	T{
+inherited
+T}	T{
+The service principals this rule covers,\: and the ones it does not cover even when \fBservices\fR would match
+T}
+T{
+\fBetypes\fR
+T}	T{
+list
+T}	T{
+inherited
+T}	T{
+The encryption types this rule covers
+T}
+T{
+\fBmax_\:ticket_\:lifetime\fR
+T}	T{
+duration
+T}	T{
+inherited
+T}	T{
+The rule\(aqs own bound
+T}
+T{
+\fBschedule\fR
+T}	T{
+object
+T}	T{
+none
+T}	T{
+Limit the rule to a time window
+T}
+.TE
+.SS "server.listeners[].imap (kind: imap)"
+.PP
+IMAP on 143 and IMAPS on 993: the protocol a mail client reads a mailbox with, which makes this the relay in front of the most complete record of what an organisation has said and been told that exists anywhere.
+.PP
+\fBThe setting that matters most is a bound, not a list.\fR Every other control here is about access, and access is what the mail server already decides. \fBmax_fetch_messages\fR is about \fIvolume\fR: \fBUID FETCH 1:* (BODY[])\fR is three dozen characters and every message in the mailbox, and it is what both a mail client\(aqs first synchronisation and an emptied account look like. The bound counts what a sequence set \fInames\fR, before the server reads anything, and an open\-ended set (\fB1:*\fR, \fB*\fR) is refused outright once it is set \[u2014] because the size of that request is the mailbox\(aqs rather than the client\(aqs. \fBallow_open_sets\fR is the exemption for the estate whose clients legitimately synchronise everything.
+.PP
+\fBA password in the clear is refused by default.\fR LOGIN on 143, and AUTHENTICATE with PLAIN or LOGIN, put a mailbox password on the wire. \fBrequire_tls\fR defaults on and is not shadowable: by the time a policy could be consulted the password has travelled. A listener with a certificate and \fBtls_mode: starttls\fR terminates RFC 2595\(aqs upgrade itself, which is how a client nobody can reconfigure gets TLS anyway.
+.PP
+\fBThe capability list is narrowed on the way out.\fR A mechanism \fBmechanisms\fR does not name is removed from what the client is shown, and \fBLOGINDISABLED\fR is added where LOGIN will be refused \[u2014] RFC 3501 \[u00A7]6.2.3 makes that the way a server says so, and a client that reads it asks for something else instead of sending a password into a refusal. \fBCOMPRESS=DEFLATE\fR is removed whenever \fBrefuse_compression\fR is on, which is the default: a deflated connection cannot be inspected, so advertising it would be offering to stop.
+.PP
+\fBA literal is decided on its declared size.\fR \fBAPPEND INBOX {310}\fR says the next 310 octets are a message, and RFC 7888\(aqs \fB{310+}\fR sends them without waiting for anybody to agree \[u2014] so \fBmax_append_bytes\fR is checked on the command line, and a refused \fB{310+}\fR\(aqs octets are read and dropped rather than left to desynchronise the connection. A refused plain \fB{310}\fR is the opposite case: the client is waiting for a continuation request that is never coming and RFC 9051 \[u00A7]4.3 says it must not send the octets, so nothing is read. The bound applies to the command\(aqs literals \fBtogether\fR, so a client cannot divide its way past it one hop at a time, and the rule that decided the command decides its continuations too.
+.PP
+\fBAn argument sent as a literal is refused.\fR A literal is the last token on the line, so the argument list ends where it begins: \fBSELECT {25+}\fR parses as SELECT naming \fIno\fR mailbox, and \fBmailboxes\fR, \fBdeny_mailboxes\fR, the rule selectors, \fBusers\fR and the estate\(aqs authorization question would each decide about nothing while the server received the name intact. Such a command is refused with \fBliteral_argument\fR rather than guessed at \[u2014] reading the literal first would mean this proxy answering the continuation request instead of the server, which makes it a participant in an exchange it is relaying. Clients spell mailbox names as atoms or quoted strings; a literal there is conformant and rare, and a refusal an operator can see beats a policy that silently decided nothing.
+.PP
+\fBA PREAUTH greeting is not carried.\fR RFC 9051 \[u00A7]7.1.4 lets a server decide from the transport that no credential is needed; a relay that carried that would make every later decision here about a name it never saw. The connection is closed and \fBimap_preauth_refused\fR counts it.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.9i) lbw(1.2i) lbx
+lw(1.2i) lw(0.9i) lw(1.2i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Meaning
+T}
+T{
+\fBupstream\fR
+T}	T{
+string
+T}	T{
+\[u2014]
+T}	T{
+The pool of IMAP servers. Required
+T}
+T{
+\fBtls_\:mode\fR
+T}	T{
+string
+T}	T{
+\fBimplicit\fR with a \fBtls\fR section,\: else \fBnone\fR
+T}	T{
+\fBimplicit\fR (IMAPS from the first octet),\: \fBstarttls\fR (RFC 2595\(aqs upgrade,\: terminated here) or \fBnone\fR
+T}
+T{
+\fBrequire_\:tls\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse LOGIN,\: and AUTHENTICATE with a mechanism that carries the password,\: on an unencrypted connection. Not shadowable
+T}
+T{
+\fBupstream_\:tls_\:mode\fR
+T}	T{
+string
+T}	T{
+\fBdisable\fR
+T}	T{
+\fBdisable\fR,\: \fBimplicit\fR or \fBstarttls\fR towards the server
+T}
+T{
+\fBupstream_\:tls\fR
+T}	T{
+object
+T}	T{
+\[u2014]
+T}	T{
+Verification for that leg. See \fBupstream_\:tls\fR
+T}
+T{
+\fBallow_\:clients\fR,\: \fBdeny_\:clients\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Networks a client may connect from;\: deny is evaluated first
+T}
+T{
+\fBmechanisms\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+\fBlogin\fR for the LOGIN command plus a SASL name per AUTHENTICATE mechanism. Enforced twice: a mechanism not named is refused,\: and it is removed from the advertised capabilities
+T}
+T{
+\fBusers\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+The identities that may be claimed,\: folded for comparison. A claim rather than a proven identity: the server checks the password
+T}
+T{
+\fBcommands\fR,\: \fBdeny_\:commands\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Allow and deny lists of IMAP command names;\: deny is evaluated first. A \fBUID\fR command is the command it qualifies
+T}
+T{
+\fBmailboxes\fR,\: \fBdeny_\:mailboxes\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Allow and deny lists of mailbox names,\: compared on the \fBdecoded\fR name so a rule written \fBSent\fR matches the modified UTF\-7 a client sent. A name may end in \fB*\fR (the rest of the name,\: hierarchy included) or \fB%\fR (within one level);\: a wildcard anywhere else is refused at load. \fBINBOX\fR is compared case\-insensitively \[u2014] it is the one name RFC 9051 \[u00A7]5.1 makes so \[u2014] and that fold covers the hierarchy under it,\: because a server with mail below INBOX folds that component too: \fBinbox/\:Finance\fR and \fBINBOX/\:Finance\fR are one mailbox there and must not be two patterns here. Every other component is the server\(aqs own and \fBArchive\fR is not \fBarchive\fR
+T}
+T{
+\fBread_\:only\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse every command that changes a mailbox: APPEND,\: CREATE,\: DELETE,\: RENAME,\: STORE,\: COPY,\: MOVE,\: EXPUNGE,\: the ACL and quota writes
+T}
+T{
+\fBmax_\:fetch_\:messages\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (unbounded)
+T}	T{
+How many messages one FETCH,\: SEARCH,\: COPY or MOVE may name. The mailbox\-copying bound;\: validation advises setting it
+T}
+T{
+\fBallow_\:open_\:sets\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Carry an open\-ended sequence set even with \fBmax_\:fetch_\:messages\fR set
+T}
+T{
+\fBmax_\:append_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB33554432\fR
+T}	T{
+The literal of an APPEND: a message written into a mailbox
+T}
+T{
+\fBmax_\:literal_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB65536\fR
+T}	T{
+Any other literal: a mailbox name,\: a search string,\: a credential
+T}
+T{
+\fBmax_\:literals\fR
+T}	T{
+int
+T}	T{
+\fB8\fR
+T}	T{
+The literals one command may chain,\: because a command continues after each one
+T}
+T{
+\fBmax_\:line_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB8192\fR
+T}	T{
+One command line. RFC 9051 bounds a line not at all
+T}
+T{
+\fBmax_\:response_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB65536\fR
+T}	T{
+One response line;\: servers send longer ones than clients
+T}
+T{
+\fBmax_\:commands\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (unbounded)
+T}	T{
+The commands one connection may send
+T}
+T{
+\fBrefuse_\:compression\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Remove \fBCOMPRESS=\:DEFLATE\fR from the capabilities and refuse the command
+T}
+T{
+\fBrefuse_\:preauth\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse a PREAUTH greeting
+T}
+T{
+\fBallow_\:idle\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Carry RFC 2177\(aqs IDLE. Every mail client uses it
+T}
+T{
+\fBmax_\:idle_\:duration\fR
+T}	T{
+duration
+T}	T{
+\fB30m\fR
+T}	T{
+How long one IDLE may hold a connection silent
+T}
+T{
+\fBmax_\:connections\fR
+T}	T{
+int
+T}	T{
+\fB512\fR
+T}	T{
+Connections served at once
+T}
+T{
+\fBmax_\:sessions\fR,\: \fBmax_\:sessions_\:per_\:client\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Sessions in flight in total and per client address
+T}
+T{
+\fBrate_\:limit\fR,\: \fBrate_\:burst\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Connections per second per client address
+T}
+T{
+\fBidle_\:timeout\fR,\: \fBsession_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB30m\fR,\: \fB24h\fR
+T}	T{
+Silence outside an IDLE,\: and the life of a connection
+T}
+T{
+\fBrules\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Per\-user,\: per\-client and per\-mailbox rules,\: first match wins
+T}
+T{
+\fBdefault_\:action\fR
+T}	T{
+string
+T}	T{
+\fBallow\fR
+T}	T{
+\fBallow\fR or \fBdeny\fR. It defaults to allow because IMAP has sixty commands a client needs,\: and the controls that matter here are the bounds and the mailbox list
+T}
+T{
+\fBdeny_\:response\fR
+T}	T{
+string
+T}	T{
+\fBno\fR
+T}	T{
+\fBno\fR (a tagged NO,\: which every client displays),\: \fBbad\fR,\: \fBdrop\fR or \fBclose\fR
+T}
+T{
+\fBlog_\:commands\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+An access line per command
+T}
+T{
+\fBlog_\:fetches\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A line per FETCH,\: SEARCH,\: COPY and MOVE with the number of messages it named: the record of how much left
+T}
+T{
+\fBalert_\:on_\:deny\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A security event per refusal
+T}
+T{
+\fBmonitor_\:only\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Evaluate and enforce nothing;\: the bounds and the malformed\-command refusals still apply
+T}
+T{
+\fBanomaly\fR
+T}	T{
+object
+T}	T{
+\[u2014]
+T}	T{
+Behavioural detection. See \fBanomaly\fR
+T}
+.TE
+.PP
+Counters: \fBimap_connections\fR, \fBimap_commands\fR, \fBimap_auth_failures\fR, \fBimap_fetched_messages\fR, \fBimap_append_bytes\fR, \fBimap_plaintext_logins\fR, \fBimap_capabilities_stripped\fR and \fBimap_preauth_refused\fR. \fBimap_fetched_messages\fR is the one to graph \[u2014] it is how much of the estate\(aqs mail crossed this relay \[u2014] and \fBimap_auth_failures\fR the one to alert on.
+.PP
+Ban reasons: \fBimap_denied\fR for a policy refusal, \fBimap_auth_failed\fR for a credential the server rejected, and \fBimap_anomaly\fR for a behavioural finding.
+.SS "server.listeners[].imap.rules[]"
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.7i) lbw(1.0i) lbx
+lw(1.0i) lw(0.7i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Meaning
+T}
+T{
+\fBname\fR
+T}	T{
+string
+T}	T{
+\[u2014]
+T}	T{
+Appears in the logs and the shadow report
+T}
+T{
+\fBusers\fR,\: \fBclients\fR,\: \fBmailboxes\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Which commands this rule decides about. Every mailbox a command names has to match,\: because a COPY names two
+T}
+T{
+\fBcommands\fR,\: \fBdeny_\:commands\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+This rule\(aqs own command lists
+T}
+T{
+\fBread_\:only\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse the commands that change a mailbox,\: for this rule\(aqs clients and users
+T}
+T{
+\fBmax_\:fetch_\:messages\fR,\: \fBmax_\:append_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (inherit)
+T}	T{
+This rule\(aqs own bounds: how the one account that really does synchronise a whole mailbox is written down
+T}
+T{
+\fBaction\fR
+T}	T{
+string
+T}	T{
+\fBallow\fR
+T}	T{
+\fBallow\fR or \fBdeny\fR
+T}
+T{
+\fBschedule\fR
+T}	T{
+object
+T}	T{
+\[u2014]
+T}	T{
+Limit the rule to a time window. See \fBschedule\fR
+T}
+.TE
+.SS "server.listeners[].pop3 (kind: pop3)"
+.PP
+POP3 on 110 and POP3S on 995: the older mailbox protocol, and the one still configured on the scripts, appliances and phones nobody has revisited.
+.PP
+\fBThe credential is least protected here of anywhere in this configuration.\fR \fBUSER\fR names an identity and \fBPASS\fR sends the password in the clear on the next line, with no negotiation in between and nothing to inspect. Either the transport protects it or it is published, so \fBrequire_tls\fR defaults on and is not shadowable. \fBtls_mode: starttls\fR terminates RFC 2595\(aqs STLS, and the upgrade is answered here rather than forwarded \[u2014] anything the client pipelined behind it would be plaintext to one end and ciphertext to the other, which is the injection SMTP\(aqs STARTTLS has.
+.PP
+\fBThe copying bound is a running total.\fR This protocol has no sequence set to measure: a client asks for one message at a time, so the only honest bound is the octets and the messages counted as they pass. \fBmax_retr_bytes\fR and \fBmax_messages\fR are that, and they are enforced \fImid\-transfer\fR as well as before a command \[u2014] a bound that only applied to the next command is one a client walks past one message at a time.
+.PP
+\fBAPOP works because the greeting is not rewritten.\fR The \fB<...>\fR in a POP3 greeting is the challenge an APOP digest is computed over, so a relay that invented its own greeting would have to refuse APOP outright. This one carries the server\(aqs unchanged, which means a digest the client computes verifies at the server that issued the challenge.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.9i) lbw(1.2i) lbx
+lw(1.2i) lw(0.9i) lw(1.2i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Meaning
+T}
+T{
+\fBupstream\fR
+T}	T{
+string
+T}	T{
+\[u2014]
+T}	T{
+The pool of POP3 servers. Required
+T}
+T{
+\fBtls_\:mode\fR
+T}	T{
+string
+T}	T{
+\fBimplicit\fR with a \fBtls\fR section,\: else \fBnone\fR
+T}	T{
+\fBimplicit\fR (POP3S),\: \fBstarttls\fR (STLS,\: terminated here) or \fBnone\fR
+T}
+T{
+\fBrequire_\:tls\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Refuse USER,\: PASS,\: APOP and a plaintext SASL mechanism on an unencrypted connection. Not shadowable
+T}
+T{
+\fBupstream_\:tls_\:mode\fR
+T}	T{
+string
+T}	T{
+\fBdisable\fR
+T}	T{
+\fBdisable\fR,\: \fBimplicit\fR or \fBstarttls\fR towards the server
+T}
+T{
+\fBupstream_\:tls\fR
+T}	T{
+object
+T}	T{
+\[u2014]
+T}	T{
+Verification for that leg. See \fBupstream_\:tls\fR
+T}
+T{
+\fBallow_\:clients\fR,\: \fBdeny_\:clients\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Networks a client may connect from;\: deny is evaluated first
+T}
+T{
+\fBmechanisms\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+\fBuser\fR for the USER and PASS pair,\: \fBapop\fR for the digest,\: and a SASL name per AUTH mechanism. A mechanism not named is refused \fIand\fR removed from the CAPA list. An \fBAUTH\fR that names no mechanism at all is refused: there is nothing for this list or for \fBrequire_\:tls\fR to decide about,\: and the exchange that used to follow it moved this relay\(aqs view of the session to the transaction state on the server\(aqs \fB+OK\fR with no credential behind it. A client that wants the mechanism list has CAPA
+T}
+T{
+\fBusers\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+The identities that may be claimed,\: folded for comparison
+T}
+T{
+\fBcommands\fR,\: \fBdeny_\:commands\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Allow and deny lists of POP3 command names;\: deny is evaluated first
+T}
+T{
+\fBread_\:only\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse DELE and RSET,\: the two commands that change what the mailbox holds after the update state
+T}
+T{
+\fBmax_\:messages\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (unbounded)
+T}	T{
+Messages one connection may retrieve
+T}
+T{
+\fBmax_\:retr_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (unbounded)
+T}	T{
+Octets one connection may retrieve across every RETR and TOP. The mailbox\-copying bound;\: validation advises setting one of the two
+T}
+T{
+\fBmax_\:line_\:bytes\fR,\: \fBmax_\:response_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB512\fR,\: \fB4096\fR
+T}	T{
+One command line and one reply line
+T}
+T{
+\fBmax_\:connections\fR
+T}	T{
+int
+T}	T{
+\fB256\fR
+T}	T{
+Connections served at once
+T}
+T{
+\fBmax_\:sessions\fR,\: \fBmax_\:sessions_\:per_\:client\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Sessions in flight in total and per client address
+T}
+T{
+\fBrate_\:limit\fR,\: \fBrate_\:burst\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Connections per second per client address
+T}
+T{
+\fBidle_\:timeout\fR,\: \fBsession_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB10m\fR,\: \fB1h\fR
+T}	T{
+Silence,\: and the life of a connection: a POP3 client connects,\: takes its mail and goes
+T}
+T{
+\fBrules\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Per\-user and per\-client rules,\: first match wins
+T}
+T{
+\fBdefault_\:action\fR
+T}	T{
+string
+T}	T{
+\fBallow\fR
+T}	T{
+\fBallow\fR or \fBdeny\fR
+T}
+T{
+\fBdeny_\:response\fR
+T}	T{
+string
+T}	T{
+\fBerr\fR
+T}	T{
+\fBerr\fR (\fB\-\:ERR\fR with the reason),\: \fBdrop\fR or \fBclose\fR
+T}
+T{
+\fBlog_\:commands\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+An access line per command
+T}
+T{
+\fBlog_\:retrievals\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A line per RETR and TOP with the octets it carried
+T}
+T{
+\fBalert_\:on_\:deny\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A security event per refusal
+T}
+T{
+\fBmonitor_\:only\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Evaluate and enforce nothing
+T}
+T{
+\fBanomaly\fR
+T}	T{
+object
+T}	T{
+\[u2014]
+T}	T{
+Behavioural detection. See \fBanomaly\fR
+T}
+.TE
+.PP
+Counters: \fBpop3_connections\fR, \fBpop3_commands\fR, \fBpop3_auth_failures\fR, \fBpop3_retrieved_bytes\fR, \fBpop3_deletes\fR, \fBpop3_plaintext_logins\fR and \fBpop3_capabilities_stripped\fR. \fBpop3_retrieved_bytes\fR is the one to graph.
+.PP
+Ban reasons: \fBpop3_denied\fR, \fBpop3_auth_failed\fR and \fBpop3_anomaly\fR.
+.SS "server.listeners[].pop3.rules[]"
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.7i) lbw(1.0i) lbx
+lw(1.0i) lw(0.7i) lw(1.0i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Meaning
+T}
+T{
+\fBname\fR
+T}	T{
+string
+T}	T{
+\[u2014]
+T}	T{
+Appears in the logs and the shadow report
+T}
+T{
+\fBusers\fR,\: \fBclients\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR (any)
+T}	T{
+Which commands this rule decides about
+T}
+T{
+\fBcommands\fR,\: \fBdeny_\:commands\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+This rule\(aqs own command lists
+T}
+T{
+\fBread_\:only\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse DELE and RSET for this rule\(aqs clients and users
+T}
+T{
+\fBmax_\:messages\fR,\: \fBmax_\:retr_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (inherit)
+T}	T{
+This rule\(aqs own bounds
+T}
+T{
+\fBaction\fR
+T}	T{
+string
+T}	T{
+\fBallow\fR
+T}	T{
+\fBallow\fR or \fBdeny\fR
+T}
+T{
+\fBschedule\fR
+T}	T{
+object
+T}	T{
+\[u2014]
+T}	T{
+Limit the rule to a time window. See \fBschedule\fR
+T}
+.TE
 .SS "server.listeners[].tftp (kind: tftp)"
 .PP
 TFTP is the protocol under provisioning. A switch pulls its firmware over it, a machine with no operating system yet pulls a boot image, a telephone pulls its configuration, and an engineer pushes a running configuration off a router with it. It has \fBno authentication of any kind\fR: no user, no password, no token, no transport security, and no extension that adds one. A request is a filename and a mode, and a server that receives one answers it.
@@ -20593,7 +23050,7 @@ list
 T}	T{
 \fB[]\fR (all)
 T}	T{
-Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBflow\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBtcp_\:denied\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBdhcp_\:denied\fR,\: \fBdhcp6_\:denied\fR,\: \fBcoap_\:denied\fR,\: \fBopcua_\:denied\fR,\: \fBmms_\:denied\fR,\: \fBpostgres_\:denied\fR,\: \fBmysql_\:denied\fR,\: \fBtds_\:denied\fR,\: \fBredis_\:denied\fR,\: \fBbacnet_\:denied\fR,\: \fBamqp_\:denied\fR,\: \fBs7_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fBdns_\:denied\fR,\: \fBdns_\:threat_\:intel\fR,\: \fBdns_\:deceived\fR,\: \fBdns_\:tripwire\fR,\: \fBtelnet_\:tripwire\fR,\: \fBssh_\:tripwire\fR,\: \fBmodbus_\:tripwire\fR,\: \fBiec104_\:tripwire\fR,\: \fBs7_\:tripwire\fR,\: \fBredis_\:tripwire\fR,\: \fBmysql_\:tripwire\fR,\: \fBpostgres_\:tripwire\fR,\: \fByara\fR
+Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBflow\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBforward_\:host_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBtcp_\:denied\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBdhcp_\:denied\fR,\: \fBdhcp6_\:denied\fR,\: \fBcoap_\:denied\fR,\: \fBopcua_\:denied\fR,\: \fBmms_\:denied\fR,\: \fBpostgres_\:denied\fR,\: \fBmysql_\:denied\fR,\: \fBtds_\:denied\fR,\: \fBredis_\:denied\fR,\: \fBbacnet_\:denied\fR,\: \fBamqp_\:denied\fR,\: \fBs7_\:denied\fR,\: \fBradius_\:denied\fR,\: \fBtacacs_\:denied\fR,\: \fBkkdcp_\:denied\fR,\: \fBimap_\:denied\fR,\: \fBimap_\:auth_\:failed\fR,\: \fBimap_\:anomaly\fR,\: \fBpop3_\:denied\fR,\: \fBpop3_\:auth_\:failed\fR,\: \fBpop3_\:anomaly\fR,\: \fBsse_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fBdns_\:denied\fR,\: \fBdns_\:threat_\:intel\fR,\: \fBdns_\:deceived\fR,\: \fBdns_\:tripwire\fR,\: \fBtelnet_\:tripwire\fR,\: \fBssh_\:tripwire\fR,\: \fBmodbus_\:tripwire\fR,\: \fBiec104_\:tripwire\fR,\: \fBs7_\:tripwire\fR,\: \fBredis_\:tripwire\fR,\: \fBmysql_\:tripwire\fR,\: \fBpostgres_\:tripwire\fR,\: \fByara\fR
 T}
 T{
 \fBthreshold\fR
@@ -22833,8 +25290,8 @@ An upgraded connection is the one place a request\-oriented proxy stops looking.
 .PP
 .TS
 allbox;
-lbw(1.3i) lbw(0.7i) lbw(1.1i) lbx
-lw(1.3i) lw(0.7i) lw(1.1i) lx.
+lbw(1.3i) lbw(0.9i) lbw(1.1i) lbx
+lw(1.3i) lw(0.9i) lw(1.1i) lx.
 T{
 Key
 T}	T{
@@ -22952,15 +25409,537 @@ protocol\(aqs own
 T}	T{
 Override the close code;\: 3000\-4999 only
 T}
+T{
+\fBcompression\fR
+T}	T{
+\fBstrip\fR,\: \fBrefuse\fR,\: \fBinspect\fR
+T}	T{
+\fBstrip\fR
+T}	T{
+What happens to a client\(aqs \fBpermessage\-\:deflate\fR offer;\: see below
+T}
+T{
+\fBmax_\:inflate_\:ratio\fR
+T}	T{
+int
+T}	T{
+\fB100\fR
+T}	T{
+How far one message may expand before it is a bomb rather than a message;\: \fBcompression:\: inspect\fR only
+T}
+T{
+\fBtype_\:field\fR
+T}	T{
+string
+T}	T{
+\fBtype\fR
+T}	T{
+The JSON member that names a message\(aqs type
+T}
+T{
+\fBtypes\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The policy per kind of message;\: see below
+T}
+T{
+\fBunknown_\:types\fR
+T}	T{
+\fBallow\fR,\: \fBobserve\fR,\: \fBdeny\fR
+T}	T{
+\fBdeny\fR with \fBtypes\fR,\: else \fBallow\fR
+T}	T{
+A message whose type \fBtypes\fR does not name
+T}
+T{
+\fBrequire_\:json\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Refuse a text message that is not a JSON object
+T}
+.TE
+.PP
+Each entry of \fBtypes\fR:
+.PP
+.TS
+allbox;
+lbw(1.0i) lbw(0.8i) lbw(0.9i) lbx
+lw(1.0i) lw(0.8i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Description
+T}
+T{
+\fBname\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+The value of \fBtype_\:field\fR this entry is about
+T}
+T{
+\fBmax_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+Largest message of this type,\: after inflation;\: 0 leaves it to \fBmax_\:message_\:bytes\fR
+T}
+T{
+\fBmessages_\:per_\:second\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+This type\(aqs rate,\: per connection and per direction
+T}
+T{
+\fBschema_\:file\fR
+T}	T{
+path
+T}	T{
+
+T}	T{
+A JSON Schema (JSON or YAML) every message of this type must match
+T}
+T{
+\fBdirection\fR
+T}	T{
+\fBclient\fR,\: \fBserver\fR,\: \fBboth\fR
+T}	T{
+\fBboth\fR
+T}	T{
+Which way this type travels
+T}
 .TE
 .PP
 The structural checks are the half with no false positives, because they are the protocol\(aqs own rules: a reserved bit set without a negotiated extension, a reserved opcode, an unmasked client frame or a masked server one, a fragmented or oversize control frame, a continuation with nothing to continue, a new message before the previous one finished, a close frame with one byte of status, a close code that must never appear on the wire, a close reason or text message that is not UTF\-8. A client that does any of these is not a browser.
 .PP
 The bounds are the half worth thinking about: \fBmax_frame_bytes\fR and \fBmax_message_bytes\fR are what stop one connection deciding how much memory the proxy uses, and \fBmessages_per_second\fR is what stops it deciding how much CPU the origin uses. The pattern list is the part with a real false\-positive rate \[u2014] start with \fBaction: log\fR and read \fBxproxy_websocket_violations_total{route}\fR for a week.
 .PP
-Messages larger than \fBmax_inspect_bytes\fR are checked up to that bound and forwarded: the alternative is buffering whatever a client chooses to send. Compressed frames (\fBpermessage\-deflate\fR) cannot be inspected at all, which is why a reserved bit is refused rather than ignored \[u2014] a negotiated compression extension would silently turn every check off.
+Messages larger than \fBmax_inspect_bytes\fR are checked up to that bound and forwarded: the alternative is buffering whatever a client chooses to send.
+.SS "What kinds of message the route carries"
 .PP
-Violations are security events with reason \fBwebsocket\fR, counted per route by \fBxproxyctl\fR and \fBGET /v1/websocket\fR, and exported as \fBxproxy_websocket_violations_total\fR and \fBxproxy_websocket_closed_total\fR.
+The bounds above are about the connection, and \fBmax_message_bytes\fR for a connection is the bound of its largest message \[u2014] which is the bound that lets every other message be that large too. A WebSocket API carries several kinds of message, and the bounds that are right for a keepalive are nowhere near the ones that are right for an order.
+.PP
+\fBtypes\fR is where that is written. Each entry names a value of \fBtype_field\fR (the JSON member an application uses for this, conventionally \fBtype\fR) and says how large that kind of message may be, how often it may arrive, which direction it travels in, and the schema it must match:
+.PP
+.RS 4
+.nf
+.ft CR
+websocket_guard:
+  max_message_bytes: 1048576
+  type_field: op
+  types:
+    \- {name: ping, max_bytes: 64, messages_per_second: 2}
+    \- {name: subscribe, max_bytes: 4096, messages_per_second: 10, schema_file: /etc/xproxy/ws/subscribe.json}
+    \- {name: order, max_bytes: 16384, messages_per_second: 50, schema_file: /etc/xproxy/ws/order.json}
+    \- {name: tick, direction: server}
+  unknown_types: observe
+.ft
+.fi
+.RE
+.PP
+\fB\fBunknown_types\fR is the positive half.\fR A message whose type is not in the list is the interesting one: \fBdeny\fR refuses it, which is what a route that knows its API wants and is the default once \fBtypes\fR names anything; \fBobserve\fR records it and forwards it, which is how the list gets written (run for a week, read \fBxproxy_websocket_unknown_type_total{route}\fR and the events, promote what belongs); \fBallow\fR ignores it. A route with no \fBtypes\fR allows them, so nothing changes for a configuration written before this existed.
+.PP
+\fBWhere each check decides is not the same.\fR The type is read out of the message, so it is known when the message is complete:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+From the \fBclient\fR that is still before anything reaches the origin \[u2014] the guard already holds a client message until the whole of it has passed inspection, so a per\-type bound refuses the message rather than reporting it.
+.PP
+.ti -3n
+\(bu
+From the \fBorigin\fR each frame is forwarded as it is checked, so a bound broken by a fragmented message is found at the end of it: the connection closes and what had already been written has gone. That is the same limit the pattern list has had, and it is why a \fBdirection: server\fR type is a statement about what the application does rather than a gate in front of it.
+.PP
+.ti -3n
+\(bu
+A \fBschema\fR needs the whole message, and the guard keeps \fBmax_inspect_bytes\fR of it. A message under a schema that is longer than that cannot be validated and is refused rather than passed, because a check that stops applying above a size the sender chooses is not a check. Validation warns where a type\(aqs \fBmax_bytes\fR makes that certain.
+.PP
+.ti -3n
+\(bu
+The type policy reads \fBtext\fR messages, because the type is a JSON member. A binary message is a format this does not claim to read, and \fBrequire_json\fR (which refuses a text message that is not a JSON object) is how a route whose messages are all JSON says so.
+.RE
+.PP
+.SS "Compression"
+.PP
+A \fBpermessage\-deflate\fR frame cannot be read without being inflated, so this is the setting that decides whether an inspected route is also a compressed one.
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fB\fBstrip\fR\fR, the default, takes the client\(aqs \fBSec\-WebSocket\-Extensions\fR offer out of the upgrade request: the origin never sees it, never accepts it, and both ends fall back to uncompressed frames, which is what the extension is designed to do when it is not agreed. This is the friendly half \[u2014] browsers offer the extension on every WebSocket, and leaving the offer to the endpoints meant they agreed compression behind the proxy, the client was told it had succeeded, and the first data frame then closed the connection with a protocol error that blamed the peer.
+.PP
+.ti -3n
+\(bu
+\fB\fBrefuse\fR\fR answers the upgrade with \fB400\fR instead, for an estate that would rather a client\(aqs own logs recorded the refusal than have its offer quietly changed.
+.PP
+.ti -3n
+\(bu
+\fB\fBinspect\fR\fR keeps compression and reads it. The offer forwarded to the origin is narrowed to \fBpermessage\-deflate; client_no_context_takeover; server_no_context_takeover\fR, whatever the client asked for: with context takeover a message can only be inflated by a decoder that has seen every message before it, and a proxy holding that state per direction per connection has agreed to unbounded work on behalf of whoever opened the connection. Without takeover each message is a stream of its own. An acceptance that is not that offer is refused at the 101 with \fB502\fR \[u2014] including an origin that accepts plain \fBpermessage\-deflate\fR \[u2014] because a stream the guard cannot inflate would leave it choosing between closing every connection and reading nothing.
+.RE
+.PP
+.PP
+With \fBinspect\fR, every check above is about the inflated message: its size, its UTF\-8, the patterns, the type and the schema. Two bounds then matter that do not otherwise: \fBmax_message_bytes\fR is the largest message after inflation, and \fBmax_inflate_ratio\fR (default 100) is how far one message may expand \[u2014] a kilobyte on the wire becoming a megabyte in the application is the shape of the attack rather than the size of it, and past either bound the message is refused as \fBcompression_bomb\fR without being inflated any further.
+.PP
+An origin that claims an extension on a route that offered none is still refused at the 101, and a reserved bit arriving after all means what it says: a peer using an extension nobody negotiated.
+.PP
+Violations are security events with reason \fBwebsocket\fR, carrying the specific finding \[u2014] \fBprotocol\fR, \fBopcode\fR, \fBframe_size\fR, \fBmessage_size\fR, \fBrate\fR, \fBpattern\fR, \fBextension\fR, \fBcompression\fR, \fBcompression_bomb\fR, \fBjson\fR, \fBmessage_type\fR, \fBtype_size\fR, \fBtype_rate\fR or \fBschema\fR \[u2014] counted per route by \fBxproxyctl\fR and \fBGET /v1/websocket\fR, and exported as \fBxproxy_websocket_violations_total\fR, \fBxproxy_websocket_closed_total\fR, \fBxproxy_websocket_unknown_type_total\fR and, per named type, \fBxproxy_websocket_type_messages_total\fR and \fBxproxy_websocket_type_violations_total\fR.
+.SS "routes[].sse_guard"
+.PP
+A \fBtext/event\-stream\fR response is the other long\-lived HTTP exchange an estate runs, and the only one nothing else in this configuration bounds. One GET, a response with no length, flushed per event, held open for hours. Without a guard it is an opaque outbound channel on a port that is already open.
+.PP
+It is the WebSocket guard\(aqs opposite in the two ways that decide what a policy here can be.
+.PP
+\fBIt is one\-directional, and the direction is outward.\fR The client sends a GET and then says nothing; everything after that is the application talking. So every event is the estate\(aqs own output leaving it, which puts this in the same position as the \fBdhcp\fR kind \[u2014] a policy about answers \[u2014] and makes \fBdeny_patterns\fR here a control that reads what is \fIleaving\fR. Nothing about an exfiltration channel built this way is malformed: it is arbitrary text, chunked, under a Content\-Type a dashboard uses. The bounds and the event list are what make the difference between a price feed and a copy of a database something a configuration can state.
+.PP
+\fBA single event cannot be refused.\fR By the time an event is read the status line has gone and the response is committed; there is no way to say "not that one" inside a sequence a client is reading in order. So \fBaction\fR has two values rather than three \[u2014] the stream ends, or the event is carried and reported \[u2014] and a refusal is a decision to end the stream at that event. The client sees a closed body, which is what it sees when an application finishes, and reconnects: the right outcome for a dashboard and a dead end for a channel.
+.PP
+The guard reads each event and \fBwrites it out again\fR rather than splicing. That is why the rest is trustworthy: SSE has three line terminators (CRLF, LF \fIand a bare CR\fR), a blank line as its only separator and a field with no colon that means an empty value, so a spliced stream leaves the framing to be resolved twice and the two ends can disagree about where an event ends.
+.PP
+.TS
+allbox;
+lbw(1.2i) lbw(0.9i) lbw(0.8i) lbx
+lw(1.2i) lw(0.9i) lw(0.8i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Meaning
+T}
+T{
+\fBmax_\:event_\:bytes\fR
+T}	T{
+bytes
+T}	T{
+\fB1048576\fR
+T}	T{
+The largest reassembled event: the joined \fBdata\fR,\: the name and the identifier. Past it the stream ends rather than the event being truncated,\: because half an event delivered as whole is worse than none
+T}
+T{
+\fBmax_\:line_\:bytes\fR
+T}	T{
+bytes
+T}	T{
+\fB65536\fR
+T}	T{
+The longest single field line. Separate from \fBmax_\:event_\:bytes\fR because \fBdata\fR accumulates across lines,\: so an event\(aqs size and a line\(aqs are different questions
+T}
+T{
+\fBmax_\:fields\fR
+T}	T{
+int
+T}	T{
+\fB256\fR
+T}	T{
+How many field lines one event may be built from. A stream that sends ten thousand \fBdata:\fR lines before its blank line is not sending an event
+T}
+T{
+\fBevents_\:per_\:second\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (none)
+T}	T{
+The stream\(aqs event rate. This is the \fIserver\(aqs\fR rate,\: which is unusual in this file and is the point: an application that has started emitting a thousand events a second is either broken or being read
+T}
+T{
+\fBmax_\:events\fR
+T}	T{
+int
+T}	T{
+\fB0\fR (none)
+T}	T{
+How many events one stream may carry before it ends
+T}
+T{
+\fBmax_\:stream_\:bytes\fR
+T}	T{
+bytes
+T}	T{
+\fB0\fR (none)
+T}	T{
+How many bytes one stream may carry before it ends. With \fBmax_\:events\fR,\: the pair that makes a stream finite
+T}
+T{
+\fBmax_\:duration\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR (none)
+T}	T{
+How long one stream may be held open. A dashboard that reconnects every hour costs nothing;\: a stream open for three weeks is not a dashboard
+T}
+T{
+\fBidle_\:timeout\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR (none)
+T}	T{
+Ends a stream that has sent nothing for this long. Comment lines count as traffic \[u2014] that is what a keepalive is \[u2014] so this bounds a stream whose application has stopped without closing the socket
+T}
+T{
+\fBallow_\:events\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The event names that may cross,\: by the \fBevent:\fR field. An event with no name is \fBmessage\fR,\: which is what a client calls it,\: so that is the name a rule uses
+T}
+T{
+\fBdeny_\:events\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+Names that may not cross. Checked first,\: and no entry in \fBallow_\:events\fR overrides it,\: which is how an exception inside an admitted set is written
+T}
+T{
+\fBunknown_\:events\fR
+T}	T{
+\fBallow\fR,\: \fBobserve\fR,\: \fBdeny\fR
+T}	T{
+\fBdeny\fR once \fBallow_\:events\fR names any,\: else \fBallow\fR
+T}	T{
+What happens to a name neither list covers. A list of the events a stream carries that also carries everything else is not a list,\: which is why naming any makes the rest deny;\: \fBobserve\fR records and forwards,\: which is how the list gets written
+T}
+T{
+\fBevents[]\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+The policy per event name;\: see below
+T}
+T{
+\fBallow_\:last_\:event_\:id\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Whether a client\(aqs \fBLast\-\:Event\-\:ID\fR request header is forwarded. It is the one piece of client\-controlled input on this protocol and it reaches the application as a \fBcursor\fR: an application that replays from it is being told where to start,\: and an identifier a client was never issued is a request for history it was not shown. The cursor policy applies to \fBevery\fR request on a route that has an \fBsse_\:guard\fR,\: not only to one whose \fBAccept\fR header asked for a stream: what makes a response a stream is its Content\-Type,\: so an application that answers a path with \fBtext/\:event\-\:stream\fR answers it that way for a client that sent no \fBAccept\fR header at all. A request carrying the header twice has both removed \[u2014] the first value is one library\(aqs answer and the last is another\(aqs,\: so a check on one of them is a check on a value the application need not be the one to use
+T}
+T{
+\fBmax_\:id_\:bytes\fR
+T}	T{
+int
+T}	T{
+\fB256\fR
+T}	T{
+Bounds the server\(aqs \fBid:\fR field and the client\(aqs \fBLast\-\:Event\-\:ID\fR alike. They are the same value making a round trip,\: so one bound covers both ends
+T}
+T{
+\fBlast_\:event_\:id_\:pattern\fR
+T}	T{
+RE2
+T}	T{
+none
+T}	T{
+A shape a client\(aqs \fBLast\-\:Event\-\:ID\fR must match,\: anchored around the \fBwhole\fR pattern \[u2014] so \fB[0\-\:9]{1,\:19}|[0\-\:9A\-\:HJKMNP\-\:TV\-\:Z]{26}\fR,\: the estate whose identifiers are a counter or a ULID,\: is anchored on both branches rather than on the first and the last. An estate whose identifiers are integers or ULIDs says so here,\: and then the cursor reaching the application is one of its own shape rather than whatever was sent. A cursor that does not match is \fBremoved\fR,\: not refused: the client gets the stream from the beginning,\: which is what a client with no cursor gets
+T}
+T{
+\fBmin_\:retry\fR
+T}	T{
+duration
+T}	T{
+\fB0\fR (leave alone)
+T}	T{
+A floor on the \fBretry:\fR field the server sends. The field tells the client how long to wait before reconnecting,\: so \fBretry:\: 0\fR from a misconfigured application is a fleet of browsers reconnecting as fast as they can. A floor \fBrewrites\fR rather than refuses,\: because the stream itself is fine
+T}
+T{
+\fBinspect\fR
+T}	T{
+\fBnone\fR,\: \fBdata\fR,\: \fBall\fR
+T}	T{
+\fBdata\fR
+T}	T{
+Which part of an event is kept for pattern matching. \fBdata\fR is the payload;\: \fBall\fR adds the name and the identifier
+T}
+T{
+\fBmax_\:inspect_\:bytes\fR
+T}	T{
+bytes
+T}	T{
+\fB65536\fR
+T}	T{
+The prefix of an event kept for matching
+T}
+T{
+\fBdeny_\:patterns\fR
+T}	T{
+list
+T}	T{
+\fB[]\fR
+T}	T{
+RE2 patterns matched against the inspected part. On this protocol they read what is leaving,\: which is the direction an exfiltration channel runs in
+T}
+T{
+\fBcompression\fR
+T}	T{
+\fBstrip\fR,\: \fBrefuse\fR,\: \fBinspect\fR
+T}	T{
+\fBstrip\fR
+T}	T{
+What happens to compression. A compressed stream cannot be read without being inflated. \fBstrip\fR removes the client\(aqs \fBAccept\-\:Encoding\fR for this route so the application sends the stream in the clear,\: which costs little because an event stream is small messages flushed one at a time and a sender has already given up cross\-message compression to keep latency;\: \fBrefuse\fR answers the request with 400 instead,\: for an estate that would rather a client was told than quietly changed;\: \fBinspect\fR inflates each event before the policy sees it
+T}
+T{
+\fBmax_\:inflate_\:ratio\fR
+T}	T{
+int
+T}	T{
+\fB100\fR
+T}	T{
+How far a compressed stream may expand before it is a bomb rather than a stream. Only read with \fBcompression:\: inspect\fR
+T}
+T{
+\fBallow_\:comments\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+Whether \fB:\fR\-prefixed lines are forwarded. They are how a stream stays alive through an intermediary that would time it out,\: so removing them would make this proxy the reason a stream dies;\: an estate that wants nothing but named events turns them off
+T}
+T{
+\fBrequire_\:json\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Makes an event whose data is not a JSON object a violation rather than one the schema policy cannot read. Off by default: an event stream carries whatever the application chose,\: and plenty of real ones carry a bare number or a fragment of HTML
+T}
+T{
+\fBaction\fR
+T}	T{
+\fBclose\fR,\: \fBlog\fR
+T}	T{
+\fBclose\fR
+T}	T{
+What a violation does. There is no third answer here,\: for the reason above
+T}
+T{
+\fBlog_\:events\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+One line per event. Off by default,\: because a stream is thousands of events and the summary at its end is what an operator reads;\: a route being investigated turns it on
+T}
+T{
+\fBmonitor_\:only\fR
+T}	T{
+bool
+T}	T{
+\fBfalse\fR
+T}	T{
+Report what would be refused and carry everything,\: which is how an estate finds out what its own streams send before a bound is set
+T}
+.TE
+.SS "routes[].sse_guard.events[]"
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(0.7i) lbw(0.9i) lbx
+lw(0.8i) lw(0.7i) lw(0.9i) lx.
+T{
+Key
+T}	T{
+Type
+T}	T{
+Default
+T}	T{
+Meaning
+T}
+T{
+\fBname\fR
+T}	T{
+string
+T}	T{
+required
+T}	T{
+The \fBevent:\fR field this entry is about. \fBmessage\fR names the events that carry no \fBevent:\fR field,\: because that is what a client calls them
+T}
+T{
+\fBmax_\:bytes\fR
+T}	T{
+bytes
+T}	T{
+\fB0\fR
+T}	T{
+One event of this name,\: after inflation where the route inspects a compressed stream. 0 leaves it to \fBmax_\:event_\:bytes\fR
+T}
+T{
+\fBevents_\:per_\:second\fR
+T}	T{
+int
+T}	T{
+\fB0\fR
+T}	T{
+This name\(aqs rate. 0 is no bound of its own;\: the stream\(aqs \fBevents_\:per_\:second\fR still applies
+T}
+T{
+\fBschema_\:file\fR
+T}	T{
+path
+T}	T{
+none
+T}	T{
+A JSON Schema (JSON or YAML) every event of this name must match. Read at load and on reload. An event too large to have been inspected whole cannot be validated and is \fBrefused\fR: a check that silently stops applying above a size the sender chooses is not a check,\: and the sender here is the thing being checked
+T}
+.TE
+.PP
+One \fBmax_event_bytes\fR for the stream is the bound of its largest event, which is the bound that lets every other event be that large too. \fBevents[]\fR is where the keepalive and the hourly report get different answers.
+.PP
+.RS 4
+.nf
+.ft CR
+routes:
+  \- name: dashboard
+    paths: ["/events"]
+    upstream: app
+    sse_guard:
+      max_event_bytes: 65536
+      events_per_second: 50
+      max_events: 100000
+      max_duration: 2h
+      idle_timeout: 90s
+      allow_events: [price, volume, heartbeat]
+      events:
+        \- {name: heartbeat, max_bytes: 128, events_per_second: 1}
+        \- {name: price, max_bytes: 4096, schema_file: /etc/xproxy/schemas/price.json}
+      last_event_id_pattern: "[0\-9]{1,19}"
+      min_retry: 5s
+      deny_patterns: ["BEGIN [A\-Z ]*PRIVATE KEY", "[0\-9]{13,19}"]
+.ft
+.fi
+.RE
+.PP
+Counters: \fBsse_streams\fR, \fBsse_events\fR, \fBsse_event_bytes\fR, \fBsse_comments\fR, \fBsse_violations\fR, \fBsse_unknown_events\fR and \fBsse_cursors_stripped\fR. Every refusal is counted under its own reason and is bannable as \fBsse_denied\fR; \fBsse_cursors_stripped\fR counts the \fBLast\-Event\-ID\fR headers that did not cross, which is not a refusal \[u2014] the request goes on without the cursor.
 .SS "routes[].deceive"
 .PP
 A refusal is information. A scanner that gets 403 has learned that the request it sent was the interesting one, and it will vary that request until something is not refused \[u2014] the refusal is the oracle that tells it when it has found the way through. \fBdeceive\fR answers a client the route no longer trusts with something ordinary instead: the crawl completes, the data is wrong, and the request that would have worked looks exactly like the one that did not.
@@ -30815,7 +33794,7 @@ T{
 T}	T{
 \fBallow\fR,\: \fBdeny\fR,\: \fBobserve\fR
 T}	T{
-Default \fBallow\fR
+Default \fBallow\fR. \fBobserve\fR records the rule in the log line and decides nothing,\: so the rules below it still decide \[u2014] and on a listener whose \fBdefault_\:action\fR is \fBdeny\fR,\: the default does. That is what lets a rule be tried on live traffic without the trial changing what happens;\: a rule that decided,\: by allowing what it covers,\: would make writing one the way to switch off every rule under it
 T}
 T{
 \fBallow_\:commands\fR,\: \fBdeny_\:commands\fR,\: \fBallow_\:statements\fR,\: \fBdeny_\:statements\fR,\: \fBallow_\:load\fR,\: \fBread_\:only\fR,\: \fBmax_\:statements\fR
@@ -31383,7 +34362,7 @@ T{
 T}	T{
 \fBallow\fR,\: \fBdeny\fR,\: \fBobserve\fR
 T}	T{
-Default \fBallow\fR
+Default \fBallow\fR. \fBobserve\fR records the rule in the log line and decides nothing,\: so the rules below it still decide \[u2014] and on a listener whose \fBdefault_\:action\fR is \fBdeny\fR,\: the default does. That is what lets a rule be tried on live traffic without the trial changing what happens;\: a rule that decided,\: by allowing what it covers,\: would make writing one the way to switch off every rule under it
 T}
 T{
 \fBallow_\:statements\fR,\: \fBdeny_\:statements\fR,\: \fBallow_\:copy\fR,\: \fBread_\:only\fR,\: \fBmax_\:statements\fR
@@ -32007,7 +34986,7 @@ T{
 T}	T{
 \fBallow\fR,\: \fBdeny\fR,\: \fBobserve\fR
 T}	T{
-Default \fBallow\fR
+Default \fBallow\fR. \fBobserve\fR records the rule in the log line and decides nothing,\: so the rules below it still decide \[u2014] and on a listener whose \fBdefault_\:action\fR is \fBdeny\fR,\: the default does. That is what lets a rule be tried on live traffic without the trial changing what happens;\: a rule that decided,\: by allowing what it covers,\: would make writing one the way to switch off every rule under it
 T}
 T{
 \fBallow_\:procedures\fR,\: \fBdeny_\:procedures\fR,\: \fBallow_\:types\fR,\: \fBdeny_\:types\fR,\: \fBallow_\:statements\fR,\: \fBdeny_\:statements\fR,\: \fBread_\:only\fR,\: \fBmax_\:statements\fR
@@ -32441,7 +35420,7 @@ T{
 T}	T{
 \fBallow\fR,\: \fBdeny\fR,\: \fBobserve\fR
 T}	T{
-Default \fBallow\fR
+Default \fBallow\fR. \fBobserve\fR records the rule in the log line and decides nothing,\: so the rules below it still decide \[u2014] and on a listener whose \fBdefault_\:action\fR is \fBdeny\fR,\: the default does. That is what lets a rule be tried on live traffic without the trial changing what happens;\: a rule that decided,\: by allowing what it covers,\: would make writing one the way to switch off every rule under it
 T}
 T{
 \fBallow_\:commands\fR,\: \fBdeny_\:commands\fR,\: \fBallow_\:subcommands\fR,\: \fBdeny_\:subcommands\fR,\: \fBallow_\:key_\:prefixes\fR,\: \fBdeny_\:key_\:prefixes\fR,\: \fBread_\:only\fR,\: \fBmax_\:commands\fR
@@ -33855,7 +36834,7 @@ T{
 T}	T{
 \fBallow\fR,\: \fBdeny\fR,\: \fBobserve\fR
 T}	T{
-Default \fBallow\fR
+Default \fBallow\fR. \fBobserve\fR records the rule in the log line and decides nothing,\: so the rules below it still decide \[u2014] and on a listener whose \fBdefault_\:action\fR is \fBdeny\fR,\: the default does. That is what lets a rule be tried on live traffic without the trial changing what happens;\: a rule that decided,\: by allowing what it covers,\: would make writing one the way to switch off every rule under it
 T}
 T{
 \fBallow_\:methods\fR,\: \fBdeny_\:methods\fR,\: \fBallow_\:performatives\fR,\: \fBdeny_\:performatives\fR,\: \fBallow_\:exchanges\fR,\: \fBdeny_\:exchanges\fR,\: \fBallow_\:queues\fR,\: \fBdeny_\:queues\fR,\: \fBallow_\:routing_\:keys\fR,\: \fBdeny_\:routing_\:keys\fR,\: \fBallow_\:addresses\fR,\: \fBdeny_\:addresses\fR,\: \fBallow_\:topology\fR,\: \fBallow_\:publish\fR,\: \fBallow_\:consume\fR,\: \fBmax_\:message_\:bytes\fR,\: \fBmax_\:methods\fR
@@ -34791,7 +37770,7 @@ T{
 T}	T{
 \fBallow\fR,\: \fBdeny\fR,\: \fBobserve\fR
 T}	T{
-Default \fBallow\fR
+Default \fBallow\fR. \fBobserve\fR records the rule in the log line and decides nothing,\: so the rules below it still decide \[u2014] and on a listener whose \fBdefault_\:action\fR is \fBdeny\fR,\: the default does. That is what lets a rule be tried on live traffic without the trial changing what happens;\: a rule that decided,\: by allowing what it covers,\: would make writing one the way to switch off every rule under it
 T}
 T{
 \fBclients\fR,\: \fBracks\fR,\: \fBslots\fR,\: \fBresources\fR
@@ -35902,6 +38881,7 @@ access:
   approvals: 1            # four eyes: the person who asked and one other
   max_duration: 4h
   max_lead: 24h
+  max_work_order: 720h    # thirty days: a shutdown fits, a forgotten one does not
   max_uses: 0             # the window is the bound
   max_open: 256
 
@@ -35966,6 +38946,15 @@ T}	T{
 How far ahead of now a window may start,\: so an approval today cannot be a key for next quarter;\: 0 to 720h
 T}
 T{
+\fBmax_\:work_\:order\fR
+T}	T{
+duration
+T}	T{
+\fB720h\fR
+T}	T{
+The longest window a work order may cover. Separate from \fBmax_\:duration\fR because the two measure different things: a grant is a window somebody is admitted through and four hours is generous,\: while a work order is how long the work lasts and a plant shutdown is a fortnight. \fBmax_\:lead\fR bounds its start as well;\: 1m to 2160h
+T}
+T{
 \fBmax_\:uses\fR
 T}	T{
 int
@@ -35997,6 +38986,72 @@ T}
 Each gate kind \-\- \fBssh\fR, \fBtelnet\fR, \fBvnc\fR, \fBrdp\fR and \fBftp\fR \-\- takes \fBrequire_grant: true\fR, in that one spelling, so an estate does not have to remember which protocol calls it what. A listener that requires a grant with no \fBaccess\fR section fails the load; an \fBaccess\fR section no listener asks is warned about.
 .PP
 The OT kinds ask for the same thing about a \fIrequest\fR rather than a session. A Modbus connection carries reads all day and one UMAS program write at four in the afternoon, and only the second needs a work order, so there \fBrequire_grant: true\fR sits in the listener\(aqs \fBengineering\fR block and covers the engineering classes rather than the connection. The grant, the approvals, the window and the trail are the same machinery; what differs is the unit of access.
+.SS "A work order is not a grant"
+.PP
+The two are both in this section, both in the trail, and they are not the same thing. Conflating them is the mistake this heading exists to stop.
+.PP
+.TS
+allbox;
+lbw(0.8i) lbw(1.4i) lbx
+lw(0.8i) lw(1.4i) lx.
+T{
+
+T}	T{
+A grant
+T}	T{
+A work order
+T}
+T{
+What it is
+T}	T{
+an authorisation
+T}	T{
+a change reference somebody filed
+T}
+T{
+Who agrees
+T}	T{
+\fBapprovals\fR other people
+T}	T{
+nobody
+T}
+T{
+What it permits
+T}	T{
+a session,\: or an engineering class,\: that would otherwise be refused
+T}	T{
+\fBnothing\fR. It never permits anything that was not already permitted
+T}
+T{
+What it changes
+T}	T{
+whether the operation happens
+T}	T{
+how the operation is \fIreported\fR
+T}
+T{
+Its window
+T}	T{
+\fBmax_\:duration\fR,\: hours
+T}	T{
+\fBmax_\:work_\:order\fR,\: up to a shutdown
+T}
+T{
+Filed by
+T}	T{
+the person who wants the access,\: approved by another
+T}	T{
+one person,\: alone
+T}
+.TE
+.PP
+A work order is the identifier the maintenance system already issued \[u2014] \fBWO\-2026\-0481\fR \[u2014] filed against a device for a window, with a note saying what the work is. It is written to the ledger like everything else here, so "was that download filed, and by whom" has an answer nobody could edit afterwards. An engineering operation on that device while it is open is reported as expected work: the event carries \fBwork_order\fR, its severity is \fBnotice\fR rather than \fBwarning\fR, and the operation counts under \fBxproxy_engineering_filed_total\fR as well. The same operation with nothing on file is reported as an operation nobody wrote down.
+.PP
+\fBA listener with \fBrequire_grant: true\fR still refuses an operation with no grant, whatever work orders are open.\fR A work order cannot open a door. If it could, the person who wanted the access could file one for themselves and the approval requirement would be decoration.
+.PP
+So the two are for two different estates, and most plants are the second one for a while before they are the first. An estate that can run four\-eyes approval on every program download uses grants and refuses what has none. An estate that cannot yet \[u2014] because the commissioning engineer is on site now and the approver is not \[u2014] still files the reference, and then the weekly report has two lists: the engineering somebody filed, and the engineering nobody did. The second list is short, and it is the one worth reading. What it must not be is a single list of everything, which is what an estate with neither gets and therefore does not read.
+.PP
+Work orders are filed over the management API (\fBPOST /v1/workorders\fR), from \fBxproxyctl workorder\fR, and from the Plant screen of the web interface. There is no configuration for them beyond \fBmax_work_order\fR: the \fBaccess\fR ledger is where they go, so a daemon with no \fBledger\fR has nowhere to file one and says so.
 .SS "What a grant names"
 .PP
 A grant names a \fBsubject\fR, a \fBlistener\fR and a \fBtarget\fR.

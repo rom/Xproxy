@@ -29,7 +29,7 @@ func TestAnAbsentBlockStillReports(t *testing.T) {
 	// And it decides nothing, because there is no ledger to ask.
 	var reported int
 	reason := g.Decide(Operation{Class: ClassProgramDownload}, "10.0.0.8", "plc", nil, true,
-		Handler{Report: func(Operation, *access.Grant) { reported++ }})
+		Handler{Report: func(Operation, *access.Grant, *access.WorkOrder) { reported++ }})
 	if reason != "" || reported != 1 {
 		t.Errorf("reason %q reported %d", reason, reported)
 	}
@@ -100,12 +100,12 @@ func TestTheWorkOrderDecides(t *testing.T) {
 	op := Operation{Class: ClassProgramDownload, Detail: "download block DB12"}
 	var refused, ungranted, reported int
 	h := Handler{
-		Report:    func(Operation, *access.Grant) { reported++ },
-		Ungranted: func(Operation, string) { ungranted++ },
+		Report:    func(Operation, *access.Grant, *access.WorkOrder) { reported++ },
+		Ungranted: func(Operation, string, *access.WorkOrder) { ungranted++ },
 		Refused:   func(Operation, string) { refused++ },
 	}
 	if got := deny.Decide(op, "eng-1", "plc", nil, true, h); got != ReasonNoGrant {
-		t.Errorf("a download with no work order: %q", got)
+		t.Errorf("a download with no approved grant: %q", got)
 	}
 	if refused != 1 || reported != 1 || ungranted != 0 {
 		t.Errorf("calls refused=%d reported=%d ungranted=%d", refused, reported, ungranted)
@@ -136,12 +136,12 @@ func TestTheWorkOrderDecides(t *testing.T) {
 	}
 	var seen *access.Grant
 	if got := deny.Decide(op, "eng-1", "plc", nil, true, Handler{
-		Report: func(_ Operation, gr *access.Grant) { seen = gr },
+		Report: func(_ Operation, gr *access.Grant, _ *access.WorkOrder) { seen = gr },
 	}); got != "" {
 		t.Errorf("an approved download was refused: %q", got)
 	}
 	if seen == nil || seen.ID != g.ID {
-		t.Fatalf("the event did not carry the work order: %+v", seen)
+		t.Fatalf("the event did not carry the grant: %+v", seen)
 	}
 
 	// The trail has all three, and says which had a grant and which did not.

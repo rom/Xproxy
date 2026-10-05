@@ -46,6 +46,11 @@ server:
           s7: null
           opcua: null
           mms: null
+          radius: null
+          tacacs: null
+          kkdcp: null
+          imap: null
+          pop3: null
           policy: null
         - name: public
           address: :443
@@ -115,6 +120,11 @@ server:
           s7: null
           opcua: null
           mms: null
+          radius: null
+          tacacs: null
+          kkdcp: null
+          imap: null
+          pop3: null
           policy: null
     limits:
         max_header_bytes: 65536
@@ -442,6 +452,7 @@ routes:
       timeouts: null
       websocket: false
       websocket_guard: null
+      sse_guard: null
       webtransport: false
       waf: null
       priority_class: high
@@ -513,6 +524,7 @@ routes:
       timeouts: null
       websocket: false
       websocket_guard: null
+      sse_guard: null
       webtransport: false
       waf:
         mode: block
@@ -587,6 +599,7 @@ routes:
       timeouts: null
       websocket: false
       websocket_guard: null
+      sse_guard: null
       webtransport: false
       waf: null
       priority_class: critical
@@ -656,6 +669,7 @@ routes:
       timeouts: null
       websocket: false
       websocket_guard: null
+      sse_guard: null
       webtransport: false
       waf: null
       priority_class: normal
@@ -730,6 +744,7 @@ routes:
       timeouts: null
       websocket: true
       websocket_guard: null
+      sse_guard: null
       webtransport: false
       waf: null
       priority_class: normal
@@ -799,6 +814,7 @@ routes:
       timeouts: null
       websocket: false
       websocket_guard: null
+      sse_guard: null
       webtransport: false
       waf:
         mode: detect

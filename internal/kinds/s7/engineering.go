@@ -2,6 +2,7 @@ package s7
 
 import (
 	"context"
+	"net/netip"
 
 	"github.com/rom/xproxy/internal/access"
 	"github.com/rom/xproxy/internal/correlate"
@@ -109,16 +110,16 @@ func (t *server) decideEngineeringOperation(se *session, op engineering.Operatio
 		op.Point = wire.ResourceName(s.Resource)
 	}
 	// S7comm has no identity, so the subject is the address. That is the honest
-	// answer and it is also the useful one: a work order for this protocol names
+	// answer and it is also the useful one: a grant for this protocol names
 	// the engineering station's address, because that is what the plant has.
 	subject := se.ip.String()
 	return t.engineering.Decide(op, subject, t.sc.Upstream, nil, t.enforcing(),
 		engineering.Handler{
-			Report: func(op engineering.Operation, grant *access.Grant) {
-				t.reportEngineering(se, op, grant)
+			Report: func(op engineering.Operation, grant *access.Grant, order *access.WorkOrder) {
+				t.reportEngineering(se, op, grant, order)
 			},
-			Ungranted: func(op engineering.Operation, reason string) {
-				t.alert(se.ip, reason, op.String())
+			Ungranted: func(op engineering.Operation, reason string, order *access.WorkOrder) {
+				t.engineeringOutside(se.ip, reason, op, order)
 			},
 			Would: func(op engineering.Operation, reason string) {
 				t.host.Counters().WouldRefuse("s7", reason)
@@ -135,7 +136,7 @@ func (t *server) decideEngineeringOperation(se *session, op engineering.Operatio
 // reportEngineering writes the operation down: its own security event, its
 // counter, and a fact in the cross-listener window -- which the sibling daemons
 // see, because "a bastion session, then a program download" is two processes.
-func (t *server) reportEngineering(se *session, op engineering.Operation, grant *access.Grant) {
+func (t *server) reportEngineering(se *session, op engineering.Operation, grant *access.Grant, order *access.WorkOrder) {
 	t.host.Counters().Engineering("s7", string(op.Class))
 	t.host.ObserveFact(se.ip, correlate.Fact{
 		Class: correlate.ClassEngineering, Kind: "s7", Listener: t.name,
@@ -147,10 +148,45 @@ func (t *server) reportEngineering(se *session, op engineering.Operation, grant 
 		attrs = append(attrs, "resource", op.Point)
 	}
 	if grant != nil {
-		// The work order this happened under, which is the line an audit is
-		// actually asking for.
-		attrs = append(attrs, "grant", grant.ID, "work_order", grant.Reason)
+		// The grant this happened under and the reason it was approved for,
+		// which is the line an audit is actually asking for.
+		attrs = append(attrs, "grant", grant.ID, "grant_reason", grant.Reason)
+	}
+	// The work order on file for the device, and the tone that follows
+	// from it. A work order is not an approval and permits nothing: it
+	// says somebody was expecting work here, which is why the event is a
+	// notice rather than a warning.
+	attrs = append(attrs, "severity", engineering.Severity(order))
+	if order != nil {
+		t.host.Counters().EngineeringFiled("s7", string(op.Class))
+		attrs = append(attrs, "work_order", order.Reference,
+			"work_order_by", textsafe.Clip64(order.By))
 	}
 	t.host.Logs().SecurityEvent(context.Background(), "engineering",
 		engineering.Reason(op.Class), attrs...)
+}
+
+// engineeringOutside records an operation that happened outside every approved
+// window on a listener that does not require one.
+//
+// It counts EngineeringOutside rather than a refusal: the operation was
+// carried. The event itself is unchanged -- same action, same reason -- so the
+// behaviour packs and the ATT&CK mapping that read it are unaffected.
+func (t *server) engineeringOutside(ip netip.Addr, reason string, op engineering.Operation, order *access.WorkOrder) {
+	t.host.Counters().EngineeringOutside("s7", string(op.Class), reason)
+	if !t.alerts() {
+		return
+	}
+	a := []any{"listener", t.name, "client_ip", ip.String(), "proto", "s7",
+		"reason", reason, "class", string(op.Class),
+		"operation", textsafe.Clip64(op.String())}
+	// The tone follows the work order, the same way the report's does: an
+	// operation somebody filed is a notice, one nobody filed is a warning.
+	// Both are events, because the listener carried the operation either way.
+	a = append(a, "severity", engineering.Severity(order))
+	if order != nil {
+		a = append(a, "work_order", order.Reference,
+			"work_order_by", textsafe.Clip64(order.By))
+	}
+	t.host.Logs().SecurityEvent(context.Background(), "alert", "s7_"+reason, a...)
 }

@@ -80,8 +80,11 @@ const (
 	// window that may be booked a day ahead.
 	DefaultAccessApprovals   = 1
 	DefaultAccessMaxDuration = 4 * time.Hour
-	DefaultAccessMaxLead     = 24 * time.Hour
-	DefaultAccessMaxOpen     = 256
+	// DefaultAccessMaxWorkOrder is thirty days: a plant shutdown fits, and
+	// anything longer is not a work order but a policy change.
+	DefaultAccessMaxWorkOrder = 30 * 24 * time.Hour
+	DefaultAccessMaxLead      = 24 * time.Hour
+	DefaultAccessMaxOpen      = 256
 	// DefaultSecretRefresh is how long a resolved secret is used before
 	// its source is asked again; DefaultSignerTimeout bounds one
 	// signature from an external signer and DefaultSignerConns the
@@ -197,12 +200,21 @@ func applyDefaults(c *Config) {
 			if f.Auth != nil {
 				setStr(&f.Auth.Realm, "proxy")
 			}
+			// observe rather than enforce, because a server name that
+			// disagrees with the destination is usually domain fronting and
+			// occasionally a client with a stale answer: an estate reads its
+			// own traffic before this refuses any of it.
+			setStr(&f.SNI, "observe")
+			for j := range f.Rules {
+				setStr(&f.Rules[j].Action, "deny")
+			}
 			if ic := f.Intercept; ic != nil {
 				if ic.VerifyUpstream == nil {
 					t := true
 					ic.VerifyUpstream = &t
 				}
 				setStr(&ic.MinVersion, "1.2")
+				setStr(&ic.HTTP, "auto")
 				setInt(&ic.MaxCache, 1024)
 				setDur(&ic.LeafTTL, 24*time.Hour)
 				if len(ic.ALPN) == 0 {
@@ -1104,6 +1116,7 @@ func applyDefaults(c *Config) {
 			a.Approvals = ptr(DefaultAccessApprovals)
 		}
 		setDur(&a.MaxDuration, DefaultAccessMaxDuration)
+		setDur(&a.MaxWorkOrder, DefaultAccessMaxWorkOrder)
 		setDur(&a.MaxLead, DefaultAccessMaxLead)
 		setInt(&a.MaxOpen, DefaultAccessMaxOpen)
 	}

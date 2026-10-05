@@ -39,7 +39,7 @@ type server struct {
 	limiter *limits.KeyedLimiter
 	anomaly *anomaly.Detector
 	// engineering recognises the substation's own tooling and ties it to an
-	// approved work order.
+	// approved grant.
 	engineering *engineering.Guard
 	gate        *sesslimit.Gate
 	sessions    acceptgroup.Group

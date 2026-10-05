@@ -88,11 +88,17 @@ type Handler struct {
 	// Report records the operation itself: the security event with the class
 	// and the detail, the counter, the fact in the correlation window. It is
 	// called for every recognised operation, allowed or not.
-	Report func(op Operation, grant *access.Grant)
+	//
+	// grant is the approval it happened under, order the work order on file
+	// for the device. They are two different facts and either may be nil: a
+	// grant says somebody authorised this, a work order says somebody was
+	// expecting it, and an operation can have one, both or neither.
+	Report func(op Operation, grant *access.Grant, order *access.WorkOrder)
 	// Ungranted records an operation that happened outside every approved
 	// window on a listener that does not require one. It is an alert, not a
-	// refusal.
-	Ungranted func(op Operation, reason string)
+	// refusal -- and a quieter one when a work order was on file, which is
+	// the whole reason order is here.
+	Ungranted func(op Operation, reason string, order *access.WorkOrder)
 	// Refused is the refusal's own bookkeeping, for the listeners that require
 	// a work order.
 	Refused func(op Operation, reason string)
@@ -119,14 +125,21 @@ func (g *Guard) Decide(op Operation, subject, pool string, addrs []string, enfor
 	// when this listener requires nothing, because "this download happened
 	// outside every approved window" is the alert an estate wants first.
 	var grant *access.Grant
+	var order *access.WorkOrder
 	reason := ""
+	targets := append([]string{pool}, addrs...)
 	if g.ledger != nil {
-		grant, reason = g.ledger.Admit(subject, g.listener, append([]string{pool}, addrs...))
+		grant, reason = g.ledger.Admit(subject, g.listener, targets)
+		// The work order is asked for whatever the grant said, and it does
+		// not change the answer. It names the *device*, not the actor, so
+		// this is a different question from the one above: "was anybody
+		// expecting work on that controller", not "is this person allowed".
+		order = g.ledger.WorkOrderFor(g.listener, targets)
 	}
 	if h.Report != nil {
-		h.Report(op, grant)
+		h.Report(op, grant, order)
 	}
-	g.record(op, grant, reason)
+	g.record(op, grant, order, reason)
 	if reason == "" {
 		return ""
 	}
@@ -135,7 +148,7 @@ func (g *Guard) Decide(op Operation, subject, pool string, addrs []string, enfor
 		// that only wants to be told. Either way the operation goes on and the
 		// alert is the product.
 		if h.Ungranted != nil {
-			h.Ungranted(op, ReasonUngranted)
+			h.Ungranted(op, ReasonUngranted, order)
 		}
 		return ""
 	}
@@ -155,7 +168,7 @@ func (g *Guard) Decide(op Operation, subject, pool string, addrs []string, enfor
 // it. A failure is not returned: the operation has happened either way, and a
 // relay that refused a download because it could not write the record down
 // would be one whose bookkeeping decided the process.
-func (g *Guard) record(op Operation, grant *access.Grant, refusal string) {
+func (g *Guard) record(op Operation, grant *access.Grant, order *access.WorkOrder, refusal string) {
 	if g == nil || !g.p.Ledger || g.ledger == nil {
 		return
 	}
@@ -163,17 +176,38 @@ func (g *Guard) record(op Operation, grant *access.Grant, refusal string) {
 	if grant != nil {
 		id = grant.ID
 	}
+	ref := ""
+	if order != nil {
+		ref = order.Reference
+	}
 	if err := g.ledger.Engineering(access.EngineeringRecord{
-		At:       time.Now(),
-		Kind:     g.kind,
-		Listener: g.listener,
-		Subject:  op.Subject,
-		Class:    string(op.Class),
-		Detail:   op.String(),
-		Grant:    id,
-		Refusal:  refusal,
+		At:        time.Now(),
+		Kind:      g.kind,
+		Listener:  g.listener,
+		Subject:   op.Subject,
+		Class:     string(op.Class),
+		Detail:    op.String(),
+		Grant:     id,
+		Refusal:   refusal,
+		WorkOrder: ref,
 	}); err != nil && g.log != nil {
 		g.log.Warn("engineering operation not recorded", "listener", g.listener,
 			"class", string(op.Class), "err", err.Error())
 	}
+}
+
+// Severity is the tone an engineering event is reported in: notice where a
+// work order was on file for the device, warning where none was.
+//
+// It is one word in the event rather than a log level, because the level a
+// security record is written at decides whether a collector keeps it. An
+// estate whose syslog threshold is warning would have *dropped* the notices,
+// and the whole point of filing a work order is that the record still exists
+// -- quieter, not absent. So both are warnings to the logging system and the
+// difference is a field anything can filter on.
+func Severity(order *access.WorkOrder) string {
+	if order != nil {
+		return "notice"
+	}
+	return "warning"
 }

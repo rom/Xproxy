@@ -3,6 +3,7 @@ package iec104
 import (
 	"context"
 	"fmt"
+	"net/netip"
 
 	"github.com/rom/xproxy/internal/access"
 	"github.com/rom/xproxy/internal/correlate"
@@ -66,16 +67,16 @@ func (se *session) decideEngineering(frame *wire.Frame) (string, bool) {
 	if !ok {
 		return "", true
 	}
-	// This protocol has no user either, so the work order names the control
+	// This protocol has no user either, so the grant names the control
 	// centre's address.
 	subject := se.ip.String()
 	reason := t.engineering.Decide(op, subject, t.m.Upstream, nil, t.enforcing(),
 		engineering.Handler{
-			Report: func(op engineering.Operation, grant *access.Grant) {
-				t.reportEngineering(se, op, grant)
+			Report: func(op engineering.Operation, grant *access.Grant, order *access.WorkOrder) {
+				t.reportEngineering(se, op, grant, order)
 			},
-			Ungranted: func(op engineering.Operation, reason string) {
-				t.alert(se.ip, reason, op.String())
+			Ungranted: func(op engineering.Operation, reason string, order *access.WorkOrder) {
+				t.engineeringOutside(se.ip, reason, op, order)
 			},
 			Would: func(op engineering.Operation, reason string) {
 				t.host.Counters().IEC104WouldDeny.Add(1)
@@ -94,7 +95,7 @@ func (se *session) decideEngineering(frame *wire.Frame) (string, bool) {
 	return "iec104_" + reason, false
 }
 
-func (t *server) reportEngineering(se *session, op engineering.Operation, grant *access.Grant) {
+func (t *server) reportEngineering(se *session, op engineering.Operation, grant *access.Grant, order *access.WorkOrder) {
 	t.host.Counters().Engineering("iec104", string(op.Class))
 	t.host.ObserveFact(se.ip, correlate.Fact{
 		Class: correlate.ClassEngineering, Kind: "iec104", Listener: t.cfg.Name,
@@ -106,8 +107,43 @@ func (t *server) reportEngineering(se *session, op engineering.Operation, grant 
 		attrs = append(attrs, "object", op.Point)
 	}
 	if grant != nil {
-		attrs = append(attrs, "grant", grant.ID, "work_order", textsafe.Clip64(grant.Reason))
+		attrs = append(attrs, "grant", grant.ID, "grant_reason", textsafe.Clip64(grant.Reason))
+	}
+	// The work order on file for the device, and the tone that follows
+	// from it. A work order is not an approval and permits nothing: it
+	// says somebody was expecting work here, which is why the event is a
+	// notice rather than a warning.
+	attrs = append(attrs, "severity", engineering.Severity(order))
+	if order != nil {
+		t.host.Counters().EngineeringFiled("iec104", string(op.Class))
+		attrs = append(attrs, "work_order", order.Reference,
+			"work_order_by", textsafe.Clip64(order.By))
 	}
 	t.host.Logs().SecurityEvent(context.Background(), "engineering",
 		engineering.Reason(op.Class), attrs...)
+}
+
+// engineeringOutside records an operation that happened outside every approved
+// window on a listener that does not require one.
+//
+// It counts EngineeringOutside rather than a refusal: the operation was
+// carried. The event itself is unchanged -- same action, same reason -- so the
+// behaviour packs and the ATT&CK mapping that read it are unaffected.
+func (t *server) engineeringOutside(ip netip.Addr, reason string, op engineering.Operation, order *access.WorkOrder) {
+	t.host.Counters().EngineeringOutside("iec104", string(op.Class), reason)
+	if !t.alerts() {
+		return
+	}
+	a := []any{"listener", t.cfg.Name, "client_ip", ip.String(), "proto", "iec104",
+		"reason", reason, "class", string(op.Class),
+		"operation", textsafe.Clip64(op.String())}
+	// The tone follows the work order, the same way the report's does: an
+	// operation somebody filed is a notice, one nobody filed is a warning.
+	// Both are events, because the listener carried the operation either way.
+	a = append(a, "severity", engineering.Severity(order))
+	if order != nil {
+		a = append(a, "work_order", order.Reference,
+			"work_order_by", textsafe.Clip64(order.By))
+	}
+	t.host.Logs().SecurityEvent(context.Background(), "alert", "iec104_"+reason, a...)
 }

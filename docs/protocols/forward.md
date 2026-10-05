@@ -61,9 +61,28 @@ application makes through the proxy it was given, and both are refused by defaul
 **The ports**, with `ports`, because a proxy that allows a hostname on any port is
 a proxy to every service on that host.
 
-**Who is asking**, with `auth`, and the identity then selects the rules — so the
-build agents, the developers' laptops and the payment service can each have their
-own destination list rather than sharing one.
+**Who is asking**, with `auth` and `auth.groups`, and the identity then selects
+the rules — so the build agents, the developers' laptops and the payment service
+can each have their own destination list rather than sharing one.
+
+**What may be sent, and when**, with `categories` and `rules`. `allow` and `deny`
+say whether a destination exists for this listener; the rules say who may reach
+it, with which method, carrying which content type, inside which hours. "Nobody
+POSTs to file sharing" is one rule about one category, and "the vendor's portal
+during the change window" is another with a `schedule` and the change number in
+its `comment`. First match decides and an unmatched destination is refused, which
+is the same shape as the OT relays' rules and refuses for the same reason.
+
+What those rules can be decided from differs by what the proxy can see, and the
+difference is large enough to be the first thing to understand: see
+**[What a tunnel does not say](#what-a-tunnel-does-not-say)** below.
+
+**Whether to read the requests inside what it decrypts**, with
+`intercept.http`. A decrypted tunnel carries ordinary HTTP messages, and reading
+them is what makes a rule about a method or a content type decide there as well
+as on port 80. `auto` does it when the policy has such a rule, `on` always, `off`
+never — and `off` with such rules written is a combination validation warns
+about, because it is a policy that cannot fire.
 
 **Whether to look inside**, with `intercept`. This is the explicit,
 deliberately-named setting for TLS interception: the proxy terminates the client's
@@ -77,6 +96,13 @@ estate that intercepts still should not intercept its people's banking.
 tunnel must match the destination the CONNECT asked for**. Without it, a client
 can `CONNECT allowed.example.com:443` and then handshake for `anything.else`, and
 the destination policy has decided nothing.
+
+**`sni` is that same check for the tunnels nothing is decrypting**, which is most
+of them on most proxies. It costs a peek at bytes the client was going to send
+anyway. `enforce` refuses a mismatch, `observe` (the default) records it and
+relays it, `off` does not look. A handshake with no server name — which is what
+Encrypted Client Hello looks like from here — is not a mismatch, and a tunnel
+opened to an address rather than a name is not one either.
 
 **SOCKS5's own shapes**, with `socks5` and `socks_udp`: whether SOCKS5 is served
 at all, and whether `UDP ASSOCIATE` is — the latter being a UDP relay with the
@@ -118,11 +144,86 @@ reads like every other refusal this listener makes. Either shadow switch --
 `policy: {mode: shadow}` on the listener, or `shadow: true` on the section --
 records what it would have refused and lets the request through.
 
+## What a tunnel does not say
+
+This is the shape of the whole problem, and it decides what an egress policy on
+this listener is worth.
+
+A **plain request** through the proxy — an absolute `http://` URI, which is how
+HTTP without TLS travels through a proxy — carries its method, its path, its
+content type and usually its length. Every selector in `rules` can be decided
+about it, in both directions: the request before it is sent, and the response
+head before its body is relayed.
+
+A **CONNECT tunnel** carries `host:port` and nothing else. Everything a rule
+about a method or a content type would need is inside TLS. So at a tunnel's
+admission point those rules are **skipped**, and what decides there is the part
+of the policy that is about the destination, the identity and the hour.
+
+An **intercepted tunnel being read as HTTP** is the plain request again. Once the
+proxy has terminated the client's TLS, the messages inside are ordinary HTTP/1.1:
+each request is read, decided about, relayed, and its response head decided about
+before the body travels — the same rules, the same two phases, the same events
+and counters as a request on port 80. `intercept.http` is the setting, `auto` is
+the default, and what it means by auto is "when the policy has a rule that needs
+it".
+
+That leaves four consequences worth stating rather than discovering:
+
+1. A rule naming `methods`, `paths`, `request_types`, `response_types`,
+   `request_bytes_over` or `response_bytes_over` **decides nothing for a
+   destination reached through a tunnel nothing is reading**. On an estate whose
+   egress is almost entirely HTTPS, such a rule covers almost nothing unless
+   `intercept` covers those destinations. Validation names the rules in that
+   position — both on a listener with no `intercept` at all and on one that
+   intercepts with `http: off` — and `GET /v1/listeners` carries the count, so it
+   is visible rather than assumed.
+2. The destination half still works everywhere, and is where most of the value
+   is. "These groups, these categories, these hours" is decidable for a tunnel
+   whether or not anything decrypts it, and it is the policy an egress proxy is
+   bought for.
+3. `sni` is what makes the destination half mean what it says. Without it a
+   tunnel's destination policy decided about a name the client then need not use.
+   Inside a tunnel being read, the `Host` header is held to the same check for
+   the same reason, under the same setting.
+4. Reading is not universal even where it is on. A tunnel that negotiated **h2**,
+   a tunnel whose first bytes are **not a request line** — SSH, a database, a
+   line protocol inside TLS — and **everything after a 101** are relayed as
+   bytes, because a proxy that guessed at HTTP/2 framing, answered a database
+   greeting with a 400, or kept reading a WebSocket as request-and-response would
+   be breaking traffic rather than policing it. Each of the three is counted
+   (`forward_intercept_bytes_only`), so "nothing was read" is never silent.
+
+Within a request this listener can read — plain or inside a tunnel — two more
+limits:
+
+- A **response** rule is decided when the response head arrives — after the
+  destination was contacted. The body does not have to arrive; the request did
+  leave.
+- A **byte bound** is decided before anything is sent when the length was
+  declared. On a chunked body the bytes are counted as they travel and the
+  connection is cut past the bound: what has already gone cannot be recalled,
+  which is why a size rule is worth less on egress than a destination rule.
+
+A refusal inside a tunnel is an HTTP **403 on the connection the client believes
+is end to end**, naming the reason, and then the connection closes — keeping it
+open would mean reading the rest of a body nobody is allowed to send. A head the
+proxy cannot frame — a length and a chunked encoding both, which is the
+request-smuggling shape — is answered 400 rather than passed on, and an
+intercepting proxy is the only place in this project that can see one at all.
+
 ## What it does not do
 
 - **It does not see inside a tunnel unless `intercept` says so.** Without
   interception this is byte relaying with a destination policy, and no WAF, header
   policy or body scanning applies.
+- **It does not parse HTTP/2 inside an intercepted tunnel.** `alpn` offers
+  `http/1.1` for that reason; a tunnel that negotiated `h2` anyway is relayed as
+  bytes rather than read, because a proxy that guesses at HTTP/2 framing corrupts
+  the stream it is inspecting.
+- **It does not add anything to a request it relays inside a tunnel.** No `Via`,
+  no forwarded headers: the destination sees what the client sent, which is the
+  message the policy judged.
 - **It does not intercept silently.** Interception needs a CA the clients trust,
   which is a deployment step somebody has to take deliberately. There is no
   configuration in which it happens without being asked for.
@@ -160,6 +261,6 @@ records what it would have refused and lets the request through.
 
 - The settings: [docs/CONFIG.md `server.listeners[].forward`](../CONFIG.md#serverlistenersforward-kind-forward)
 - The estate-wide policy above it: [docs/CONFIG.md `authorization`](../CONFIG.md#authorization)
-- A worked configuration: [`examples/forward/socks.yaml`](../../examples/forward/socks.yaml), [`intercept.yaml`](../../examples/forward/intercept.yaml) and [`masque.yaml`](../../examples/forward/masque.yaml)
+- A worked configuration: [`examples/forward/egress.yaml`](../../examples/forward/egress.yaml), [`socks.yaml`](../../examples/forward/socks.yaml), [`intercept.yaml`](../../examples/forward/intercept.yaml) and [`masque.yaml`](../../examples/forward/masque.yaml)
 - Routing TLS without terminating it: [tcp](tcp.md)
 - The inward-facing HTTP pipeline: [http](http.md)

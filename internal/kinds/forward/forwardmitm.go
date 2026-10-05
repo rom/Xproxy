@@ -116,8 +116,8 @@ func (in *interceptor) wants(host string, ips []netip.Addr) bool {
 // client therefore never sees a forged certificate for a server whose
 // own certificate did not verify — it sees the handshake fail, which is
 // what it would have seen without a proxy in the way.
-func (f *forwardServer) intercept(client, dst net.Conn, host string,
-	ip netip.Addr, user string) (int64, int64, string) {
+func (f *forwardServer) intercept(client, dst net.Conn, host string, port int,
+	p *forwardPolicy, ip netip.Addr, user string) (int64, int64, string) {
 	in := f.mitm
 	br, ok := readerOf(client)
 	if !ok {
@@ -219,10 +219,16 @@ func (f *forwardServer) intercept(client, dst net.Conn, host string,
 		return 0, 0, "client_tls"
 	}
 	f.host.Counters().Intercepted.Add(1)
+	alpn := srv.ConnectionState().NegotiatedProtocol
 	f.host.Logs().Access.Info("forward_intercept", "listener", f.name, "client_ip", ip.String(),
 		"user", textsafe.Clip64(user), "dest", host, "sni", name,
-		"alpn", srv.ConnectionState().NegotiatedProtocol,
-		"upstream_tls", tlsconf.VersionName(state.Version))
+		"alpn", alpn, "upstream_tls", tlsconf.VersionName(state.Version))
+	// Read the plaintext as HTTP where there is something to decide about it,
+	// and relay it as bytes otherwise: see intercepthttp.go.
+	if p != nil && f.wantsHTTP(p, alpn) {
+		return f.serveInterceptedHTTP(srv, upstream, p, in, ip, user, host, port)
+	}
+	f.host.Counters().InterceptBytesOnly.Add(1)
 	return f.relayDecrypted(srv, upstream, in, ip, host)
 }
 
@@ -316,21 +322,8 @@ func (f *forwardServer) copyScanned(dst io.Writer, src io.Reader, scan *streamsc
 	for {
 		n, err := src.Read(buf)
 		if n > 0 {
-			if scan.Feed(buf[:n]) {
-				f.host.Counters().YARAMatches.Add(1)
-				names := make([]string, 0, 4)
-				for _, m := range scan.Matches() {
-					names = append(names, m.Rule)
-				}
-				f.host.Logs().SecurityEvent(context.Background(), in.yara.Cfg.Action, "yara_match",
-					"listener", f.name, "client_ip", ip.String(), "proto", "forward_intercept",
-					"dest", host, "rules", strings.Join(names, ","))
-				if bl := f.host.Bans(); bl != nil && ip.IsValid() {
-					bl.Observe(ip, "yara")
-				}
-				if in.yara.Cfg.Action == "close" {
-					return total, "yara"
-				}
+			if scan.Feed(buf[:n]) && f.yaraMatched(scan, in, ip, host) {
+				return total, "yara"
 			}
 			w, werr := dst.Write(buf[:n])
 			total += int64(w)
@@ -342,6 +335,29 @@ func (f *forwardServer) copyScanned(dst io.Writer, src io.Reader, scan *streamsc
 			return total, ""
 		}
 	}
+}
+
+// yaraMatched records one stream match and reports whether the connection ends.
+//
+// It is one function because there are now two readers of the decrypted stream
+// -- the byte relay and the HTTP reader -- and a match has to be counted, logged
+// and banned on identically whichever of them saw it. The alternative was the
+// same twenty lines twice, which is how two code paths come to disagree about
+// what a match means.
+func (f *forwardServer) yaraMatched(scan *streamscan.Stream, in *interceptor,
+	ip netip.Addr, host string) bool {
+	f.host.Counters().YARAMatches.Add(1)
+	names := make([]string, 0, 4)
+	for _, m := range scan.Matches() {
+		names = append(names, m.Rule)
+	}
+	f.host.Logs().SecurityEvent(context.Background(), in.yara.Cfg.Action, "yara_match",
+		"listener", f.name, "client_ip", ip.String(), "proto", "forward_intercept",
+		"dest", host, "rules", strings.Join(names, ","))
+	if bl := f.host.Bans(); bl != nil && ip.IsValid() {
+		bl.Observe(ip, "yara")
+	}
+	return in.yara.Cfg.Action == "close"
 }
 
 // spliceBuffered relays a tunnel whose first bytes were already read.
@@ -391,4 +407,88 @@ func readerOf(c net.Conn) (*bufio.Reader, bool) {
 		return p.r, true
 	}
 	return nil, false
+}
+
+// peekClientHello reads enough of a tunnel's first bytes to find the server
+// name in a TLS ClientHello, without consuming them.
+//
+// It is the half of interception that is worth having on its own. Pulled out of
+// intercept so a tunnel nobody is decrypting can be asked the same question,
+// which is the one question a name-based egress policy depends on.
+func peekClientHello(client net.Conn, br *bufio.Reader, wait time.Duration) (*bufio.Reader, string, bool) {
+	if br == nil {
+		br = bufio.NewReaderSize(client, maxHelloRecord)
+	} else if br.Size() < maxHelloRecord {
+		// The reader the CONNECT left behind is sized for a request head, and
+		// the name is in the hello's tail.
+		br = bufio.NewReaderSize(br, maxHelloRecord)
+	}
+	_ = client.SetReadDeadline(time.Now().Add(wait))
+	defer func() { _ = client.SetReadDeadline(time.Time{}) }()
+	peek, err := br.Peek(5)
+	if err != nil && len(peek) == 0 {
+		return br, "", false
+	}
+	if len(peek) == 5 && peek[0] == recordHandshake {
+		if full, perr := br.Peek(5 + int(binary.BigEndian.Uint16(peek[3:5]))); perr == nil || len(full) > len(peek) {
+			peek = full
+		}
+	}
+	name, isTLS := mitm.ClientHelloName(peek)
+	return br, name, isTLS
+}
+
+// sniGuard is the destination check a tunnel still needs when nothing is
+// decrypting it.
+//
+// A client allowed to reach cdn.example.com can open a tunnel there and then
+// handshake for anything else that address serves, which on a shared CDN is a
+// great many things. The destination policy then decided about a name nobody
+// used. The check costs a peek at bytes the client was going to send anyway, and
+// it is the difference between an allow list of names and an allow list of
+// addresses that happen to have names.
+//
+// A handshake with no server name is not a mismatch: that is what Encrypted
+// Client Hello looks like from here, and refusing it would be refusing a client
+// for using a privacy feature. A tunnel opened to an address is not a mismatch
+// either -- there the policy checked the address, and the bytes go to that
+// address whatever the handshake says.
+//
+// It returns the reader to carry on with, and the refusal reason where the mode
+// is enforce.
+func (f *forwardServer) sniGuard(mode string, client net.Conn, br *bufio.Reader, host string,
+	ip netip.Addr, wait time.Duration) (*bufio.Reader, string) {
+	if mode == "off" {
+		return br, ""
+	}
+	br, name, isTLS := peekClientHello(client, br, wait)
+	if !isTLS || name == "" || strings.EqualFold(name, host) {
+		return br, ""
+	}
+	if _, err := netip.ParseAddr(strings.Trim(host, "[]")); err == nil {
+		return br, ""
+	}
+	f.host.Logs().SecurityEvent(context.Background(), actionFor(mode), "forward_sni_mismatch",
+		"listener", f.name, "client_ip", ip.String(), "connect", textsafe.Clip256(host),
+		"sni", textsafe.Clip256(name), "mode", mode)
+	if mode != "enforce" {
+		f.host.Counters().WouldRefuse("forward", "sni_mismatch")
+		f.host.Shadow().Record("forward", f.name, "sni_mismatch", "sni", name+" through "+host)
+		return br, ""
+	}
+	f.host.Counters().Refuse("forward", "sni_mismatch")
+	if bl := f.host.Bans(); bl != nil && ip.IsValid() {
+		bl.Observe(ip, "forward_sni_mismatch")
+	}
+	return br, "sni_mismatch"
+}
+
+// actionFor is the event action one of the sni modes writes under: a refusal is
+// a deny, and a recorded mismatch is an alert, which is the spelling every other
+// observe-only decision here uses.
+func actionFor(mode string) string {
+	if mode == "enforce" {
+		return "deny"
+	}
+	return "alert"
 }

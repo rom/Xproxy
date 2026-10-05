@@ -53,6 +53,10 @@ type Decision struct {
 	// Hard says the refusal stands even in monitor mode.
 	Hard bool
 	Rule string
+	// Observed names the observe rules this session matched. They are recorded
+	// in the log line and decide nothing, which is what lets a rule be tried on
+	// live traffic before it decides anything.
+	Observed []string
 	// Comment is the matched rule's own note, carried into the log for the
 	// change record a plant keeps.
 	Comment string
@@ -404,7 +408,12 @@ func (p *policy) Setup(pduLength uint16) Decision {
 }
 
 // Request decides about one S7 request from the client.
-func (p *policy) Request(se *Session, pdu *wire.PDU) Decision {
+func (p *policy) Request(se *Session, pdu *wire.PDU) (d Decision) {
+	// The observe rules this session matched go on whatever is decided: they
+	// are the record of a rule being tried, and a deferred assignment is how
+	// every return below carries it without the decisions themselves having to
+	// know about it.
+	defer func() { d.Observed = p.observed(se) }()
 	switch pdu.Type {
 	case wire.Job, wire.Userdata:
 	default:
@@ -450,9 +459,6 @@ func (p *policy) Request(se *Session, pdu *wire.PDU) Decision {
 			return allowed()
 		}
 		return Decision{Reason: "no_rule_matched", Detail: string(op)}
-	}
-	if r.observe {
-		return Decision{Allow: true, Rule: r.name, Comment: r.comment}
 	}
 	if r.action == "deny" {
 		return Decision{Reason: "rule_denied", Detail: string(op), Rule: r.name, Comment: r.comment}
@@ -606,24 +612,55 @@ func (p *policy) hardenArea(d Decision, writing bool) Decision {
 
 func (p *policy) match(se *Session) *rule {
 	for _, r := range p.rules {
-		if len(r.clients) > 0 && !contains(r.clients, se.IP) {
+		if !p.covers(r, se) {
 			continue
 		}
-		// A rule that names racks, slots or a resource never matches a
-		// connection whose address this relay could not read: it is a rule
-		// about a CPU, and there is no CPU number to compare.
-		if len(r.racks) > 0 && (!se.Addressed || !r.racks.Has(se.Rack)) {
-			continue
-		}
-		if len(r.slots) > 0 && (!se.Addressed || !r.slots.Has(se.Slot)) {
-			continue
-		}
-		if r.res != nil && (!se.Addressed || !r.res[se.Resource]) {
+		if r.observe {
+			// An observe rule records and the search carries on, which is what
+			// lets a rule be tried on live traffic before it decides anything.
+			// A rule that stopped the search here would *allow* everything it
+			// covered -- so trying out a rule would have been a way to turn
+			// off every deny rule below it, which is the opposite of trying
+			// something out.
 			continue
 		}
 		return r
 	}
 	return nil
+}
+
+// covers says whether every selector this rule sets holds for the session.
+// It is shared by match above and observed below, so the rule that decides and
+// the rules that are only recorded are chosen by one piece of code.
+func (p *policy) covers(r *rule, se *Session) bool {
+	if len(r.clients) > 0 && !contains(r.clients, se.IP) {
+		return false
+	}
+	// A rule that names racks, slots or a resource never matches a
+	// connection whose address this relay could not read: it is a rule
+	// about a CPU, and there is no CPU number to compare.
+	if len(r.racks) > 0 && (!se.Addressed || !r.racks.Has(se.Rack)) {
+		return false
+	}
+	if len(r.slots) > 0 && (!se.Addressed || !r.slots.Has(se.Slot)) {
+		return false
+	}
+	if r.res != nil && (!se.Addressed || !r.res[se.Resource]) {
+		return false
+	}
+	return true
+}
+
+// observed names the observe rules this session matches, for the log line:
+// they are recorded and they decide nothing.
+func (p *policy) observed(se *Session) []string {
+	var out []string
+	for _, r := range p.rules {
+		if r.observe && p.covers(r, se) {
+			out = append(out, r.name)
+		}
+	}
+	return out
 }
 
 // describe says what a request was, for a refusal that could not name its

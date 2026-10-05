@@ -48,6 +48,7 @@ import (
 	_ "github.com/rom/xproxy/internal/kinds/dhcp6"
 	_ "github.com/rom/xproxy/internal/kinds/ftp"
 	_ "github.com/rom/xproxy/internal/kinds/iec104"
+	_ "github.com/rom/xproxy/internal/kinds/imap"
 	_ "github.com/rom/xproxy/internal/kinds/ldap"
 	_ "github.com/rom/xproxy/internal/kinds/mms"
 	_ "github.com/rom/xproxy/internal/kinds/modbus"
@@ -56,13 +57,16 @@ import (
 	_ "github.com/rom/xproxy/internal/kinds/ntp"
 	_ "github.com/rom/xproxy/internal/kinds/ntske"
 	_ "github.com/rom/xproxy/internal/kinds/opcua"
+	_ "github.com/rom/xproxy/internal/kinds/pop3"
 	_ "github.com/rom/xproxy/internal/kinds/postgres"
+	_ "github.com/rom/xproxy/internal/kinds/radius"
 	_ "github.com/rom/xproxy/internal/kinds/rdp"
 	_ "github.com/rom/xproxy/internal/kinds/redis"
 	_ "github.com/rom/xproxy/internal/kinds/s7"
 	_ "github.com/rom/xproxy/internal/kinds/smtp"
 	_ "github.com/rom/xproxy/internal/kinds/snmp"
 	_ "github.com/rom/xproxy/internal/kinds/syslog"
+	_ "github.com/rom/xproxy/internal/kinds/tacacs"
 	_ "github.com/rom/xproxy/internal/kinds/tcp"
 	_ "github.com/rom/xproxy/internal/kinds/tds"
 	_ "github.com/rom/xproxy/internal/kinds/telnet"
@@ -120,6 +124,10 @@ var cases = map[string]kindCase{
 	"coap":   {section: "coap: {upstream: u}", datagram: true},
 	"opcua":  {section: "opcua: {upstream: u}"},
 	"mms":    {section: "mms: {upstream: u}"},
+	"tacacs": {section: "tacacs: {upstream: u}"},
+	"radius": {section: "radius: {upstream: u}", datagram: true},
+	"imap":   {section: "imap: {upstream: u, require_tls: false}"},
+	"pop3":   {section: "pop3: {upstream: u, require_tls: false}"},
 }
 
 // excluded are the kinds this test does not start, each with the reason.
@@ -130,6 +138,7 @@ var excluded = map[string]string{
 	"forward": "the forward proxy is an HTTP listener, and the same applies",
 	"dns":     "internal/dns has its own lifecycle test, which this one would duplicate",
 	"ssh":     "starting it needs a host key pair, a client key and a known_hosts file on disk",
+	"kkdcp":   "the KDC proxy is an HTTPS listener, and net/http owns its accept loop",
 }
 
 const doc = `

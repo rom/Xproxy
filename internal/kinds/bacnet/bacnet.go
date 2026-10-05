@@ -34,7 +34,7 @@ type server struct {
 	// anomaly is the behavioural models, nil when the block is off.
 	anomaly *anomaly.Detector
 	// engineering recognises the building's own tooling and ties it to an
-	// approved work order.
+	// approved grant.
 	engineering *engineering.Guard
 
 	logRequests bool

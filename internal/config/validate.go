@@ -15,6 +15,8 @@ import (
 	"github.com/rom/xproxy/internal/fipsmode"
 	"github.com/rom/xproxy/internal/ftp"
 	"github.com/rom/xproxy/internal/iec104"
+	imapwire "github.com/rom/xproxy/internal/imap"
+	kerberoswire "github.com/rom/xproxy/internal/kerberos"
 	"github.com/rom/xproxy/internal/keysource"
 	ldapwire "github.com/rom/xproxy/internal/ldap"
 	"github.com/rom/xproxy/internal/listener"
@@ -27,6 +29,8 @@ import (
 	opcuawire "github.com/rom/xproxy/internal/opcua"
 	"github.com/rom/xproxy/internal/packs"
 	pgwire "github.com/rom/xproxy/internal/pgwire"
+	pop3wire "github.com/rom/xproxy/internal/pop3"
+	radiuswire "github.com/rom/xproxy/internal/radius"
 	"github.com/rom/xproxy/internal/rdp"
 	"github.com/rom/xproxy/internal/recenc"
 	respwire "github.com/rom/xproxy/internal/respwire"
@@ -34,6 +38,7 @@ import (
 	s7wire "github.com/rom/xproxy/internal/s7"
 	snmpwire "github.com/rom/xproxy/internal/snmp"
 	"github.com/rom/xproxy/internal/syslog"
+	tacacswire "github.com/rom/xproxy/internal/tacacs"
 	tdswire "github.com/rom/xproxy/internal/tdswire"
 	"github.com/rom/xproxy/internal/telnet"
 	tftpwire "github.com/rom/xproxy/internal/tftp"
@@ -981,6 +986,61 @@ func (v *validator) server(s *Server) {
 			} else {
 				v.mmsListener(p+".mms", ln.MMS, ln.Address)
 			}
+		case "radius":
+			// No tls section: RADIUS is UDP and has no transport security of
+			// any kind. RadSec (RFC 6614) puts it inside TLS on TCP 2083,
+			// which is a different transport and not this listener.
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C || ln.TLS != nil {
+				v.errf("%s: a radius listener takes only address and radius: the protocol is UDP and has no TLS", p)
+			}
+			if ln.RADIUS == nil {
+				v.errf("%s.radius: required for kind radius", p)
+			} else {
+				v.radiusListener(p+".radius", ln.RADIUS)
+			}
+		case "tacacs":
+			// A tls section is allowed and means TACACS+ over TLS, which is
+			// the fix for everything RFC 8907 s10.3 admits about the
+			// obfuscation. Most equipment cannot speak it yet.
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
+				v.errf("%s: a tacacs listener takes only address, tacacs and tls", p)
+			}
+			if ln.TACACS == nil {
+				v.errf("%s.tacacs: required for kind tacacs", p)
+			} else {
+				v.tacacsListener(p+".tacacs", ln.TACACS, ln.TLS != nil)
+			}
+		case "kkdcp":
+			// A tls section is required rather than optional, which the
+			// kind's own validator says and says why.
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
+				v.errf("%s: a kkdcp listener takes only address, kkdcp and tls", p)
+			}
+			if ln.KKDCP == nil {
+				v.errf("%s.kkdcp: required for kind kkdcp", p)
+			} else {
+				v.kkdcpListener(p+".kkdcp", ln.KKDCP, ln.TLS != nil)
+			}
+		case "imap":
+			// A tls section serves IMAPS, and tls_mode: starttls makes this
+			// listener terminate the upgrade on port 143.
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
+				v.errf("%s: an imap listener takes only address, imap and tls", p)
+			}
+			if ln.IMAP == nil {
+				v.errf("%s.imap: required for kind imap", p)
+			} else {
+				v.imapListener(p+".imap", ln.IMAP, ln.TLS != nil)
+			}
+		case "pop3":
+			if len(ln.Protocols) > 0 || ln.H3 != nil || ln.RedirectToHTTPS || ln.TCP != nil || ln.Forward != nil || ln.DNS != nil || ln.H2C {
+				v.errf("%s: a pop3 listener takes only address, pop3 and tls", p)
+			}
+			if ln.POP3 == nil {
+				v.errf("%s.pop3: required for kind pop3", p)
+			} else {
+				v.pop3Listener(p+".pop3", ln.POP3, ln.TLS != nil)
+			}
 		case "amqp":
 			if ln.AMQP == nil {
 				v.errf("%s.amqp: required for kind amqp", p)
@@ -1468,6 +1528,115 @@ func (v *validator) websocketGuard(p string, r *Route) {
 	}
 	if !g.Masked() {
 		v.warnf("%s.websocket_guard.require_masked: false accepts unmasked client frames, which RFC 6455 forbids and which is how a request is smuggled past an intermediary", p)
+	}
+	v.websocketCompression(p, g)
+	v.websocketTypes(p, g)
+}
+
+// maxWebSocketTypes bounds how many message types one route may name. A
+// route with more kinds of message than this is several APIs.
+const maxWebSocketTypes = 64
+
+// websocketCompression checks what the route does about permessage-deflate.
+func (v *validator) websocketCompression(p string, g *WebSocketGuard) {
+	switch g.Compression {
+	case "", "strip":
+		g.Compression = "strip"
+	case "refuse":
+	case "inspect":
+		if g.Inspect == "none" {
+			// Inflating every message and then reading none of them is
+			// the cost of inspection without the inspection.
+			v.errf("%s.websocket_guard.compression: inspect with inspect: none inflates every message and reads none of them; use strip, or inspect text", p)
+		}
+	default:
+		v.errf("%s.websocket_guard.compression: must be strip, refuse or inspect", p)
+	}
+	if g.MaxInflateRatio == 0 {
+		g.MaxInflateRatio = 100
+	}
+	if g.MaxInflateRatio < 2 || g.MaxInflateRatio > 10000 {
+		v.errf("%s.websocket_guard.max_inflate_ratio: must be between 2 and 10000", p)
+	}
+}
+
+// websocketTypes checks the per-message-type policy.
+func (v *validator) websocketTypes(p string, g *WebSocketGuard) {
+	if g.TypeField == "" {
+		g.TypeField = "type"
+	}
+	if len(g.TypeField) > 64 || strings.ContainsAny(g.TypeField, "\x00\n\r") {
+		v.errf("%s.websocket_guard.type_field: must be a JSON member name of at most 64 characters", p)
+	}
+	switch g.UnknownTypes {
+	case "":
+		if len(g.Types) > 0 {
+			g.UnknownTypes = "deny"
+		} else {
+			g.UnknownTypes = "allow"
+		}
+	case "allow", "observe", "deny":
+	default:
+		v.errf("%s.websocket_guard.unknown_types: must be allow, observe or deny", p)
+	}
+	if len(g.Types) == 0 {
+		if g.UnknownTypes == "deny" {
+			v.errf("%s.websocket_guard.unknown_types: deny with no types refuses every message on the route", p)
+		}
+		return
+	}
+	if g.Inspect == "none" {
+		// A type is read out of the message, so a policy about types on
+		// a route that keeps no bytes decides about nothing.
+		v.errf("%s.websocket_guard: types with inspect: none decides nothing, because no message is read", p)
+	}
+	if len(g.Types) > maxWebSocketTypes {
+		v.errf("%s.websocket_guard.types: at most %d types", p, maxWebSocketTypes)
+	}
+	seen := map[string]bool{}
+	for i := range g.Types {
+		t := &g.Types[i]
+		q := fmt.Sprintf("%s.websocket_guard.types[%d]", p, i)
+		switch {
+		case t.Name == "":
+			v.errf("%s.name: required", q)
+		case len(t.Name) > 128 || strings.ContainsAny(t.Name, "\x00\n\r"):
+			v.errf("%s.name: at most 128 characters and no control characters", q)
+		case seen[t.Name]:
+			// Two entries for one type name: the second would never be
+			// reached, so one of them is not the policy somebody wrote.
+			v.errf("%s.name: %q is already a type on this route", q, t.Name)
+		}
+		seen[t.Name] = true
+		if t.MaxBytes < 0 || t.MaxBytes > g.MaxMessageBytes {
+			v.errf("%s.max_bytes: must be between 0 and max_message_bytes (%d)", q, g.MaxMessageBytes)
+		}
+		if t.MessagesPerSecond < 0 || t.MessagesPerSecond > 1_000_000 {
+			v.errf("%s.messages_per_second: must be between 0 and 1000000", q)
+		}
+		switch t.Direction {
+		case "", "both", "client", "server":
+		default:
+			v.errf("%s.direction: must be client, server or both", q)
+		}
+		if t.SchemaFile == "" {
+			continue
+		}
+		v.file(q+".schema_file", t.SchemaFile)
+		// A schema is checked against the inspected prefix, so a message
+		// this type allows to be longer than that prefix cannot be
+		// validated -- and an unvalidatable message under a schema is
+		// refused rather than passed, which is a refusal the operator
+		// should hear about now rather than in production.
+		bound := t.MaxBytes
+		if bound == 0 {
+			bound = g.MaxMessageBytes
+		}
+		if bound > g.MaxInspectBytes {
+			v.warnf("%s: a message of this type may be larger than max_inspect_bytes (%d), and one that is "+
+				"cannot be validated against the schema, so it is refused; raise max_inspect_bytes or lower max_bytes",
+				q, g.MaxInspectBytes)
+		}
 	}
 }
 
@@ -2313,6 +2482,7 @@ func (v *validator) route(i int, r *Route, seen, upstreams, rateLimits map[strin
 	}
 	seen[r.Name] = true
 	v.websocketGuard(p, r)
+	v.sseGuard(p, r)
 	switch r.ClientCertHeaders {
 	case "", "none", "rfc9440", "xfcc":
 	default:
@@ -2661,7 +2831,7 @@ var denyReasons = map[string]bool{
 	"bad_host": true, "no_route": true, "websocket": true, "concurrency": true, "challenge": true, "jwt": true, "icap": true,
 	"geo": true, "tcp_no_route": true, "forward_denied": true, "forward_auth": true, "honeypot": true, "dns_blocked": true, "dns_bogus": true, "dns_rpz": true,
 	"account_abuse": true, "api_abuse": true, "flow": true, "honeytoken": true, "scim": true, "threat_intel": true, "smtp_denied": true, "mqtt_denied": true, "ssh_denied": true, "ftp_denied": true, "syslog_denied": true, "yara": true,
-	"forward_sni_mismatch": true, "dns_tunnel": true, "dns_answer_denied": true,
+	"forward_sni_mismatch": true, "forward_host_mismatch": true, "dns_tunnel": true, "dns_answer_denied": true,
 	// The fabrications' own events (each kind's decoy.go).
 	//
 	// A tripwire reaches the ban ladder only where this proxy knows who sent
@@ -2707,6 +2877,20 @@ var denyReasons = map[string]bool{
 	"modbus_denied": true, "iec104_denied": true, "ntp_denied": true, "ntske_denied": true,
 	"snmp_denied": true, "ldap_denied": true, "tftp_denied": true, "dhcp_denied": true, "dhcp6_denied": true, "coap_denied": true, "opcua_denied": true, "mms_denied": true, "postgres_denied": true, "mysql_denied": true, "tds_denied": true, "redis_denied": true,
 	"bacnet_denied": true, "amqp_denied": true, "s7_denied": true,
+	// The three authentication protocols. Each is a kind whose refusals are
+	// worth banning on for the same reason: a client that keeps being refused
+	// here is a switch with the wrong secret, or something looking for one.
+	"radius_denied": true, "tacacs_denied": true, "kkdcp_denied": true,
+	// The two mailbox protocols. The authentication failures are bannable
+	// separately from the policy refusals, because a mailbox password is the
+	// one credential on an estate worth guessing at scale and the mail
+	// server's own lockout protects the account rather than the estate.
+	"imap_denied": true, "imap_auth_failed": true, "imap_anomaly": true,
+	// An event stream ended by its guard. One category rather than one per
+	// reason, because a ban is about a client that keeps being refused
+	// rather than about which bound it crossed.
+	"sse_denied":  true,
+	"pop3_denied": true, "pop3_auth_failed": true, "pop3_anomaly": true,
 }
 
 // securityTxtFieldRE bounds an extra field name to the token RFC 9116
@@ -5743,6 +5927,18 @@ func (v *validator) forwardListener(p string, f *ForwardListener) {
 		if strings.ContainsAny(f.Auth.Realm, "\"\r\n") {
 			v.errf("%s.auth.realm: must not contain quotes or line breaks", p)
 		}
+		if len(f.Auth.Groups) > maxForwardGroups {
+			v.errf("%s.auth.groups: %d is more than the %d this bounds a listener to",
+				p, len(f.Auth.Groups), maxForwardGroups)
+		}
+		for name, members := range f.Auth.Groups {
+			if name == "" {
+				v.errf("%s.auth.groups: a group with no name", p)
+			}
+			if len(members) == 0 {
+				v.errf("%s.auth.groups.%s: names no members, so every rule about it is a rule about nobody", p, name)
+			}
+		}
 	}
 	if f.ConnectTimeout <= 0 || f.ConnectTimeout > Duration(5*time.Minute) {
 		v.errf("%s.connect_timeout: must be positive and at most 5m", p)
@@ -5765,12 +5961,186 @@ func (v *validator) forwardListener(p string, f *ForwardListener) {
 		// side there is no header a middlebox will strip by accident.
 		v.warnf("%s.socks5: no auth is configured, so anyone who can reach this port can use the proxy; restrict the listener address, the destinations, or add auth", p)
 	}
+	v.forwardEgress(p, f)
 	v.forwardIntercept(p+".intercept", f.Intercept)
 	v.masque(p, f)
 	if f.SOCKSUDP {
 		v.warnf("%s.socks_udp: a UDP association relays datagrams for the client that opened it; it is bound to that client's address and dies with the control connection, but it is a wider exposure than a TCP tunnel", p)
 	}
 }
+
+// forwardEgress checks the categories and the egress rules.
+//
+// The checks that matter most here are the two that would otherwise leave an
+// operator believing a rule decides something it does not: a category name a
+// rule misspells is a rule about nothing, and a rule about a method on a
+// destination this listener never sees inside is a rule that cannot run.
+func (v *validator) forwardEgress(p string, f *ForwardListener) {
+	if !ForwardSNIModes[fwSNIMode(f.SNI)] {
+		v.errf("%s.sni: %q is not off, observe or enforce", p, f.SNI)
+	}
+	if len(f.Categories) > maxForwardCategories {
+		v.errf("%s.categories: %d is more than the %d this bounds a listener to",
+			p, len(f.Categories), maxForwardCategories)
+	}
+	cats := map[string]bool{}
+	for i := range f.Categories {
+		c := &f.Categories[i]
+		q := fmt.Sprintf("%s.categories[%d]", p, i)
+		switch {
+		case c.Name == "":
+			v.errf("%s.name: required", q)
+		case cats[strings.ToLower(c.Name)]:
+			v.errf("%s.name: %q is used twice", q, c.Name)
+		default:
+			cats[strings.ToLower(c.Name)] = true
+		}
+		for _, d := range c.Hosts {
+			if !destinationPatternOK(d) {
+				v.errf("%s.hosts: %q is not a name, *.suffix, address or CIDR", q, d)
+			}
+		}
+		if c.File != "" {
+			if !filepath.IsAbs(c.File) {
+				v.errf("%s.file: must be an absolute path", q)
+			} else {
+				v.file(q+".file", c.File)
+			}
+		}
+		if len(c.Hosts) == 0 && c.File == "" {
+			v.errf("%s: names no hosts and no file, so every rule about it is a rule about nothing", q)
+		}
+	}
+	if len(f.Rules) > maxForwardRules {
+		v.errf("%s.rules: %d is more than the %d this bounds a listener to",
+			p, len(f.Rules), maxForwardRules)
+	}
+	names := map[string]bool{}
+	requestLevel := 0
+	for i := range f.Rules {
+		r := &f.Rules[i]
+		q := fmt.Sprintf("%s.rules[%d]", p, i)
+		switch {
+		case r.Name == "":
+			v.errf("%s.name: required", q)
+		case names[r.Name]:
+			v.errf("%s.name: %q is used twice", q, r.Name)
+		default:
+			names[r.Name] = true
+		}
+		if r.Action != "" && !ForwardActions[r.Action] {
+			v.errf("%s.action: %q is not allow, deny or observe", q, r.Action)
+		}
+		for _, d := range r.Hosts {
+			if !destinationPatternOK(d) {
+				v.errf("%s.hosts: %q is not a name, *.suffix, address or CIDR", q, d)
+			}
+		}
+		for _, d := range r.NotHosts {
+			if !destinationPatternOK(d) {
+				v.errf("%s.not_hosts: %q is not a name, *.suffix, address or CIDR", q, d)
+			}
+		}
+		for _, name := range append(append([]string{}, r.Categories...), r.NotCategories...) {
+			if !cats[strings.ToLower(name)] {
+				v.errf("%s: names category %q, which this listener does not define", q, name)
+			}
+		}
+		for _, port := range r.Ports {
+			if port < 1 || port > 65535 {
+				v.errf("%s.ports: %d is not a port", q, port)
+			}
+		}
+		for _, n := range append(append([]string{}, r.Networks...), r.NotNetworks...) {
+			if !cidrOrAddr(n) {
+				v.errf("%s.networks: %q is not an address or CIDR", q, n)
+			}
+		}
+		for _, m := range r.Methods {
+			if m == "" || m != strings.ToUpper(m) || strings.ContainsAny(m, " \t\r\n") {
+				v.errf("%s.methods: %q is not an HTTP method in upper case", q, m)
+			}
+		}
+		for _, t := range append(append([]string{}, r.RequestTypes...), r.ResponseTypes...) {
+			if !mediaPatternOK(t) {
+				v.errf("%s: %q is not a media type or a type/* tree", q, t)
+			}
+		}
+		if r.RequestBytesOver < 0 || r.ResponseBytesOver < 0 {
+			v.errf("%s: a byte bound must not be negative", q)
+		}
+		v.modbusSchedule(q+".schedule", r.Schedule)
+		if (len(r.Users) > 0 || len(r.Groups) > 0) && f.Auth == nil {
+			v.warnf("%s: names users or groups on a listener with no auth, so the name is always "+
+				"empty and this rule matches nobody; add auth, or write the rule about networks", q)
+		}
+		if fwRequestLevel(r) {
+			requestLevel++
+		}
+	}
+	// A rule about a request cannot be decided inside a tunnel nothing is
+	// reading, which is the one way this policy can look stronger than it is.
+	// Two configurations are in that position and they want different advice.
+	switch {
+	case requestLevel > 0 && f.Intercept == nil:
+		v.warnf("%s.rules: %d rule(s) name a method, path, content type or body size, which are "+
+			"only visible on a plain request through the proxy -- inside a CONNECT tunnel they "+
+			"decide nothing. Add intercept for the destinations they are about, which reads the "+
+			"requests inside those tunnels and decides these rules there too, or read them as "+
+			"a policy for the plain path only", p, requestLevel)
+	case requestLevel > 0 && f.Intercept.HTTP == "off":
+		v.warnf("%s.rules: %d rule(s) name a method, path, content type or body size, and "+
+			"intercept.http is off, so nothing reads the requests inside the tunnels this "+
+			"listener does decrypt and these rules decide nothing there. Set intercept.http "+
+			"to auto or on, or write the rules about destinations", p, requestLevel)
+	}
+}
+
+// fwSNIMode fills in the default for the sni setting.
+func fwSNIMode(s string) string {
+	if s == "" {
+		return "observe"
+	}
+	return s
+}
+
+// fwRequestLevel reports whether a rule names something only a visible request
+// can answer.
+func fwRequestLevel(r *ForwardRule) bool {
+	return len(r.Methods) > 0 || len(r.Paths) > 0 || len(r.RequestTypes) > 0 ||
+		len(r.ResponseTypes) > 0 || r.RequestBytesOver > 0 || r.ResponseBytesOver > 0
+}
+
+// mediaPatternOK accepts "type/subtype" and "type/*", which is as much shape as
+// a media type selector needs and no more than can be matched exactly.
+func mediaPatternOK(s string) bool {
+	if s == "" || strings.ContainsAny(s, " \t\r\n;\"") {
+		return false
+	}
+	t, sub, ok := strings.Cut(s, "/")
+	if !ok || t == "" || sub == "" || strings.Contains(t, "*") {
+		return false
+	}
+	return sub == "*" || !strings.Contains(sub, "*")
+}
+
+// cidrOrAddr accepts a bare address or a CIDR.
+func cidrOrAddr(s string) bool {
+	if _, err := netip.ParsePrefix(s); err == nil {
+		return true
+	}
+	_, err := netip.ParseAddr(s)
+	return err == nil
+}
+
+// Bounds on an egress policy. A listener with a thousand rules is a mistake
+// rather than a policy, and both are checked so the table a reload builds
+// cannot be unbounded.
+const (
+	maxForwardCategories = 256
+	maxForwardRules      = 512
+	maxForwardGroups     = 256
+)
 
 // forwardIntercept checks the TLS interception section. Every check here
 // exists because the feature is the one that replaces a connection the
@@ -5791,6 +6161,9 @@ func (v *validator) forwardIntercept(p string, ic *ForwardIntercept) {
 	} else {
 		v.file(p+".ca_key_file", ic.CAKeyFile)
 		v.privateFile(p+".ca_key_file", ic.CAKeyFile)
+	}
+	if ic.HTTP != "" && !ForwardHTTPModes[ic.HTTP] {
+		v.errf("%s.http: %q is not auto, on or off", p, ic.HTTP)
 	}
 	for _, d := range ic.Hosts {
 		if !destinationPatternOK(d) {
@@ -14420,6 +14793,10 @@ func (v *validator) access(c *Config) {
 			{"coap engineering", l.CoAP != nil && grantRequired(l.CoAP.Engineering)},
 			{"snmp engineering", l.SNMP != nil && grantRequired(l.SNMP.Engineering)},
 			{"tftp engineering", l.TFTP != nil && grantRequired(l.TFTP.Engineering)},
+			// Device administration is engineering activity too: a
+			// `configure terminal` on a core router is the same kind of
+			// change as a PLC download, and the same mistake applies.
+			{"tacacs engineering", l.TACACS != nil && grantRequired(l.TACACS.Engineering)},
 		} {
 			if g.on {
 				need = append(need, l.Name+" ("+g.kind+")")
@@ -14461,6 +14838,9 @@ func (v *validator) access(c *Config) {
 	}
 	if d := a.MaxLead.D(); d < 0 || d > 30*24*time.Hour {
 		v.errf("%s.max_lead: must be between 0 and 720h", p)
+	}
+	if d := a.MaxWorkOrder.D(); d < time.Minute || d > 90*24*time.Hour {
+		v.errf("%s.max_work_order: must be between 1m and 2160h", p)
 	}
 	if a.MaxUses < 0 || a.MaxUses > 1000 {
 		v.errf("%s.max_uses: must be between 0 and 1000", p)
@@ -15231,4 +15611,1010 @@ func coapAsksForAKey(tc *TLS) bool {
 // rather than a hole.
 func pinsKeys(ln *Listener) bool {
 	return ln != nil && ln.Kind == "coap" && ln.CoAP != nil && len(ln.CoAP.PublicKeys) > 0
+}
+
+// The three authentication protocols: RADIUS, TACACS+ and the Kerberos
+// KDC proxy.
+//
+// What these validators have in common is that each of the three has one
+// setting the listener is nearly useless without, and in each case it is
+// the shared secret or the realm list. So each of them errors or warns
+// loudly about that one thing, and is ordinary about the rest: a
+// configuration that passes with a warning here is a configuration that
+// will load and run and read less traffic than its author believes.
+
+// radiusSecret checks a shared secret file: an absolute path to a file
+// nobody but its owner can read.
+//
+// The permission check is an error rather than a warning because of what
+// the secret is. On RADIUS it is the whole of the cryptography -- every
+// packet's integrity, and the obfuscation over every password -- and it is
+// the same secret for every exchange on the link. A group-readable file
+// holding it is a group that can forge an Access-Accept.
+func (v *validator) radiusSecret(p, path string) {
+	v.file(p, path)
+	if !v.fileCheck || !strings.HasPrefix(path, "/") {
+		return
+	}
+	st, err := os.Stat(path)
+	if err != nil || st.IsDir() {
+		return // already reported by file
+	}
+	if st.Mode().Perm()&0o077 != 0 {
+		v.errf("%s: %s is readable by more than its owner (mode %04o); this secret is the whole of this "+
+			"protocol's cryptography, and anybody who can read it can forge an answer", p, path, st.Mode().Perm())
+	}
+}
+
+func (v *validator) radiusListener(p string, m *RADIUSListener) {
+	v.anomaly(p+".anomaly", m.Anomaly)
+	if m.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	if m.SecretFile == "" {
+		// Not an error: a listener with no secret still bounds, rate
+		// limits, refuses by address and reads every attribute, which is
+		// worth having. It cannot verify a digest, which is most of why
+		// this kind exists.
+		v.warnf("%s.secret_file: empty, so nothing can be verified: this listener will carry packets whose "+
+			"Message-Authenticator and Response Authenticator it cannot check, and require_message_authenticator "+
+			"has nothing to check with", p)
+	} else {
+		v.radiusSecret(p+".secret_file", m.SecretFile)
+	}
+	if m.UpstreamSecretFile != "" {
+		v.radiusSecret(p+".upstream_secret_file", m.UpstreamSecretFile)
+		if m.SecretFile == "" {
+			v.errf("%s.upstream_secret_file: set without secret_file, so this listener would re-sign packets "+
+				"it could not verify", p)
+		}
+	}
+	v.modbusCIDRs(p+".allow_clients", m.AllowClients)
+	v.modbusCIDRs(p+".deny_clients", m.DenyClients)
+	if len(m.AllowClients) == 0 {
+		v.warnf("%s.allow_clients: empty, so any address may send: on this protocol the client is a switch or a "+
+			"concentrator at a fixed address, and this list is the cheapest control in the section", p)
+	}
+	v.radiusCodes(p+".codes", m.Codes)
+	v.radiusCodes(p+".deny_codes", m.DenyCodes)
+	v.radiusAuthTypes(p+".auth_types", m.AuthTypes)
+	v.radiusEAPTypes(p+".eap_types", m.EAPTypes)
+	v.radiusEAPTypes(p+".deny_eap_types", m.DenyEAPTypes)
+	v.radiusAttrs(p+".deny_attributes", m.DenyAttributes)
+	v.radiusAttrs(p+".deny_reply_attributes", m.DenyReplyAttributes)
+	v.radiusPrivilege(p+".max_privilege_level", m.MaxPrivilegeLevel)
+	if m.MaxAttributes < 0 {
+		v.errf("%s.max_attributes: must not be negative", p)
+	}
+	if m.MaxMessageBytes < 0 || m.MaxMessageBytes > radiuswire.MaxMessage {
+		v.errf("%s.max_message_bytes: must be between 1 and %d, which is RFC 2865's own maximum",
+			p, radiuswire.MaxMessage)
+	}
+	if m.MaxPending < 0 || m.MaxPending > 256 {
+		// There are 256 identifiers per client, and the relay allocates one
+		// per outstanding request. A larger table cannot hold more, and
+		// asking for one says the configuration expects something the
+		// protocol cannot do.
+		v.errf("%s.max_pending: must be between 1 and 256, which is how many identifiers the protocol has", p)
+	}
+	if m.RateBurst > 0 && m.RateLimit == 0 {
+		v.warnf("%s.rate_burst: set with no rate_limit, so nothing is limited", p)
+	}
+	switch m.DenyResponse {
+	case "", "reject", "drop":
+	default:
+		v.errf("%s.deny_response: must be reject or drop", p)
+	}
+	switch m.DefaultAction {
+	case "", "deny", "allow":
+	default:
+		v.errf("%s.default_action: must be deny or allow", p)
+	}
+	if m.DefaultAction == "allow" && len(m.Rules) == 0 {
+		v.warnf("%s.default_action: allow with no rules carries every request this listener's own lists admit, "+
+			"which is a relay that verifies and bounds but decides nothing", p)
+	}
+	if m.RequireMessageAuthenticator != nil && !*m.RequireMessageAuthenticator {
+		// This is the CVE-2024-3596 mitigation, so turning it off is worth a
+		// line in the operator's own output rather than only in the
+		// documentation.
+		v.warnf("%s.require_message_authenticator: off, so a reply's only integrity check is the Response "+
+			"Authenticator -- which is MD5 with the secret appended, and which a chosen-prefix collision forges "+
+			"(CVE-2024-3596): name the equipment that cannot send one in a rule instead", p)
+	}
+	if m.AllowDynamicAuthorization != nil && *m.AllowDynamicAuthorization {
+		v.warnf("%s.allow_dynamic_authorization: on, so this listener carries Disconnect-Request and CoA-Request: "+
+			"each one ends or re-authorises a live user's session from a single datagram, and they run from the "+
+			"server towards the equipment rather than the other way", p)
+	}
+	if m.RefuseWeakEAP != nil && !*m.RefuseWeakEAP {
+		v.warnf("%s.refuse_weak_eap: off, so EAP-MD5 and LEAP may cross this listener: both are crackable "+
+			"offline from one observed exchange", p)
+	}
+	if m.RequireRealm != nil && *m.RequireRealm && len(m.Realms) == 0 {
+		v.warnf("%s.require_realm: on with no realms list, so a name must carry a realm and any realm will do", p)
+	}
+	names := map[string]bool{}
+	for i := range m.Rules {
+		r := &m.Rules[i]
+		rp := fmt.Sprintf("%s.rules[%d]", p, i)
+		if r.Name == "" {
+			v.errf("%s.name: required", rp)
+		} else if names[r.Name] {
+			v.errf("%s.name: %q is used twice", rp, r.Name)
+		}
+		names[r.Name] = true
+		switch r.Action {
+		case "allow", "deny", "observe":
+		default:
+			v.errf("%s.action: must be allow, deny or observe", rp)
+		}
+		v.modbusCIDRs(rp+".clients", r.Clients)
+		v.radiusCodes(rp+".codes", r.Codes)
+		v.radiusAuthTypes(rp+".auth_types", r.AuthTypes)
+		v.radiusEAPTypes(rp+".eap_types", r.EAPTypes)
+		v.radiusPrivilege(rp+".max_privilege_level", r.MaxPrivilegeLevel)
+		v.modbusSchedule(rp+".schedule", r.Schedule)
+		if r.RequireMessageAuthenticator != nil && !*r.RequireMessageAuthenticator && len(r.Clients) == 0 {
+			v.warnf("%s.require_message_authenticator: off on a rule that names no clients, which turns the "+
+				"CVE-2024-3596 mitigation off for everything the rule matches", rp)
+		}
+	}
+}
+
+func (v *validator) radiusCodes(p string, names []string) {
+	for i, n := range names {
+		if _, ok := radiuswire.CodeOf(n); !ok {
+			v.errf("%s[%d]: %q is not a RADIUS code (%s, or a number 0-255)",
+				p, i, n, strings.Join(radiuswire.CodeNames(), ", "))
+		}
+	}
+}
+
+func (v *validator) radiusAuthTypes(p string, names []string) {
+	for i, n := range names {
+		if _, ok := radiuswire.AuthTypeOf(n); !ok {
+			v.errf("%s[%d]: %q is not an authentication method (%s)",
+				p, i, n, strings.Join(radiuswire.AuthTypeNames(), ", "))
+		}
+	}
+}
+
+func (v *validator) radiusEAPTypes(p string, names []string) {
+	for i, n := range names {
+		if _, ok := radiuswire.EAPTypeOf(n); !ok {
+			v.errf("%s[%d]: %q is not an EAP method (%s, or a number 1-255)",
+				p, i, n, strings.Join(radiuswire.EAPTypeNames(), ", "))
+		}
+	}
+}
+
+func (v *validator) radiusAttrs(p string, names []string) {
+	for i, n := range names {
+		if _, ok := radiuswire.AttrOf(n); !ok {
+			v.errf("%s[%d]: %q is not an attribute (%s, or a number 1-255)",
+				p, i, n, strings.Join(radiuswire.AttrNames(), ", "))
+		}
+	}
+}
+
+func (v *validator) radiusPrivilege(p string, n *int) {
+	if n != nil && (*n < 0 || *n > 15) {
+		v.errf("%s: must be between 0 and 15", p)
+	}
+}
+
+func (v *validator) tacacsListener(p string, m *TACACSListener, hasTLS bool) {
+	v.anomaly(p+".anomaly", m.Anomaly)
+	v.engineering(p+".engineering", m.Engineering)
+	if m.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	if m.SecretFile == "" {
+		// The warning is strong because of what is lost: without the key
+		// this listener reads a twelve-octet header and forwards the body,
+		// so every command setting below it decides nothing.
+		v.warnf("%s.secret_file: empty, so this listener reads headers only: the user, the command and the "+
+			"privilege level are all inside the obfuscated body, and commands, users and max_privilege_level "+
+			"cannot be applied without the key", p)
+		if len(m.Commands) > 0 || len(m.DenyCommands) > 0 {
+			v.errf("%s.commands: set with no secret_file, so the command line cannot be read and these "+
+				"patterns would match nothing", p)
+		}
+		if len(m.Users) > 0 || len(m.DenyUsers) > 0 {
+			v.errf("%s.users: set with no secret_file, so the user name cannot be read and these lists would "+
+				"match nothing", p)
+		}
+	} else {
+		v.radiusSecret(p+".secret_file", m.SecretFile)
+	}
+	if m.UpstreamSecretFile != "" {
+		v.radiusSecret(p+".upstream_secret_file", m.UpstreamSecretFile)
+		if m.SecretFile == "" {
+			v.errf("%s.upstream_secret_file: set without secret_file, so this listener would re-obfuscate "+
+				"bodies it never read", p)
+		}
+	}
+	v.modbusCIDRs(p+".allow_clients", m.AllowClients)
+	v.modbusCIDRs(p+".deny_clients", m.DenyClients)
+	if len(m.AllowClients) == 0 {
+		v.warnf("%s.allow_clients: empty, so any address may connect: the clients here are the estate's own "+
+			"network equipment at fixed addresses", p)
+	}
+	v.tacacsExchanges(p+".exchanges", m.Exchanges)
+	v.tacacsAuthenTypes(p+".authen_types", m.AuthenTypes)
+	v.tacacsServices(p+".authen_services", m.AuthenServices)
+	v.tacacsCommands(p+".commands", m.Commands)
+	v.tacacsCommands(p+".deny_commands", m.DenyCommands)
+	v.radiusPrivilege(p+".max_privilege_level", m.MaxPrivilegeLevel)
+	if m.MaxArgs < 0 || m.MaxArgs > 255 {
+		v.errf("%s.max_args: must be between 1 and 255, which is the protocol's own bound", p)
+	}
+	if m.MaxBodyBytes < 0 || m.MaxBodyBytes > tacacswire.MaxBody {
+		v.errf("%s.max_body_bytes: must be between 1 and %d", p, tacacswire.MaxBody)
+	}
+	if m.MaxSessions < 0 || m.MaxSessionsPerClient < 0 || m.MaxSessionsPerConnection < 0 {
+		v.errf("%s: the session bounds must not be negative", p)
+	}
+	if m.RateBurst > 0 && m.RateLimit == 0 {
+		v.warnf("%s.rate_burst: set with no rate_limit, so nothing is limited", p)
+	}
+	switch m.DenyResponse {
+	case "", "fail", "drop":
+	default:
+		v.errf("%s.deny_response: must be fail or drop", p)
+	}
+	switch m.DefaultAction {
+	case "", "deny", "allow":
+	default:
+		v.errf("%s.default_action: must be deny or allow", p)
+	}
+	switch m.UpstreamTLSMode {
+	case "", "disable", "prefer", "require":
+	default:
+		v.errf("%s.upstream_tls_mode: must be disable, prefer or require", p)
+	}
+	if m.UpstreamTLS != nil {
+		v.upstreamTLS(p+".upstream_tls", m.UpstreamTLS)
+	}
+	if m.UpstreamTLS != nil && (m.UpstreamTLSMode == "" || m.UpstreamTLSMode == "disable") {
+		v.errf("%s.upstream_tls: set with upstream_tls_mode disable, which never uses it", p)
+	}
+	if m.RequireTLS != nil && *m.RequireTLS && !hasTLS {
+		v.errf("%s.require_tls: set, but the listener has no tls section to terminate it with", p)
+	}
+	if m.RefuseUnencrypted != nil && !*m.RefuseUnencrypted && !hasTLS {
+		v.warnf("%s.refuse_unencrypted: off on a listener with no tls, so a body may arrive in the clear: "+
+			"RFC 8907 allows the flag only on a secured transport", p)
+	}
+	if m.AllowFollow != nil && *m.AllowFollow {
+		v.warnf("%s.allow_follow: on, so a server may redirect a client to another host whose address, port and "+
+			"key are in the reply's data field -- RFC 8907 deprecates it and says a client should treat it as a "+
+			"failure", p)
+	}
+	if m.AllowUnauthenticatedAuthorization != nil && *m.AllowUnauthenticatedAuthorization {
+		v.warnf("%s.allow_unauthenticated_authorization: on, so a device may ask whether an unnamed user may run "+
+			"a command, and be told yes", p)
+	}
+	if m.DefaultAction == "allow" && len(m.Commands) == 0 && len(m.DenyCommands) == 0 && len(m.Rules) == 0 {
+		v.warnf("%s.default_action: allow with no command lists and no rules carries every command: on the "+
+			"protocol that authorises each one separately, that is the setting worth a second look", p)
+	}
+	names := map[string]bool{}
+	for i := range m.Rules {
+		r := &m.Rules[i]
+		rp := fmt.Sprintf("%s.rules[%d]", p, i)
+		if r.Name == "" {
+			v.errf("%s.name: required", rp)
+		} else if names[r.Name] {
+			v.errf("%s.name: %q is used twice", rp, r.Name)
+		}
+		names[r.Name] = true
+		switch r.Action {
+		case "allow", "deny", "observe":
+		default:
+			v.errf("%s.action: must be allow, deny or observe", rp)
+		}
+		v.modbusCIDRs(rp+".clients", r.Clients)
+		v.tacacsExchanges(rp+".exchanges", r.Exchanges)
+		v.tacacsAuthenTypes(rp+".authen_types", r.AuthenTypes)
+		v.tacacsServices(rp+".authen_services", r.AuthenServices)
+		v.tacacsCommands(rp+".commands", r.Commands)
+		v.tacacsCommands(rp+".deny_commands", r.DenyCommands)
+		v.radiusPrivilege(rp+".max_privilege_level", r.MaxPrivilegeLevel)
+		v.modbusSchedule(rp+".schedule", r.Schedule)
+		if len(r.Commands) > 0 && m.SecretFile == "" {
+			v.errf("%s.commands: set with no secret_file on the listener, so the command line cannot be read", rp)
+		}
+	}
+}
+
+func (v *validator) tacacsExchanges(p string, names []string) {
+	for i, n := range names {
+		if _, ok := tacacswire.TypeOf(n); !ok {
+			v.errf("%s[%d]: %q is not an exchange (%s)", p, i, n, strings.Join(tacacswire.TypeNames(), ", "))
+		}
+	}
+}
+
+func (v *validator) tacacsAuthenTypes(p string, names []string) {
+	for i, n := range names {
+		if _, ok := tacacswire.AuthenTypeOf(n); !ok {
+			v.errf("%s[%d]: %q is not an authentication type (%s)",
+				p, i, n, strings.Join(tacacswire.AuthenTypeNames(), ", "))
+		}
+	}
+}
+
+func (v *validator) tacacsServices(p string, names []string) {
+	for i, n := range names {
+		if _, ok := tacacswire.ServiceOf(n); !ok {
+			v.errf("%s[%d]: %q is not a service (%s)", p, i, n, strings.Join(tacacswire.ServiceNames(), ", "))
+		}
+	}
+}
+
+// tacacsCommands checks a command pattern.
+//
+// The grammar is deliberately tiny: words, with an optional trailing
+// `...`. A wildcard in the middle is refused rather than supported,
+// because a pattern with a hole in it is a pattern whose author and whose
+// reader disagree about what it covers -- and what it covers here is
+// whether somebody can reconfigure a core router.
+func (v *validator) tacacsCommands(p string, pats []string) {
+	for i, pat := range pats {
+		s := strings.TrimSpace(pat)
+		if s == "" {
+			v.errf("%s[%d]: empty", p, i)
+			continue
+		}
+		if len(s) > 256 {
+			v.errf("%s[%d]: at most 256 characters", p, i)
+			continue
+		}
+		words := strings.Fields(s)
+		for j, w := range words {
+			if w != "..." {
+				if strings.Contains(w, "*") || strings.Contains(w, "...") {
+					v.errf("%s[%d]: %q may only wildcard with a trailing \"...\"; a pattern with a hole in the "+
+						"middle is one whose reader cannot tell what it covers", p, i, pat)
+					break
+				}
+				continue
+			}
+			if j != len(words)-1 {
+				v.errf("%s[%d]: \"...\" must be the last word", p, i)
+				break
+			}
+		}
+	}
+}
+
+func (v *validator) kkdcpListener(p string, m *KKDCPListener, hasTLS bool) {
+	v.anomaly(p+".anomaly", m.Anomaly)
+	if m.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	if !hasTLS {
+		// MS-KKDCP is HTTPS, and the reason is not ceremonial: the inner
+		// message carries a pre-authentication blob derived from the user's
+		// password. An error rather than a warning, because a plaintext KDC
+		// proxy is not a weaker deployment of this kind -- it is a different
+		// and worse thing wearing its name.
+		v.errf("%s: a kkdcp listener requires a tls section: the protocol is HTTPS, and the message it carries "+
+			"holds a value derived from the user's password", p)
+	}
+	if len(m.Realms) == 0 {
+		v.errf("%s.realms: required: a KDC proxy with no realm policy relays Kerberos for any realm a client "+
+			"names, to whatever its upstream resolves to, from this estate's address", p)
+	}
+	for i, r := range m.Realms {
+		if strings.TrimSpace(r) == "" {
+			v.errf("%s.realms[%d]: empty", p, i)
+		}
+	}
+	if m.Path != "" && !strings.HasPrefix(m.Path, "/") {
+		v.errf("%s.path: must begin with /", p)
+	}
+	v.kkdcpMessageTypes(p+".message_types", m.MessageTypes)
+	v.kkdcpETypes(p+".etypes", m.ETypes)
+	v.kkdcpETypes(p+".deny_etypes", m.DenyETypes)
+	for i := range m.Rules {
+		v.kkdcpETypes(fmt.Sprintf("%s.rules[%d].etypes", p, i), m.Rules[i].ETypes)
+	}
+	v.kkdcpOptions(p+".deny_options", m.DenyOptions)
+	if m.MaxMessageBytes < 0 {
+		v.errf("%s.max_message_bytes: must not be negative", p)
+	}
+	if m.MaxMessageBytes > 0 && m.MaxMessageBytes < 4096 {
+		v.errf("%s.max_message_bytes: %d is below what real traffic needs: a Windows reply carries a PAC of "+
+			"tens of kilobytes, and a bound this low refuses exactly the users whose group membership matters",
+			p, m.MaxMessageBytes)
+	}
+	if m.MaxRequestsPerConnection < 0 || m.MaxDistinctServices < 0 || m.MaxPreauthFailures < 0 {
+		v.errf("%s: the bounds must not be negative", p)
+	}
+	if m.MaxSessions < 0 || m.MaxSessionsPerClient < 0 {
+		v.errf("%s: the session bounds must not be negative", p)
+	}
+	if m.RateBurst > 0 && m.RateLimit == 0 {
+		v.warnf("%s.rate_burst: set with no rate_limit, so nothing is limited", p)
+	}
+	switch m.DenyResponse {
+	case "", "error", "status":
+	default:
+		v.errf("%s.deny_response: must be error or status", p)
+	}
+	switch m.DefaultAction {
+	case "", "deny", "allow":
+	default:
+		v.errf("%s.default_action: must be deny or allow", p)
+	}
+	if boolOrFalse(m.AllowPasswordChange) && m.PasswordUpstream == "" {
+		v.errf("%s.password_upstream: required when allow_password_change is set: kpasswd is a different "+
+			"service on a different port, and sending an AP-REQ to the KDC's own would reach nothing", p)
+	}
+	if !boolOrFalse(m.AllowPasswordChange) && m.PasswordUpstream != "" {
+		v.warnf("%s.password_upstream: set with allow_password_change off, so nothing reaches it", p)
+	}
+	if m.RefusePreauthExempt != nil && !*m.RefusePreauthExempt {
+		v.warnf("%s.refuse_preauth_exempt: off, so this proxy will carry an AS-REP for a request that brought "+
+			"no pre-authentication -- a reply whose encrypted part is an offline password-cracking target "+
+			"(AS-REP roasting)", p)
+	}
+	if m.RefuseWeakETypes != nil && !*m.RefuseWeakETypes {
+		v.warnf("%s.refuse_weak_etypes: off, so a request offering nothing but %s may cross this listener, "+
+			"which on a TGS-REQ for a service principal is Kerberoasting", p,
+			strings.Join(kerberoswire.WeakETypes(), ", "))
+	}
+	if boolOrFalse(m.AllowS4U2Proxy) && !boolOrFalse(m.AllowS4U2Self) {
+		// Not an error: the two halves are separate requests and an estate
+		// may genuinely carry one. It is nearly always a mistake, because
+		// the usual S4U chain is self then proxy.
+		v.warnf("%s.allow_s4u2proxy: on with allow_s4u2self off, which carries the second half of a delegation "+
+			"chain and not the first", p)
+	}
+	if m.MaxDistinctServices > 0 && m.ServiceWindow.D() > time.Hour {
+		v.warnf("%s.service_window: longer than an hour, so one slow enumeration spread over a working morning "+
+			"counts against the same bound as a burst", p)
+	}
+	names := map[string]bool{}
+	for i := range m.Rules {
+		r := &m.Rules[i]
+		rp := fmt.Sprintf("%s.rules[%d]", p, i)
+		if r.Name == "" {
+			v.errf("%s.name: required", rp)
+		} else if names[r.Name] {
+			v.errf("%s.name: %q is used twice", rp, r.Name)
+		}
+		names[r.Name] = true
+		switch r.Action {
+		case "allow", "deny", "observe":
+		default:
+			v.errf("%s.action: must be allow, deny or observe", rp)
+		}
+		v.modbusCIDRs(rp+".clients", r.Clients)
+		v.kkdcpMessageTypes(rp+".message_types", r.MessageTypes)
+		v.modbusSchedule(rp+".schedule", r.Schedule)
+	}
+}
+
+func (v *validator) kkdcpMessageTypes(p string, names []string) {
+	for i, n := range names {
+		if _, ok := kerberoswire.MsgTypeOf(n); !ok {
+			v.errf("%s[%d]: %q is not a request type (%s)", p, i, n,
+				strings.Join(kerberoswire.MsgTypeNames(), ", "))
+		}
+	}
+}
+
+func (v *validator) kkdcpETypes(p string, names []string) {
+	for i, n := range names {
+		if _, ok := kerberoswire.ETypeOf(n); !ok {
+			v.errf("%s[%d]: %q is not an encryption type (%s, or a number)", p, i, n,
+				strings.Join(kerberoswire.ETypeNames(), ", "))
+		}
+	}
+}
+
+func (v *validator) kkdcpOptions(p string, names []string) {
+	for i, n := range names {
+		if _, ok := kerberoswire.OptionOf(n); !ok {
+			v.errf("%s[%d]: %q is not a KDC option (%s)", p, i, n,
+				strings.Join(kerberoswire.OptionNames(), ", "))
+		}
+	}
+}
+
+// boolOrFalse reads an optional boolean that defaults to off, so a warning
+// about a setting says what the listener will actually do with it.
+func boolOrFalse(p *bool) bool { return p != nil && *p }
+
+// imapListener checks a kind: imap listener.
+//
+// Two of these checks are the ones worth having. A listener with
+// require_tls off and no certificate is a mailbox password in the clear, and
+// it is a warning rather than an error because an estate that terminates TLS
+// in front of this proxy has a legitimate reason for it. And a mailbox
+// pattern with a wildcard anywhere but the end is refused outright: it reads
+// as a pattern and is not one, so a rule written that way would be a rule
+// nobody wrote.
+func (v *validator) imapListener(p string, m *IMAPListener, hasTLS bool) {
+	v.anomaly(p+".anomaly", m.Anomaly)
+	if m.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	mode := strings.ToLower(strings.TrimSpace(m.TLSMode))
+	switch mode {
+	case "", "implicit", "starttls", "none":
+	default:
+		v.errf("%s.tls_mode: %q is not implicit, starttls or none", p, m.TLSMode)
+	}
+	if mode == "starttls" && !hasTLS {
+		v.errf("%s.tls_mode: starttls needs a tls section: this relay terminates the upgrade itself", p)
+	}
+	if mode == "implicit" && !hasTLS {
+		v.errf("%s.tls_mode: implicit needs a tls section", p)
+	}
+	requireTLS := m.RequireTLS == nil || *m.RequireTLS
+	if !requireTLS {
+		v.warnf("%s.require_tls: false, so a LOGIN on an unencrypted connection is carried: a mailbox "+
+			"password travels in the clear and the client that sent it will not say so", p)
+	}
+	if requireTLS && !hasTLS && mode != "starttls" {
+		v.warnf("%s: require_tls is set and this listener has no certificate, so every LOGIN will be "+
+			"refused: give it a tls section, or tls_mode: starttls, or terminate TLS in front of it", p)
+	}
+	v.imapTLSMode(p+".upstream_tls_mode", m.UpstreamTLSMode)
+	if m.UpstreamTLS != nil {
+		v.upstreamTLS(p+".upstream_tls", m.UpstreamTLS)
+		if lower := strings.ToLower(m.UpstreamTLSMode); lower == "" || lower == "disable" {
+			v.errf("%s.upstream_tls: set with upstream_tls_mode disable, which never uses it", p)
+		}
+	}
+	v.modbusCIDRs(p+".allow_clients", m.AllowClients)
+	v.modbusCIDRs(p+".deny_clients", m.DenyClients)
+	v.imapCommands(p+".commands", m.Commands)
+	v.imapCommands(p+".deny_commands", m.DenyCommands)
+	v.imapMailboxes(p+".mailboxes", m.Mailboxes)
+	v.imapMailboxes(p+".deny_mailboxes", m.DenyMailboxes)
+	v.imapMechanisms(p+".mechanisms", m.Mechanisms)
+	if m.MaxFetchMessages < 0 {
+		v.errf("%s.max_fetch_messages: negative", p)
+	}
+	if m.MaxFetchMessages == 0 {
+		v.warnf("%s.max_fetch_messages: unset, so one request may name every message in a mailbox: "+
+			"`UID FETCH 1:* (BODY[])` is what both a first synchronisation and an account takeover "+
+			"look like, and this is the setting that tells them apart", p)
+	}
+	for _, b := range []struct {
+		name string
+		val  int
+	}{
+		{"max_append_bytes", m.MaxAppendBytes},
+		{"max_literal_bytes", m.MaxLiteralBytes},
+		{"max_literals", m.MaxLiterals},
+		{"max_line_bytes", m.MaxLineBytes},
+		{"max_response_bytes", m.MaxResponseBytes},
+		{"max_commands", m.MaxCommands},
+		{"max_connections", m.MaxConnections},
+		{"max_sessions", m.MaxSessions},
+		{"max_sessions_per_client", m.MaxSessionsPerClient},
+		{"rate_limit", m.RateLimit},
+		{"rate_burst", m.RateBurst},
+	} {
+		if b.val < 0 {
+			v.errf("%s.%s: negative", p, b.name)
+		}
+	}
+	if m.MaxLineBytes > 0 && m.MaxLineBytes < 512 {
+		v.errf("%s.max_line_bytes: %d is below 512, which no client's longest command fits in",
+			p, m.MaxLineBytes)
+	}
+	switch strings.ToLower(m.DefaultAction) {
+	case "", "allow", "deny":
+	default:
+		v.errf("%s.default_action: %q is not allow or deny", p, m.DefaultAction)
+	}
+	switch strings.ToLower(m.DenyResponse) {
+	case "", "no", "bad", "drop", "close":
+	default:
+		v.errf("%s.deny_response: %q is not no, bad, drop or close", p, m.DenyResponse)
+	}
+	for i := range m.Rules {
+		r := &m.Rules[i]
+		q := fmt.Sprintf("%s.rules[%d]", p, i)
+		v.modbusCIDRs(q+".clients", r.Clients)
+		v.imapCommands(q+".commands", r.Commands)
+		v.imapCommands(q+".deny_commands", r.DenyCommands)
+		v.imapMailboxes(q+".mailboxes", r.Mailboxes)
+		switch strings.ToLower(r.Action) {
+		case "", "allow", "deny":
+		default:
+			v.errf("%s.action: %q is not allow or deny", q, r.Action)
+		}
+		if r.MaxFetchMessages < 0 || r.MaxAppendBytes < 0 {
+			v.errf("%s: a negative bound", q)
+		}
+		v.modbusSchedule(q+".schedule", r.Schedule)
+	}
+}
+
+// imapTLSMode checks an upstream_tls_mode value.
+func (v *validator) imapTLSMode(p, mode string) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "disable", "implicit", "starttls":
+	default:
+		v.errf("%s: %q is not disable, implicit or starttls", p, mode)
+	}
+}
+
+// imapCommands refuses a name that is not an IMAP command, because a rule
+// naming one would match nothing and an operator would believe otherwise.
+func (v *validator) imapCommands(p string, list []string) {
+	for _, s := range list {
+		name := strings.ToUpper(strings.TrimSpace(s))
+		if name == "" {
+			continue
+		}
+		if !imapwire.Known(name) {
+			v.errf("%s: %q is not an IMAP command; the commands are %s",
+				p, s, strings.Join(imapwire.Names(), ", "))
+		}
+	}
+}
+
+// imapMailboxes refuses a wildcard that is not the last character.
+func (v *validator) imapMailboxes(p string, list []string) {
+	for _, s := range list {
+		raw := strings.TrimSpace(s)
+		if raw == "" {
+			continue
+		}
+		body := raw
+		if strings.HasSuffix(body, "*") || strings.HasSuffix(body, "%") {
+			body = body[:len(body)-1]
+		}
+		if strings.ContainsAny(body, "*%") {
+			v.errf("%s: %q has a wildcard that is not the last character, which reads as a pattern "+
+				"and is not one", p, s)
+		}
+		if len(raw) > imapwire.MaxMailbox {
+			v.errf("%s: %q is longer than a mailbox name may be", p, s)
+		}
+	}
+}
+
+// imapMechanisms checks the mechanism names, which are `login` plus whatever
+// SASL names an estate's server offers -- so an unknown one is advice rather
+// than an error: this project cannot know every mechanism a server supports.
+func (v *validator) imapMechanisms(p string, list []string) {
+	for _, s := range list {
+		name := strings.ToLower(strings.TrimSpace(s))
+		if name == "" {
+			v.errf("%s: an empty mechanism name", p)
+			continue
+		}
+		switch name {
+		case "login", "plain", "oauthbearer", "xoauth2", "cram-md5", "digest-md5", "gssapi", "external", "scram-sha-1", "scram-sha-256":
+		default:
+			v.warnf("%s: %q is not a mechanism this project knows; it will be matched as written, so "+
+				"check the spelling against what the server advertises", p, s)
+		}
+	}
+}
+
+// pop3Listener checks a kind: pop3 listener.
+func (v *validator) pop3Listener(p string, m *POP3Listener, hasTLS bool) {
+	v.anomaly(p+".anomaly", m.Anomaly)
+	if m.Upstream == "" {
+		v.errf("%s.upstream: required", p)
+	}
+	mode := strings.ToLower(strings.TrimSpace(m.TLSMode))
+	switch mode {
+	case "", "implicit", "starttls", "none":
+	default:
+		v.errf("%s.tls_mode: %q is not implicit, starttls or none", p, m.TLSMode)
+	}
+	if mode == "starttls" && !hasTLS {
+		v.errf("%s.tls_mode: starttls needs a tls section: this relay terminates the upgrade itself", p)
+	}
+	if mode == "implicit" && !hasTLS {
+		v.errf("%s.tls_mode: implicit needs a tls section", p)
+	}
+	requireTLS := m.RequireTLS == nil || *m.RequireTLS
+	if !requireTLS {
+		v.warnf("%s.require_tls: false, so USER and PASS are carried on an unencrypted connection: "+
+			"this protocol sends the password on the line after the name, with nothing in between", p)
+	}
+	if requireTLS && !hasTLS && mode != "starttls" {
+		v.warnf("%s: require_tls is set and this listener has no certificate, so every login will be "+
+			"refused: give it a tls section, or tls_mode: starttls, or terminate TLS in front of it", p)
+	}
+	v.imapTLSMode(p+".upstream_tls_mode", m.UpstreamTLSMode)
+	if m.UpstreamTLS != nil {
+		v.upstreamTLS(p+".upstream_tls", m.UpstreamTLS)
+		if lower := strings.ToLower(m.UpstreamTLSMode); lower == "" || lower == "disable" {
+			v.errf("%s.upstream_tls: set with upstream_tls_mode disable, which never uses it", p)
+		}
+	}
+	v.modbusCIDRs(p+".allow_clients", m.AllowClients)
+	v.modbusCIDRs(p+".deny_clients", m.DenyClients)
+	v.pop3Commands(p+".commands", m.Commands)
+	v.pop3Commands(p+".deny_commands", m.DenyCommands)
+	v.pop3Mechanisms(p+".mechanisms", m.Mechanisms)
+	if m.MaxRetrBytes < 0 {
+		v.errf("%s.max_retr_bytes: negative", p)
+	}
+	if m.MaxMessages == 0 && m.MaxRetrBytes == 0 {
+		v.warnf("%s: neither max_messages nor max_retr_bytes is set, so one connection may take the "+
+			"whole mailbox: on this protocol the running total is the only bound there is, because "+
+			"a client asks for one message at a time", p)
+	}
+	for _, b := range []struct {
+		name string
+		val  int
+	}{
+		{"max_messages", m.MaxMessages},
+		{"max_line_bytes", m.MaxLineBytes},
+		{"max_response_bytes", m.MaxResponseBytes},
+		{"max_connections", m.MaxConnections},
+		{"max_sessions", m.MaxSessions},
+		{"max_sessions_per_client", m.MaxSessionsPerClient},
+		{"rate_limit", m.RateLimit},
+		{"rate_burst", m.RateBurst},
+	} {
+		if b.val < 0 {
+			v.errf("%s.%s: negative", p, b.name)
+		}
+	}
+	if m.MaxLineBytes > 0 && m.MaxLineBytes < 512 {
+		v.errf("%s.max_line_bytes: %d is below 512, which RFC 1939's own line limit is", p, m.MaxLineBytes)
+	}
+	switch strings.ToLower(m.DefaultAction) {
+	case "", "allow", "deny":
+	default:
+		v.errf("%s.default_action: %q is not allow or deny", p, m.DefaultAction)
+	}
+	switch strings.ToLower(m.DenyResponse) {
+	case "", "err", "drop", "close":
+	default:
+		v.errf("%s.deny_response: %q is not err, drop or close", p, m.DenyResponse)
+	}
+	for i := range m.Rules {
+		r := &m.Rules[i]
+		q := fmt.Sprintf("%s.rules[%d]", p, i)
+		v.modbusCIDRs(q+".clients", r.Clients)
+		v.pop3Commands(q+".commands", r.Commands)
+		v.pop3Commands(q+".deny_commands", r.DenyCommands)
+		switch strings.ToLower(r.Action) {
+		case "", "allow", "deny":
+		default:
+			v.errf("%s.action: %q is not allow or deny", q, r.Action)
+		}
+		if r.MaxMessages < 0 || r.MaxRetrBytes < 0 {
+			v.errf("%s: a negative bound", q)
+		}
+		v.modbusSchedule(q+".schedule", r.Schedule)
+	}
+}
+
+// pop3Commands refuses a name that is not a POP3 command.
+func (v *validator) pop3Commands(p string, list []string) {
+	for _, s := range list {
+		name := strings.ToUpper(strings.TrimSpace(s))
+		if name == "" {
+			continue
+		}
+		if !pop3wire.Known(name) {
+			v.errf("%s: %q is not a POP3 command; the commands are %s",
+				p, s, strings.Join(pop3wire.Names(), ", "))
+		}
+	}
+}
+
+// pop3Mechanisms checks the mechanism names: `user` for the USER and PASS
+// pair, `apop` for the digest, and a SASL name otherwise.
+func (v *validator) pop3Mechanisms(p string, list []string) {
+	for _, s := range list {
+		name := strings.ToLower(strings.TrimSpace(s))
+		if name == "" {
+			v.errf("%s: an empty mechanism name", p)
+			continue
+		}
+		switch name {
+		case "user", "apop", "plain", "login", "oauthbearer", "xoauth2", "cram-md5", "digest-md5", "gssapi", "external", "scram-sha-1", "scram-sha-256":
+		default:
+			v.warnf("%s: %q is not a mechanism this project knows; it will be matched as written, so "+
+				"check the spelling against what the server advertises", p, s)
+		}
+	}
+}
+
+// sseGuard checks the event policy of a route.
+//
+// The bounds are checked against each other as well as against their own
+// ranges, because the pairs that have to agree are the ones a reader of the
+// configuration would assume agree: an event bound under a line bound is a
+// bound that can never be reached, and a schema under an inspect bound is a
+// check that cannot run.
+func (v *validator) sseGuard(p string, r *Route) {
+	g := r.SSEGuard
+	if g == nil {
+		return
+	}
+	if g.MaxEventBytes == 0 {
+		g.MaxEventBytes = 1 << 20
+	}
+	if g.MaxEventBytes < 64 || g.MaxEventBytes > 64<<20 {
+		v.errf("%s.sse_guard.max_event_bytes: must be between 64 B and 64 MiB", p)
+	}
+	if g.MaxLineBytes == 0 {
+		g.MaxLineBytes = 64 << 10
+	}
+	if g.MaxLineBytes < 64 || g.MaxLineBytes > 1<<20 {
+		v.errf("%s.sse_guard.max_line_bytes: must be between 64 B and 1 MiB", p)
+	}
+	if g.MaxFields == 0 {
+		g.MaxFields = 256
+	}
+	if g.MaxFields < 1 || g.MaxFields > 4096 {
+		v.errf("%s.sse_guard.max_fields: must be between 1 and 4096", p)
+	}
+	if g.EventsPerSecond < 0 || g.EventsPerSecond > 1_000_000 {
+		v.errf("%s.sse_guard.events_per_second: must be between 0 and 1000000", p)
+	}
+	if g.MaxEvents < 0 {
+		v.errf("%s.sse_guard.max_events: must not be negative", p)
+	}
+	if g.MaxStreamBytes < 0 {
+		v.errf("%s.sse_guard.max_stream_bytes: must not be negative", p)
+	}
+	if d := g.MaxDuration.D(); d != 0 && (d < time.Second || d > 168*time.Hour) {
+		v.errf("%s.sse_guard.max_duration: must be 0 or between 1s and 168h", p)
+	}
+	if d := g.IdleTimeout.D(); d != 0 && (d < time.Second || d > 24*time.Hour) {
+		v.errf("%s.sse_guard.idle_timeout: must be 0 or between 1s and 24h", p)
+	}
+	if g.MaxIDBytes == 0 {
+		g.MaxIDBytes = 256
+	}
+	if g.MaxIDBytes < 1 || g.MaxIDBytes > 8192 {
+		v.errf("%s.sse_guard.max_id_bytes: must be between 1 and 8192", p)
+	}
+	if d := g.MinRetry.D(); d != 0 && (d < time.Millisecond || d > time.Hour) {
+		v.errf("%s.sse_guard.min_retry: must be 0 or between 1ms and 1h", p)
+	}
+	if g.MaxInspectBytes == 0 {
+		g.MaxInspectBytes = 64 << 10
+	}
+	if g.MaxInspectBytes < 64 || g.MaxInspectBytes > 16<<20 {
+		v.errf("%s.sse_guard.max_inspect_bytes: must be between 64 B and 16 MiB", p)
+	}
+	switch g.Inspect {
+	case "", "data":
+		g.Inspect = "data"
+	case "none", "all":
+	default:
+		v.errf("%s.sse_guard.inspect: must be none, data or all", p)
+	}
+	if g.Inspect == "none" && len(g.DenyPatterns) > 0 {
+		v.errf("%s.sse_guard: deny_patterns needs inspect: data or all; with none there is nothing to match against", p)
+	}
+	for i, pat := range g.DenyPatterns {
+		if _, err := regexp.Compile(pat); err != nil {
+			v.errf("%s.sse_guard.deny_patterns[%d]: %v", p, i, err)
+		}
+	}
+	if pat := g.LastEventIDPattern; pat != "" {
+		if _, err := regexp.Compile(pat); err != nil {
+			v.errf("%s.sse_guard.last_event_id_pattern: %v", p, err)
+		}
+		if !g.LastEventID() {
+			v.warnf("%s.sse_guard.last_event_id_pattern: allow_last_event_id is false, so no cursor reaches the application and the pattern decides nothing", p)
+		}
+	}
+	switch g.Compression {
+	case "", "strip":
+		g.Compression = "strip"
+	case "refuse", "inspect":
+	default:
+		v.errf("%s.sse_guard.compression: must be strip, refuse or inspect", p)
+	}
+	if g.MaxInflateRatio == 0 {
+		g.MaxInflateRatio = 100
+	}
+	if g.MaxInflateRatio < 2 || g.MaxInflateRatio > 10_000 {
+		v.errf("%s.sse_guard.max_inflate_ratio: must be between 2 and 10000", p)
+	}
+	if g.Compression != "inspect" && g.MaxInflateRatio != 100 {
+		v.warnf("%s.sse_guard.max_inflate_ratio: only read with compression: inspect; this route is %s", p, g.Compression)
+	}
+	switch g.Action {
+	case "", "close":
+		g.Action = "close"
+	case "log":
+	default:
+		// There is no third answer on this protocol: the response has begun,
+		// so an event cannot be refused on its own.
+		v.errf("%s.sse_guard.action: must be close or log", p)
+	}
+	switch g.UnknownEvents {
+	case "", "allow", "observe", "deny":
+	default:
+		v.errf("%s.sse_guard.unknown_events: must be allow, observe or deny", p)
+	}
+	if g.UnknownEvents == "deny" && len(g.AllowEvents) == 0 && len(g.Events) == 0 {
+		v.errf("%s.sse_guard.unknown_events: deny with no allow_events and no events refuses every event this route carries", p)
+	}
+	v.sseEvents(p, g)
+}
+
+// sseEvents checks the per-name policy.
+func (v *validator) sseEvents(p string, g *SSEGuard) {
+	seen := map[string]bool{}
+	for i := range g.Events {
+		e := &g.Events[i]
+		q := fmt.Sprintf("%s.sse_guard.events[%d]", p, i)
+		switch {
+		case e.Name == "":
+			v.errf("%s: name is required", q)
+		case strings.ContainsAny(e.Name, "\r\n:"):
+			// A name with a colon or a newline in it cannot be an `event:`
+			// field value, so a rule naming one would never match anything.
+			v.errf("%s: %q cannot be an event name: a CR, an LF or a colon cannot appear in one", q, e.Name)
+		case seen[e.Name]:
+			v.errf("%s: %q is named twice", q, e.Name)
+		}
+		seen[e.Name] = true
+		if e.MaxBytes < 0 || e.MaxBytes > g.MaxEventBytes {
+			v.errf("%s.max_bytes: must be between 0 and the route's max_event_bytes (%d)", q, g.MaxEventBytes)
+		}
+		if e.EventsPerSecond < 0 || e.EventsPerSecond > 1_000_000 {
+			v.errf("%s.events_per_second: must be between 0 and 1000000", q)
+		}
+		if e.SchemaFile != "" {
+			v.file(q+".schema_file", e.SchemaFile)
+			// A schema cannot run on an event the guard did not keep whole, so
+			// a bound above max_inspect_bytes is a check that stops applying
+			// at a size the sender chooses. Where that is certain rather than
+			// possible, say so.
+			bound := e.MaxBytes
+			if bound == 0 {
+				bound = g.MaxEventBytes
+			}
+			if bound > g.MaxInspectBytes {
+				v.warnf("%s: schema_file with a size bound of %d above max_inspect_bytes (%d): an event larger than the inspect bound is refused rather than validated", q, bound, g.MaxInspectBytes)
+			}
+		}
+		if g.UnknownEvents == "" && len(g.AllowEvents) == 0 {
+			continue
+		}
+		if len(g.AllowEvents) > 0 && !containsString(g.AllowEvents, e.Name) {
+			v.warnf("%s: %q has a policy but is not in allow_events, so unknown_events decides it", q, e.Name)
+		}
+	}
+	for i, n := range g.AllowEvents {
+		if strings.ContainsAny(n, "\r\n:") {
+			v.errf("%s.sse_guard.allow_events[%d]: %q cannot be an event name", p, i, n)
+		}
+	}
+	for i, n := range g.DenyEvents {
+		if strings.ContainsAny(n, "\r\n:") {
+			v.errf("%s.sse_guard.deny_events[%d]: %q cannot be an event name", p, i, n)
+		}
+		if containsString(g.AllowEvents, n) {
+			v.warnf("%s.sse_guard.deny_events[%d]: %q is in allow_events too; deny wins, which is the documented order but reads as a mistake", p, i, n)
+		}
+	}
+}
+
+// containsString reports whether a list names s.
+func containsString(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }

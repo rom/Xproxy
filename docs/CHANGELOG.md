@@ -6,6 +6,1408 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Tests (the policies that were only ever driven end to end)
+
+Coverage work across the components, written as the policies read rather than
+as numbers.
+
+**The five kinds added this release had no policy test at all.** radius,
+tacacs, kkdcp, imap and pop3 were driven only through sockets, which is the
+right way to prove a relay carries what it should and the wrong way to reach a
+compile-time refusal or the twentieth branch of a decision: a case costs a
+server, a client and a secret file, so the cases nobody wrote were the cheap
+ones. That is why those five sat at the bottom of the per-package table, and
+what they were missing was not obscure -- it was the validation that turns a
+mistyped code name into an error at load rather than at the first login it
+refuses. Each now has a `policy_test.go` that starts from the defaults, because
+the defaults are what an operator gets by naming an upstream and on these
+protocols they are the security; then a table of every name a configuration can
+misspell, asserting the error names the field and the rule's index; then the
+decisions, one case each, including the orders that matter. Alongside them the
+RADIUS pending table, which has two modes rather than two settings -- with a
+secret it allocates its own identifier so two switches using identifier 7
+cannot be confused, and without one a collision is refused rather than resolved
+-- and the KKDCP counting window, where the interesting behaviour is the
+bookkeeping: what falls out of the window, what a full table does to a new
+client, and the per-client ceiling.
+
+**The two OT policies, which are the largest in the project.** On mms: what a
+functional constraint means for the plant, the services that replace what is
+inside a protection relay rather than telling it what to do, `read_only` as a
+property of the service rather than its name, and select-before-operate -- the
+interlock the devices may not be trusted with, because `ctlModel` lives in
+`$CF$` and `$CF$` is writable. On opcua: the four layers, and at each the pairs
+that have to be decided together, of which the channel is the one that matters:
+a listener checking only the security policy would admit Basic256Sha256 with
+mode none, which is a strong cipher suite with nothing encrypted.
+
+Three readings turned out to be worth writing down, because the test written
+first asserted the opposite and the code was right: a rule's credential list is
+a selector as well as a policy (naming `chap` on a RADIUS rule exempts chap, it
+does not confine that address to chap); a TACACS+ rule whose command list does
+not cover a command does not decide it, so a command on the listener's allow
+list and outside the rule's falls through to the default action; and `OR` is
+"operate received", a status attribute, so a write to it does not reach the
+plant -- `CO` is the constraint that does.
+
+Both OT tests also turned up the same sharp edge, now asserted on both kinds:
+the object and node patterns are `path.Match`, where a `*` does not cross a
+`/`. So `objects: ["*"]` written to mean everything selects nothing, and
+`ns=4;s=Tank*` covers `Tank1` and not `Tank1/Level`. Worth knowing, because
+every list in both configurations is written in a form full of slashes.
+
+**And the smaller things that had no test.** The mms naming and classification
+tables, where every string is a counter name, a word in a security event or a
+spelling a configuration uses. The three DNS sections that answer rather than
+forward -- local records, per-client views, and the screen over what an upstream
+may point at -- where every refusal is a refusal at load and the alternative is
+a name quietly not resolving in production. The validation of the SSE event
+policy and of the two mailbox listeners, neither of which had one. The ATT&CK
+view over the refusal counters: a refusal is counted under its own reason and
+under every technique that reason maps to, and the identifiers come back
+sorted, because a list that reordered itself between reads would read as
+movement. The DNS prefetch claim, which is what keeps one popular name from
+being refreshed by every goroutine that notices it is about to expire -- the
+entries worth prefetching are by definition the ones being asked for
+constantly, so without it the moment an entry nears expiry is the moment every
+in-flight query for it goes upstream at once. The FTP passive port range, where
+every wrong reading is a listener that starts and then fails in the field. The
+VNC pixel-bound reasons, where the empty one is load-bearing: a stream that
+ended is not a refusal. And the forward proxy's `networks` and `not_networks`,
+which are how a rule is written about a floor or a build farm rather than about
+a user name.
+
+One existing test fixed in each direction. The IMAP auth-injection test waited
+three seconds for a counter, which is long enough on an idle machine and not
+under load; it now reads to the end of the connection, which is a signal rather
+than a timer. The RADIUS end-to-end test read `radius_requests` immediately
+after the answer reached the client, and the full run under `-race` caught it:
+the counter is incremented after the datagram has gone to the server -- the
+right place for a counter meaning "requests this listener forwarded" -- and the
+reply arrives on another goroutine, so under load the answer is back before the
+counter moves.
+
+**Three more packages that were carried by their end-to-end tests.** On smtp,
+the two decisions taken before anything is dialled: the client allow list, which
+answers for an address the parser could not even read -- an empty list admits
+everything, including an invalid address, so the asymmetry is asserted rather
+than assumed -- and the declared size, read the way RFC 1870 writes it, which is
+`SIZE=` anywhere in the `MAIL FROM` line in any case, where a line carrying no
+declaration must come back as "no size" rather than as a size of zero, because
+zero is a declaration a client can make. Then the AUTH exchange, which the fake
+MTA could not previously carry at all: it now answers challenge by challenge, so
+a multi-round SASL mechanism is relayed a challenge at a time, one that never
+ends is ended by the relay rather than by the client, a credential is refused
+before it travels when the policy says so, and `XCLIENT` tells the upstream
+which client the session is for. All of them upgrade with STARTTLS first,
+because `require_tls` is forced on wherever a TLS section exists -- which is the
+behaviour, and now has a test that depends on it. On syslog, the message filter:
+the facility lists with deny winning, the severity floor read from both ends,
+the text patterns, and which of those wins when two disagree. And the Kerberos
+DER reader, where the refusals are the product: a `KerberosString` is read under
+every string tag the installed base actually sends and under nothing else, an
+explicit tag or a SEQUENCE has to be constructed, an INTEGER has one spelling
+because a non-minimal encoding is a second message with the same value, and the
+options bit string has to be a whole number of octets with its unused-bit count
+zero.
+
+**Four protocols had no row in `docs/TESTS.md`.** coap, dhcp6, mms and opcua
+were tested as well as their siblings and documented nowhere, so the table now
+names every test in all eight packages along with what the protocol's own traps
+are: the CoAP option number that carries its handling rules in its own low bits
+and the Block2 transfer that declares a size before it sends it; the DHCPv6
+lifetime of zero that is a withdrawal rather than a short lease and the prefix
+delegation that has to be inside the estate's prefix and not around it; the MMS
+functional constraint that decides whether a write reaches a breaker, a
+protection setting or a report control; and the four layers an OPC UA session
+is decided at, in the order that makes `read_only` mean what it says.
+
+**The per-package table in `docs/TESTS.md` is regenerated from the passing
+gate.** The core packages together are at 86.0 % of 108466 statements, up from
+85.3 %, and the five kinds this release added are no longer the bottom of the
+table: radius 66 % to 80 %, kkdcp 69 % to 82 %, pop3 67 % to 75 %, imap 74 % to
+78 %, tacacs 74 % to 84 %. Alongside them smtp 67 % to 74 %, the MMS wire reader
+67 % to 74 %, the two OT kinds to 84 % each, and kerberos 79 % to 81 %. The
+lowest core package at that point was `internal/daemon` at 70 %, the
+signal-handling and rollback path of a whole daemon, which the work below then
+took to 78 %. One figure went the other way: the
+`cmd/xproxyctl` row claimed 82 % from its own tests and a measurement now gives
+68 %, so the row was stale -- the package sits outside the gate, which is exactly
+how a figure in a document drifts from the code without anything failing. What the
+remainder is has not changed: the formatting of views whose subsystems need a
+live peer, authority, resolver or scanner behind them.
+
+### Fixed (an NTS-KE refusal counter read before it was written)
+
+The coverage run failed `TestTerminatingRefusesTermsItCannotMeet` with
+`refusals: map[no_terms:1]` after two clients had each been refused. The two
+counters on that path are written on either side of the answer: `NTSKENoTerms`
+before the error record goes out, and the reason string after the connection is
+done with -- so a client that has read its refusal has seen the first and not
+necessarily the second. Read once, the assertion was racing the thing it
+measured, and it printed a map that was about to hold the count it had just
+called missing.
+
+Four assertions in `terminate_test.go` already polled for exactly this reason,
+with a comment saying so. That loop is now a `refused` helper, and the seven
+places that still read a refusal count once -- the no-terms test and six in
+`ntske_test.go`: the application protocol, the server name on both sides, the
+plaintext scan, the client list, the handshake bound and the connection bound --
+go through it. Where the old assertion said a count was exactly one it still
+does, after the wait rather than instead of it.
+
+The relay is unchanged: writing the answer before counting the refusal is the
+right order, because the client should not wait on this process's bookkeeping.
+Verified by making the terms always negotiable, which leaves the counter at zero
+and fails the wait rather than passing it.
+
+### Fixed (eight assertions that could only ever pass)
+
+A sweep of all 878 test files for assertions that cannot fail turned up one
+shape in three packages: a test sends something a listener should refuse,
+sleeps for a fixed interval, and then asserts that nothing arrived. The sleep is
+not synchronisation. It ends where it ends, and on a loaded machine it can end
+before the listener has read the datagram at all -- at which point the
+collector, the device or the counter is empty for the trivial reason that
+nothing has happened yet, and the assertion holds whether the listener refuses
+the message or forwards it a moment later. Every one of them would have passed
+against a relay with the refusal taken out.
+
+What makes the absence mean something is already in the process: the refusal
+counter the listener writes on the path that returns without forwarding. So the
+wait is on that counter, and the absence is asserted after it has moved, when
+the decision is made and the upstream's emptiness is the answer rather than a
+snapshot of work in progress. That deletes the timer in the process -- these
+tests are now faster as well as sound.
+
+- **bacnet, nine refusal tests through one helper.** `device.nothingReached`
+  slept 150 ms before looking at what reached the fake controller; it now sums
+  the listener's `bacnet` refusal reasons and waits for the total to move. Two
+  more in the same file -- the shadow-mode test, which asserts a bound still
+  holds when the policy is shadowed, and the routed-network test -- wait on the
+  one reason that applies, through a new `waitRefusal`.
+- **syslog, four.** The facility and severity filters, the sender policy on both
+  the stream and the datagram listener, and the per-sender rate limit all slept
+  and then read a counter. They now wait for the counter first: the same two
+  lines in the other order, which is strictly stronger, and in two of them the
+  counter check the sleep was standing in for is now the wait itself.
+- **coap, the client-certificate requirement.** It recorded what the device had
+  received, drove a handshake with no certificate, and compared -- with nothing
+  between the two reads. It now waits for `coap_handshake_failed` to move.
+
+Each was verified by mutation rather than by passing: the refusal was removed
+from the relay -- forwarded after being counted, which is exactly the leak the
+assertion exists to catch -- and every test failed, naming the message that got
+through. For syslog's sender policy that took removing both layers, because the
+listener checks the sender at the connection and again at each message; a
+defence in depth worth recording.
+
+The bacnet routed-network test also turned out to be refusing the wrong thing.
+It rewrote two octets to aim the second request at a network the configuration
+does not name, and the second of those two is the destination address *length* --
+so every field behind it moved and the relay was refusing a message it could not
+parse. It still refused, for a reason that happened to match, which is why
+nobody noticed. One octet now, and the mutation check that found this is what
+proves the test reads the policy rather than the parser.
+
+### Fixed (an RDP dynamic-channel assertion counted bytes it was racing)
+
+- **`TestDataFromTheClientOnARefusedDynamicChannelIsDropped` snapshotted a byte
+  count on the wrong side of a write.** It waited for the refusal to be *counted*
+  and then recorded how much the desktop had received -- but the refusal the
+  relay sends to the desktop is counted before it is written, so the snapshot
+  raced it. When those fourteen octets landed afterwards the count had grown, and
+  the failure read "the desktop received 14 more bytes on drdynvc": a test
+  reporting that the client's data had been forwarded when what arrived was the
+  relay's own refusal.
+
+  The client's payload is now a distinctive string and the assertion is that the
+  desktop never saw it, which is the property the test is named for and does not
+  depend on when anything else arrives. The failure output shows the smuggled
+  bytes rather than a number. Verified twenty runs under the race detector, and
+  with the drop removed from the relay the test fails and prints the payload.
+
+### Fixed (the IMAP injection test was betting on a goroutine order)
+
+- **`TestALineTheServerDidNotAskForIsNotCredentialMaterial` raced the response
+  reader.** A SASL exchange is open from the client's AUTHENTICATE until the
+  server's tagged answer, and the injected line has to arrive inside it; the fake
+  server answered immediately, so the window was however long it took the
+  goroutine reading the server to call `endAuth`. The assertion was really a bet
+  on the client's second line being read first. It usually was, and on a loaded
+  machine it was not -- and losing the bet reads as `the line was carried as a
+  credential`, which is a test saying credential smuggling was not refused when
+  what happened is that the test could not hold the window open.
+
+  The fake server now takes a `silent` set and does not answer the AUTHENTICATE
+  at all, which holds the window open for as long as the test needs: a server
+  that has not answered yet is exactly the state the check exists for. Verified
+  twenty runs under the race detector, and verified the other way too -- with the
+  turn check removed from the relay the test fails, so it was made deterministic
+  rather than weakened.
+
+### Fixed (a load-sensitive assertion in the terminal interface test)
+
+- **`internal/tui` `TestRunOverAPseudoTerminal` read a frame too early.** It
+  failed in a coverage run, which is the same suite under instrumentation and so
+  slower: `press` returns on the first frame that arrives after a key, and a
+  frame still in flight from the action before it satisfies that, so three
+  assertions were reading a snapshot one frame behind the key they were about.
+  They now wait for the frame that shows what they assert, which is what the
+  second half of the same test already did. No product change: the keys were
+  acted on, the test looked too soon.
+
+### Fixed (IMAP: the same upstream upgrade, and two xproxyctl commands)
+
+- **An imap listener with `upstream_tls_mode: starttls` could not carry a
+  session either.** The same defect as pop3 below, in `startTLSUpstream`: the
+  server's greeting was read to reach the STARTTLS exchange and discarded, and
+  the relay then waited for a greeting RFC 3501 never sends -- after STARTTLS
+  the server carries on in the state it was in and the client re-issues
+  CAPABILITY instead of expecting a second greeting. On IMAP that line costs
+  more than the session: it is where this kind refuses a PREAUTH greeting and
+  narrows the capability list, so both decisions went with it. The greeting now
+  comes back from the upgrade, and the tests assert the narrowing and the
+  PREAUTH refusal *on an upgraded leg* rather than only on a plain one.
+
+- **Anything the server pipelines behind its STARTTLS answer is refused**, as
+  on pop3: it travelled in clear and would have been read as part of the
+  encrypted session.
+
+- **`xproxyctl access approve ID -by NAME` was refused with "one grant id".**
+  The usage line, and the hint `access ask` prints, both put the id first --
+  and Go's flag package stops parsing at the first argument that is not a flag,
+  so the flags after it were never read and the command saw three arguments
+  where it wanted one. An operator following the tool's own instructions got a
+  refusal. Both orders work now.
+
+- **`xproxyctl access -state nonsense` answered with an empty list.** A typo in
+  the filter read as "no grant matched", which reads as "nobody has access" --
+  the opposite of what an unfiltered list would have shown. It is refused now,
+  naming the states, which is the rule this project already applies to the
+  asset filters for the same reason.
+
+- **`xproxyctl ech show` could not read a record pasted out of a zone file.**
+  `ech="<base64>"` is the form an operator checking a rotation actually has to
+  hand, and the quotes were trimmed before the `ech=` prefix was stripped, which
+  leaves the opening quote in place and fails to decode.
+
+### Fixed (POP3: the upstream upgrade never worked)
+
+- **A pop3 listener with `upstream_tls_mode: starttls` could not carry a
+  session.** The relay upgrades the server's leg on its own behalf, which means
+  reading the server's greeting to get to the STLS exchange -- and it threw that
+  line away. It then waited for a greeting the server will never send, because
+  RFC 2595 leaves the connection in AUTHORIZATION and does not have it greet
+  again: every session hung until the idle timeout and was counted as
+  `upstream_failed`. On POP3 the same line is also the APOP challenge, so the
+  listener would have lost that mechanism even if the session had survived. The
+  greeting now comes back from the upgrade and is the one the client gets.
+
+  This was the one path in the kind with no test at all -- `stlsUpstream` was at
+  0 % -- which is what the coverage work above was for, and it is the argument
+  for measuring a package rather than reading it: the code looks right.
+
+- **Anything the server pipelines behind its `+OK` to STLS is now refused.**
+  It travelled in clear and would have been read as part of the encrypted
+  session: the client leg's injection check, pointed the other way. Nothing
+  legitimate is lost, because the server has nothing to say until the relay
+  speaks.
+
+**`internal/daemon` and `internal/kinds/pop3`, the two lowest packages left
+in the table.** On the daemon, the branches that only run when something about
+the deployment is unusual: advice said at every start rather than only by
+`-validate`, the three failures after the listeners are bound that have to take
+the process down with them (an address taken, a metrics address taken, a
+listener kind this binary did not link), a history directory that cannot be
+written and every action that then has to answer honestly rather than look like
+an empty history, the dry run that reads the file without moving the
+generation, and the diff that names which of `from` and `to` it could not
+resolve. 69.8 % to 78.3 % of the package's own statements. On pop3, the
+transport: the client's STLS answered here with this listener's certificate, a
+command pipelined behind it refused (CVE-2011-0411 in POP3's spelling), a
+handshake that fails ending the connection because the `+OK` has already gone,
+and the policy asked about the address before a mailbox server is dialled and
+about the name a USER claims before it reaches a server that would check it.
+73.6 % to 84.2 %.
+
+**The RDP legacy encryption seam, driven one unit at a time.** The end-to-end
+test puts a client, this gateway and a desktop that speaks the protocol's own
+encryption together, and proves the three fit. What it cannot do is reach one
+direction at a time: `open` is only ever called on what a desktop sends, and a
+fake desktop that sends the awkward cases is a fake desktop nobody would write
+-- so `open` sat at 0 % while the session it belongs to was covered. The pair is
+now driven directly, with keys derived the way the session derives them, and the
+asymmetries are what the cases are about: a security header goes back only on
+the packet kinds that have one, the encrypt bit never survives the decryption, a
+packet the desktop did not encrypt is passed through while one that does not
+decrypt ends the session, and fast path input before the key exchange is refused
+because it carries keystrokes. `TestWhichUnitsHaveToWaitForTheKeys` is the one
+with a wrong answer in each direction -- too eager stalls every connection at
+the gateway, too lax sends session traffic before there is a key for it.
+73.8 % to 77.0 % of the package's own statements.
+
+**The MMS answer side, which was the half nothing read.** The request readers
+had the tests, because requests are what a relay decides about -- so the
+answers, where the reports come from, were at 0 % function by function:
+`readInvokeOnly`, `readError`, `readNames`, `readDefineList` and
+`associationInformation` were never called. A response is now asserted to be
+read for its invoke identifier and nothing else (the body is values and this
+package keeps none), a device's own refusal as a class and a code, because
+"the relay refused" and "the IED refused" are two findings about two pieces of
+equipment. The association reads the same thing twice over, and both ways are
+now covered: the initiate PDU rides inside an EXTERNAL whose single-ASN1-type
+and octet-aligned arms carry it identically, and a title or qualifier arrives
+explicitly tagged by the standard and implicitly tagged by some equipment.
+Then the fail-closed rule, one case per field: a title, a qualifier or a result
+that does not parse is an error and not an absent field, because an association
+reported with no title is one a title rule cannot refuse. 69.7 % to 82.7 % of
+the package's own statements.
+
+**The three `xproxyctl` command groups that had no test at all.** `ech`, `mfa`
+and `access` were between them a fifth of the package and none of them was
+reached by a test, which is how the four defects above survived. Each is now
+driven as the thing it is rather than as a list of flags: ECH as a rotation
+(what keygen wrote, show reads back and record publishes, with the key 0600 and
+a second keygen on one id refused), MFA as a round trip (the line enrol prints
+has to be one verify accepts a code for, with the code computed in the test the
+way the user's telephone computes it), and access as four eyes from the
+operator's side (the asker may not approve their own ask, and `-by` defaults to
+SUDO_USER before the account, because root is not a name four eyes can tell
+apart). 67.5 % to 77.9 % of the package's own statements.
+
+**`cmd/xproxyctl` is in the gate.** It was outside it because every `main`
+package is, and that rule is right for a flag parse over a package gated on its
+own -- but xproxyctl is the operator interface, nearly three thousand
+statements of views and their formatting, and what stood in for a gate was a
+figure in `docs/TESTS.md` that nothing checked. It read 82 % and measured 67 %.
+`test/covergate` now has a `gated` list that overrides the `cmd/` rule, the
+Makefile instruments the package alongside `internal/...`, and the number is in
+the table with the others where it cannot drift.
+
+The table is regenerated from the gate that passes on all of this: 86.0 % of
+111255 statements, nothing below the 60 % floor. Putting xproxyctl in cost 0.4
+points when its 2764 statements entered the denominator at 68 %, and testing the
+three command groups has given them back: it reads 78 % now, and the lowest gated
+package is `internal/proxytest` at 71 % -- fifty-one statements of test harness.
+The lowest one that is not a harness is `internal/kinds/rdp` at 74 %.
+
+### Added (the event stream: a policy for text/event-stream)
+
+- **`sse_guard` on a route is a policy for Server-Sent Events**, which is the
+  other long-lived HTTP response an estate runs and the only one nothing else
+  in a configuration bounds. One GET, a response with no length, flushed per
+  event, held open for hours. Without a guard it is an opaque outbound channel
+  on a port that is already open.
+
+  It reads like the WebSocket guard beside it and it answers a different
+  question, because two facts about SSE decide what a policy here can be.
+
+  **It is one-directional, and the direction is outward.** The client sends a
+  GET and then says nothing; everything after that is the application talking.
+  So every event is the estate's own output leaving it, which puts this in the
+  same position as the `dhcp` kind -- a policy about answers -- and makes
+  `deny_patterns` here a control that reads what is *leaving*. That matters
+  because an event stream is the shape of a channel for moving data out
+  quietly: arbitrary text, chunked, flushed per event, under a Content-Type a
+  dashboard uses, and nothing about it malformed. `max_events`,
+  `max_stream_bytes` and `max_duration` are what make a stream finite, and a
+  stream has none of them by default because HTTP gives a response with no
+  length no bound at all.
+
+  **A single event cannot be refused.** By the time one is read the status line
+  has gone and the response is committed; there is no way to say "not that one"
+  inside a sequence a client is reading in order. So `action` has two values
+  rather than three -- the stream ends, or the event is carried and reported --
+  and a refusal is a decision to end the stream *at* that event. The client
+  sees a closed body, which is what it sees when an application finishes, and
+  reconnects: the right outcome for a dashboard and a dead end for a channel.
+
+  The rest of the settings: bounds on an event, a line and a field count; the
+  event names a route carries, with a per-name size, rate and JSON Schema,
+  because one `max_event_bytes` for the stream is the bound that lets every
+  event be that large and this is where the keepalive and the hourly report get
+  different answers; a floor on the `retry:` field, which **rewrites** rather
+  than refuses, because `retry: 0` from a misconfigured application is a fleet
+  of browsers reconnecting as fast as they can and the stream itself is fine;
+  and the compression decision the WebSocket guard already has, for the same
+  reason -- a compressed stream cannot be read without being inflated.
+
+- **`Last-Event-ID` is treated as a cursor rather than a header.** It is the
+  one piece of client-controlled input on this protocol, and an application
+  that replays from it is being told where to start -- so an identifier a
+  client was never issued is a request for history it was not shown.
+  `last_event_id_pattern` says what an estate's identifiers look like,
+  `max_id_bytes` bounds both ends of the round trip (the server's `id:` field
+  and the client's header are the same value coming back), and
+  `allow_last_event_id: false` stops it crossing at all. A cursor that does not
+  pass is **removed** rather than refused: the client gets the stream from the
+  beginning, which is what a client with no cursor gets.
+
+- **`internal/sse` reads the format, and the tests are about the traps its
+  smallness hides.** All three of the standard's line terminators -- CRLF, LF
+  *and a bare CR* -- because a reader that waited for an LF after a CR would
+  hold a whole event and deliver nothing, which on this protocol looks exactly
+  like a server that has stopped sending. A field with no colon is a field with
+  an empty value rather than a malformed line. Exactly one space after the
+  colon is stripped. `data` accumulates across lines. The BOM goes once, at the
+  start only. An `id` with a NUL is dropped, field and all, which is the one
+  value the standard says to ignore rather than carry. Nineteen table tests and
+  three fuzz targets.
+
+  The guard reads each event and **writes it out again** rather than splicing,
+  which is what makes the rest trustworthy: the framing is resolved once here
+  instead of twice at the two ends, so a client cannot read an event boundary
+  differently from the way the policy did. A stream whose framing cannot be
+  read is not forwarded at all, and that is the one refusal that stands in
+  `monitor_only` too -- forwarding it raw would mean forwarding octets nobody
+  decided about.
+
+- **Seven counters, twenty-three mappings and two new techniques.**
+  `sse_streams`, `sse_events`, `sse_event_bytes`, `sse_comments`,
+  `sse_violations`, `sse_unknown_events` and `sse_cursors_stripped`. Refusals
+  are counted under the `http` kind with an `sse_` prefix, because an event
+  stream is a response on an http listener rather than a listener of its own,
+  and every one of them is bannable as `sse_denied`. The ATT&CK catalogue gains
+  **T1041 (Exfiltration Over C2 Channel)** and **T1071.001 (Application Layer
+  Protocol: Web Protocols)**, which are the right names for this and were not
+  there; the bound refusals carry T1041, T1048 and T1567, the framing and
+  state refusals carry T1071.001, the cursor refusals carry T1213 and T1190,
+  and the compression ones carry T1562.
+
+- **Documentation and examples.** A section in [CONFIG.md](CONFIG.md) with the
+  per-name table, a "Server-Sent Events" section in [USAGE.md](USAGE.md),
+  [`examples/routes/events.yaml`](../examples/routes/events.yaml) (a dashboard
+  feed with its event names written down, a log tail with no list but a hard
+  bound on how much one person may take, and a third route under
+  `monitor_only`, which is how an estate finds out what its own streams send
+  before a bound is set), the protocol in [README.md](../README.md)'s table and
+  inspection list, and four rows in
+  [THREAT_MODEL.md](THREAT_MODEL.md).
+
+- **Fixed in passing**: `.gitignore`'s fuzz-corpus rule was
+  `testdata/fuzz/**/[!R]*`. A pattern containing a slash is anchored to the
+  file's own directory, so it only ever matched a corpus at the repository root
+  and never one under `internal/<pkg>/testdata/fuzz` -- where every package's
+  corpus actually lives. A generated seed would have been committed by
+  `git add -A`.
+
+### Fixed (a security review of the five protocols added in this release)
+
+A review of the SSE guard and the five relay kinds added above (`kkdcp`,
+`radius`, `tacacs`, `imap`, `pop3`) found twenty issues worth fixing. They have
+one shape between them: a control that read a field the attacker writes, or read
+one field where the far end reads another. Each is now decided on what can be
+shown rather than on what was claimed.
+
+**The event stream.**
+
+- The **cursor policy ran only when the client asked for a stream.** What makes
+  a response a stream is its Content-Type, so an application answering a path
+  with `text/event-stream` answers it that way for a client that sent no
+  `Accept` header -- and `allow_last_event_id`, `max_id_bytes` and
+  `last_event_id_pattern` were all skipped for it. The cursor is now decided for
+  every request on a route that has a guard; the `Accept-Encoding` rewrite stays
+  behind the Accept test, because stripping it from a page request is the thing
+  that test exists to prevent.
+- A request carrying **two `Last-Event-ID` headers** had the first checked and
+  both forwarded. Which one an application reads is its framework's business, so
+  a policy that validated one of them validated the wrong one: both are now
+  removed (`sse_last_event_id_repeated`).
+- **`last_event_id_pattern` was anchored at its ends rather than around the
+  whole pattern.** `|` has the lowest precedence in RE2, so
+  `[0-9]{1,19}|[0-9A-HJKMNP-TV-Z]{26}` -- the estate whose identifiers are a
+  counter or a ULID -- compiled to "starts with a digit, or ends with a ULID",
+  which admits `1' UNION SELECT secret FROM audit--`.
+
+**Kerberos over HTTP.**
+
+- **`refuse_weak_etypes` was one integer away from being switched off.** It asked
+  whether every type a request offered was on a list of weak ones, so a number
+  the registry has never assigned counted as a strong offer: `etype = { 23, 9999 }`
+  read as a mixed list, the KDC discarded 9999 and minted the RC4 ticket. It now
+  asks whether the request offers a type this estate is content with. `des-cbc-raw`
+  and `des3-cbc-raw` joined the weak list while there.
+- **`refuse_preauth_exempt` rested on padata the client writes.** This relay holds
+  no key, so three random octets under type 2 read exactly like an encrypted
+  timestamp; one padata item a KDC passes over was enough to make an AS-REP
+  roaster's request look pre-authenticated. The test now pairs the claim with the
+  KDC's answer: a type the KDC must decrypt to act on counts, and a PKINIT claim
+  counts when the reply carries `PA-PK-AS-REP`.
+- **The minted KRB-ERROR named the control that fired**, which made every refusal
+  an oracle -- `preauth_not_required` confirms the account exists and is
+  roastable, a cleaner answer than the AS-REP it was refused. The text now names
+  the proxy and nothing else; the reason stays in the security log and the
+  counters.
+- **S4U2Self was recognised under one of its two names.** MS-SFU defines
+  `PA-S4U-X509-USER` beside `PA-FOR-USER` and a KDC honours either, so
+  `allow_s4u2self: false` had a second door, and the impersonated name was not
+  read -- which meant principal rules were applied to the service asking rather
+  than the user asked for.
+- **The DER reader resolved a field named twice instead of refusing it.** A
+  req-body with two `realm` fields was decided about as one realm and acted on by
+  a KDC as the other, with the audit record wrong in the same direction as the
+  decision. A repeated context tag is now refused; no Kerberos structure uses one
+  twice. `only()` now requires a constructed tag and `derString` checks the
+  universal tag rather than only the class.
+
+**RADIUS and TACACS+.**
+
+- **`max_privilege_level` read the grant through a text-safe accessor**, so a
+  Cisco av-pair with a NUL in it -- the pair separator several platforms use --
+  read as "this reply grants no privilege" and the bound never applied. Every
+  av-pair is now read from its raw octets, every pair inside one, every
+  `Service-Type`, and the highest grant found is the one bounded.
+- **A TACACS+ deny matched only the exact words it named**, so
+  `deny_commands: ["show running-config"]` matched the spelling an operator would
+  type and missed `show running-config | include password`. A deny now covers the
+  command and whatever is appended to it; an allow stays exact, because allowing
+  more than was asked is the unsafe direction.
+- **A TACACS+ rule's command lists replaced the listener's rather than adding to
+  them**, so any rule carrying a `deny_commands` of its own disarmed every
+  estate-wide deny for the traffic it covered. The deny lists are now a union and
+  the allow lists an intersection: a rule narrows and never widens.
+- **The user lists did not see a name typed at the server's prompt.** RFC 8907
+  §5.4.2 lets an ASCII login leave the START's user field empty and supply the
+  name in a CONTINUE, which is the ordinary shape of `telnet` to a router -- and
+  `users`, `deny_users` and the estate's authorization rules never saw it. The
+  name is now read from the CONTINUE that answers a GETUSER, which is the one
+  reading this relay takes of that field.
+
+**The mailbox protocols.**
+
+- **A SASL exchange was a hole in every other control.** Between `AUTHENTICATE`
+  and its tagged answer the client's lines are credential material and are
+  forwarded unparsed -- so `a1 AUTHENTICATE XNOTAMECH` followed by
+  `a2 LOGIN victim Hunter2` had the second line forwarded past the command lists,
+  the mailbox lists, the user list and the log, while the server, having answered
+  the mechanism it does not implement, read it as a command. The exchange is now
+  lock-step: a client line is credential material only in answer to a
+  continuation request this relay saw the server send (`auth_injection`).
+- **An argument sent as a literal was invisible to the policy.** A literal is the
+  last token on the line, so `SELECT {21+}` parses as SELECT naming no mailbox:
+  `mailboxes`, `deny_mailboxes`, the rule selectors, `users` and the estate's
+  authorization question each decided about nothing while the server received the
+  name intact. Such a command is now refused (`literal_argument`).
+- **A refused command's synchronising literal was read anyway.** `Literal.NonSync`
+  was parsed and never consulted, so a refused `{64}` -- which the client is
+  waiting to be asked for and must not send -- made this relay block, and then
+  swallow the next 64 octets it was sent for any other reason. Only a `{n+}` is
+  dropped now, the refusal is written first, and the rest of that line goes with
+  the octets.
+- **An anomaly refusal dropped the command but not its literal**, so a message
+  body became the command stream. It now drops what the client committed, the
+  same as a policy refusal.
+- **A chained literal was checked against the listener's bound rather than the
+  rule's**, so a rule tightening `max_append_bytes` for one account applied to the
+  mailbox name and not to the message. The rule that decided the command now
+  decides its continuations, and the bound is on the chain's total.
+- **`deny_mailboxes` was case-sensitive below INBOX.** RFC 9051 §5.1 makes `INBOX`
+  case-insensitive and a server with mail under it folds that component too, so
+  `inbox/Finance` and `INBOX/Finance` were two patterns here and one mailbox
+  there. The fold now covers the first component; everything below it stays
+  case-sensitive.
+- **A bare POP3 `AUTH` authenticated the session in this relay's view.** It names
+  no mechanism, so neither `require_tls` nor `mechanisms` had anything to decide,
+  and the server's `+OK` moved the state to transaction with nobody logged in --
+  after which `RETR`, `LIST` and `DELE` all passed the state table. It is refused
+  (`auth_no_mechanism`); CAPA is where a client reads the mechanism list.
+
+**And one shared with every kind that has rules.**
+
+- **An `observe` rule decided by allowing what it covered**, which the reference
+  has never said: it promises a rule that records and keeps looking. Placed above
+  a deny rule it switched that rule off, so trying a rule on live traffic was the
+  most dangerous edit in a configuration -- and on a listener whose
+  `default_action` is `deny`, a trial rule turned the default off too.
+
+  Fixed in every kind that had it: `radius`, `tacacs` and `kkdcp` first, then
+  `amqp`, `mysql`, `postgres`, `redis`, `s7` and `tds`. An observe rule is now
+  recorded on the decision (`observed` in the log line) and decides nothing, and
+  one piece of code per kind chooses both the rule that decides and the rules
+  that are only recorded, so the two cannot drift apart. `bacnet`, `mms`,
+  `modbus`, `iec104`, `snmp` and `opcua` already read it the documented way --
+  `opcua`'s `match` skips an observe rule with the comment this sweep went on to
+  copy -- and the reference rows for all of them now describe the behaviour in
+  the same words, including what happens under a deny default, which none of
+  them said before.
+
+  Two tests had asserted the old reading, one in `mysql` and one in `postgres`,
+  both named "an observing rule decides nothing" while checking that it
+  *allowed* the traffic. They now check what the name says: the trial decides
+  nothing, the default or the deny rule below it decides, and the rule's name is
+  in `Observed` either way.
+
+### Added (the other half of mail: the two mailbox protocols)
+
+- **`kind: imap` is a relay in front of the most complete record an estate
+  has.** A mailbox holds every decision, every negotiation, every password
+  reset and every attachment somebody sent "just so you have a copy", and IMAP
+  is the protocol for reading all of it with one credential, from anywhere, as
+  many times as you like. That makes it a different problem from the submission
+  relay next door: a proxy in front of SMTP sees one message on its way out and
+  can decide about it, and a proxy in front of IMAP sees a client that has
+  already authenticated asking for everything that ever arrived. The request
+  worth stopping is not malformed, oversized or strange — it is
+  `UID FETCH 1:* (BODY[])`, which is what a mail client's first synchronisation
+  and an emptied account look like character for character.
+
+  So the bound is on **how much a request names**. `max_fetch_messages` counts
+  the messages in a sequence set on the command line — not what comes back —
+  and refuses before the mail server has read anything; a set is counted
+  without being expanded, so refusing `1:20000` costs nothing. An open-ended
+  set (`1:*`, `*`) is refused outright rather than counted, because the size of
+  that request belongs to the mailbox and not to the client, and
+  `allow_open_sets` plus a `rules` entry for the one account that legitimately
+  synchronises everything are the two ways to write the exception down.
+  `max_append_bytes` is checked against a literal's **declared** size, because
+  RFC 7888's LITERAL+ sends the octets without waiting for anybody to agree —
+  and a refused command's octets are then read and dropped rather than left to
+  desynchronise the connection, since the client announced them and is going to
+  send them whatever it is told. [AMR-054](AMR.md) is the reasoning.
+
+  The rest of the policy is the shape its siblings use, with two details the
+  protocol forces. The command set is checked against **RFC 9051 §3's state
+  table**, which is the relay's own, so a `FETCH` that arrives before a
+  `SELECT` is answered here and the mailbox never sees it; and a mailbox name
+  is compared **decoded**, because RFC 3501 §5.1.3 spells a non-ASCII name in a
+  modified UTF-7 — `~peter/mail/&U,BTFw-` and `~peter/mail/台北` are one mailbox
+  — and a policy that compared the spelling would compare nothing. `*` matches
+  across the hierarchy and `%` within one level, exactly as IMAP's own `LIST`
+  does, so `Shared/%` admits `Shared/HR` and not `Shared/HR/Payroll`. `UID
+  FETCH` is the command it qualifies, so it is not a way to spell something the
+  policy refuses.
+
+  Three refusals are about what the *server* said. The **capability list is
+  narrowed**: a mechanism `mechanisms` will refuse is removed and
+  `LOGINDISABLED` added where `LOGIN` would be refused, which RFC 3501 §6.2.3
+  makes the way a server says so — a client that reads it asks for something it
+  can use instead of sending a password into a refusal. `COMPRESS=DEFLATE` (RFC
+  4978) is removed and refused, because a deflated connection cannot be
+  inspected and advertising it would be an offer to stop. And a **`PREAUTH`
+  greeting** is refused: it says the connection is authenticated before anybody
+  claimed an identity, which would make every later decision here about a name
+  this relay never saw.
+
+- **`kind: pop3` is the same five questions, in the shape a protocol with one
+  mailbox allows.** POP3 is what IMAP replaced and it is still configured on
+  the things nobody revisits — the script that pulls invoices off a mailbox,
+  the multifunction printer that mails scans, the integration written before
+  anybody asked which protocol it used — and it is the protocol whose whole
+  purpose is to move a mailbox somewhere else.
+
+  There is no sequence set here, so the bound is a **running total**, counted as
+  the octets pass and enforced *mid-transfer*: `max_retr_bytes` and
+  `max_messages` against what this connection has already taken. A bound
+  applied only before a command is one a client walks past one message at a
+  time, and a single `RETR` of a very large message is a mailbox copy by
+  itself. Reaching the message bound is a refusal the connection survives;
+  crossing the byte bound inside a message ends the connection, because a
+  truncated message presented as whole would be worse.
+
+  Two smaller things are where a relay on this protocol goes wrong. **Whether a
+  reply is one line or many depends on the command *and its argument*:** `LIST`
+  lists the mailbox and `LIST 3` answers one line about message 3, `UIDL` the
+  same, and a relay that guesses reads the next reply as part of this one —
+  after which a client is shown somebody else's mail or none of its own. And
+  the **greeting is carried unchanged**, because the `<1896.697170952@mail>` in
+  it is what an APOP digest is computed over; a relay that minted its own
+  greeting would make every APOP digest unverifiable at the server that has to
+  check it. §3's dot-stuffing is handled as SMTP's is, and the server's line is
+  forwarded verbatim rather than stuffed a second time.
+
+  `read_only` refuses `DELE` and `RSET`, which is what the things that still
+  speak POP3 here should be doing anyway and is also what makes the server's
+  copy the audit trail.
+
+- **Both kinds refuse a credential on a transport that cannot carry it, and
+  neither refusal is shadowable.** `require_tls` defaults on and refuses
+  `LOGIN`, `AUTHENTICATE` with a plaintext mechanism, `USER`/`PASS` and `APOP`
+  on an unencrypted connection — in `monitor_only` too, because by the time a
+  policy could be consulted the password has travelled and observing it does
+  not un-send it. On 143 and 110, `tls_mode: starttls` has the relay terminate
+  the RFC 2595 upgrade itself rather than forwarding it, which is how the
+  devices and scripts nobody can reconfigure get TLS anyway; anything pipelined
+  behind the upgrade ends the session, the same reasoning (and the same CVE
+  class) as the smtp kind's.
+
+- **Fifteen counters, six refusal families and the ATT&CK mappings.**
+  `imap_connections`, `imap_commands`, `imap_auth_failures`,
+  `imap_fetched_messages`, `imap_append_bytes`, `imap_plaintext_logins`,
+  `imap_capabilities_stripped`, `imap_preauth_refused`; `pop3_connections`,
+  `pop3_commands`, `pop3_auth_failures`, `pop3_retrieved_bytes`,
+  `pop3_deletes`, `pop3_plaintext_logins`, `pop3_capabilities_stripped`. Every
+  refusal is bannable — `imap_denied`, `imap_auth_failed`, `imap_anomaly`,
+  `pop3_denied`, `pop3_auth_failed`, `pop3_anomaly` — and carries its
+  Enterprise ATT&CK technique: **T1114 (Email Collection)** and **T1114.002
+  (Remote Email Collection)** on every bound refusal, which is what these kinds
+  are for; T1071.003 (Mail Protocols) on an unknown command or one in the wrong
+  state, because a relay that carries what it cannot name is a tunnel; T1556 on
+  the PREAUTH greeting, T1562 on the refused compression, T1557 on an upgrade
+  injection, and T1110 on the credential bursts the ban ladder acts on. The
+  behavioural models get the account, the mailbox, the command and the number
+  of messages named, and unlike the TACACS+ kind's a finding here reaches the
+  ban ladder — these clients are people's mail applications, and the cost of
+  being wrong is a client that reconnects.
+
+- **Documentation and examples.** Two sections in [CONFIG.md](CONFIG.md), two
+  protocol pages under [docs/protocols](protocols/README.md) with a new "The
+  mailbox protocols" group in the index, [`examples/mail/mailbox.yaml`](../examples/mail/mailbox.yaml)
+  (IMAPS, IMAP with the upgrade terminated here, and a read-only POP3S, with
+  the archiver's exemption written as a rule and two ban triggers), the two
+  kinds in [README.md](../README.md), [ARCHITECTURE.md](ARCHITECTURE.md) and
+  [USAGE.md](USAGE.md), a "Mailboxes" section in [RFC.md](RFC.md) for the
+  seventeen specifications they implement and the one they refuse, five rows in
+  [THREAT_MODEL.md](THREAT_MODEL.md), and [AMR-054](AMR.md) for the decision
+  that on a mailbox the bound is on what a request names — and that two of
+  these refusals are deliberately outside shadow mode.
+
+### Added (the three authentication protocols an estate's own equipment uses: RADIUS, TACACS+ and Kerberos over HTTP)
+
+- **`kind: radius` is a relay in front of the protocol whose integrity check is
+  optional.** A RADIUS Access-Request carries a nonce in its Request
+  Authenticator and the reply carries an MD5 digest over that nonce, the body
+  and the shared secret -- and CVE-2024-3596 (Blast-RADIUS) is a chosen-prefix
+  collision on exactly that digest, which turns an Access-Reject into an
+  Access-Accept for anybody on the path. The protocol's own mitigation has
+  existed since RFC 3579: a keyed Message-Authenticator attribute. So
+  `require_message_authenticator` defaults to **on**, the relay verifies both
+  authenticators on both legs before it decides anything, and a rule can admit
+  the one piece of equipment too old to send a digest without turning the check
+  off for the estate.
+
+  Which authenticator a code carries is part of the check rather than a
+  detail. Access-Request, Status-Server and Status-Client carry a nonce;
+  Accounting-Request and the RFC 5176 codes carry a *computed* digest over
+  sixteen zero octets, so verifying those against the bytes they arrived with
+  accepts anything at all. The relay computes what each code must carry.
+
+  The policy is written in the protocol's terms: which codes may cross, which
+  authentication methods may be negotiated (`auth_types`, with EAP read where a
+  packet carries one), which EAP methods (`eap_types` -- refused whether the
+  packet offers one or Naks toward it, because a downgrade asked for the second
+  way is still a downgrade), which attributes may appear, and
+  **`max_privilege_level`, which is a bound on what a reply may grant**: a
+  Cisco av-pair carrying `priv-lvl=15` is how a RADIUS answer hands out enable
+  on a switch, and that is a decision about the answer, as the dhcp kind's
+  whole policy is. A plaintext User-Password is recognised and counted and
+  never undone. RFC 5176 dynamic authorization -- an unsolicited packet that
+  logs a session out -- is refused rather than carried.
+
+  It is a datagram kind, and the protocol's identifier is eight bits, so two
+  clients using the same identifier would otherwise collide in one upstream
+  conversation. The relay keeps a bounded table per client and renumbers, which
+  forces it to recompute both authenticators, which it can only do because it
+  holds a secret for each leg (`secret_file`, `upstream_secret_file`, owner-only
+  modes enforced at load; no secret is ever written in the configuration file).
+
+- **`kind: tacacs` is where a policy can say which command.** TACACS+ asks the
+  server about each command line a person types on a switch, so this is the one
+  protocol in the estate where authorisation is per command rather than per
+  session -- and device administration is what it carries. A rule names the
+  users, the devices and the command lines: `commands: ["show ...", "configure
+  terminal"]` as an allow list, or `deny_commands` as the narrower statement,
+  with `...` as a trailing wildcard and nowhere else, because a pattern whose
+  wildcard is in the middle describes a command line that ends where nothing
+  follows it. The command arrives split across a `cmd` argument and its
+  `cmd-arg` arguments; the policy is written as the single line the engineer
+  typed.
+
+  RFC 8907 section 10.3 says of its own body obfuscation that it is "not
+  cryptographically sound" -- it is an MD5 pad keyed by the secret and the
+  sequence number, and it is also the only confidentiality the protocol has. So
+  the kind implements it for what it is, refuses a body sent with the
+  unencrypted flag, and offers TLS toward equipment new enough to have it
+  (`upstream_tls_mode`). A `FOLLOW` reply, which hands the device another
+  server's address, port and key, is never carried -- not in shadow mode
+  either, because a compromised server that can redirect the next
+  authentication has not been contained by observing it.
+
+  `max_privilege_level` bounds what a response may grant, as on the radius
+  kind. Several sessions share one connection in single-connection mode and are
+  kept apart by session identifier, with sequence numbers checked in both
+  directions. And the configuration, restart, firmware and file-transfer
+  commands are mapped to **engineering operations**, so a change to a switch is
+  checked against the same work order, grant and ledger a change to a PLC is.
+
+- **`kind: kkdcp` is a Kerberos KDC proxy (MS-KKDCP) that holds no Kerberos
+  key.** Everything a policy needs is in the cleartext of a KDC message -- the
+  realm, the client and service principals, the encryption types offered, the
+  pre-authentication types present, the requested lifetime and options -- and
+  everything else is encrypted in keys that belong to the KDC and the service.
+  So this kind parses the KDC-PROXY-MESSAGE envelope and the message inside it
+  (`internal/kerberos`, with a DER reader that refuses indefinite and
+  non-minimal lengths, bounds nesting and depth, and refuses control characters
+  in a principal name), decides, and forwards the bytes it received or mints a
+  **KRB-ERROR of its own** -- because a Kerberos client reads Kerberos errors,
+  not HTTP statuses.
+
+  Three attacks are the reason the kind exists. **Kerberoasting** is a TGS-REQ
+  that asks for RC4 and nothing else, so that the service ticket can be cracked
+  offline against the service account's hash: `refuse_weak_etypes` refuses a
+  request offering nothing but DES or RC4, and a mixed list is not refused,
+  because that is the client asking for what it can use. **AS-REP roasting** is
+  visible on the *reply* -- an AS-REP to a request that carried no
+  pre-authentication is the roastable material -- so `refuse_preauth_exempt`
+  decides about an answer. **Password spraying** is bounded per client address
+  by `max_preauth_failures`, and service-ticket enumeration by
+  `max_distinct_services`; both reach the ban ladder, which on this kind is
+  where the anomaly findings go. Constrained delegation is two halves,
+  S4U2Self and S4U2Proxy, each separately allowed.
+
+  It is the first kind served by `xproxy` **and** `xrelay` rather than by the
+  two service-facing daemons. MS-KKDCP exists so that a client outside the
+  network can reach a KDC inside it, so the edge owns it by default and an
+  estate that runs one in front of its own domain controllers writes
+  `daemon: xrelay`. Its transport is HTTPS on one path and one method, and the
+  kind refuses to build without a certificate, because the message it carries
+  holds a value derived from the user's password.
+
+- **Eighteen counters, three refusal families and the ATT&CK mappings.**
+  `radius_requests`, `radius_bad_digest`, `radius_no_digest`,
+  `radius_plaintext_passwords`, `radius_privilege_grants`,
+  `radius_unsolicited`; `tacacs_sessions`, `tacacs_commands`,
+  `tacacs_accounting`, `tacacs_header_only`, `tacacs_plaintext_passwords`,
+  `tacacs_privilege_grants`; `kkdcp_requests`, `kkdcp_preauth_failures`,
+  `kkdcp_weak_tickets`, `kkdcp_preauth_exempt`, `kkdcp_delegations`,
+  `kkdcp_realm_mismatch`. Every refusal is bannable
+  (`radius_denied`, `tacacs_denied`, `kkdcp_denied`) and carries its
+  Enterprise ATT&CK technique: T1558 and its Kerberoasting (.003) and AS-REP
+  roasting (.004) subtechniques, T1550 for the stolen ticket, T1556 for the
+  modified authentication process, T1548 for the privilege grant, T1601 for the
+  modified device configuration, T1602 for the configuration repository dump,
+  T1529 for the remote restart, and T1562 for the defences a `no logging`
+  command turns off. `tacacs` joins the kinds that emit engineering events, so
+  four of those mappings are engineering ones.
+
+- **Documentation and examples.** Three sections in
+  [CONFIG.md](CONFIG.md), three protocol pages under
+  [docs/protocols](protocols/README.md) with a new "Authentication,
+  authorisation and accounting" group in the index, three examples
+  (`examples/auth/radius.yaml`, `tacacs.yaml`, `kkdcp.yaml`), the three
+  listener kinds in [README.md](../README.md), [ARCHITECTURE.md](ARCHITECTURE.md)
+  and [USAGE.md](USAGE.md), a new section in [RFC.md](RFC.md) for the
+  specifications they implement and refuse, four rows in
+  [THREAT_MODEL.md](THREAT_MODEL.md), and
+  [AMR-053](AMR.md) for the decision that the two symmetric-secret kinds
+  re-originate and the KDC proxy holds no key.
+
+### Fixed (a reload that drops nothing, including on a datagram listener)
+
+- **A datagram listener could not be reloaded at all.** A UDP socket cannot be
+  bound twice, and a rebuilt listener opened its own: so a reload that changed
+  anything on a `tftp`, `ntp`, `dhcp`, `dhcpv6`, `bacnet` or `coap` listener, or
+  on the datagram side of `syslog` or `snmp`, failed with `bind: address already
+  in use` — about a port this process was itself holding. For the three cases
+  the engine did know bound UDP (`kind: udp`, plain `dns`, and any listener with
+  `h3`) it refused the reload up front and asked for a restart instead, which is
+  the same hole with a better error. An estate whose OT relays are datagram
+  protocols could not change a policy without stopping the daemon.
+
+  The datagram socket is now owned by the engine for the listener's life and
+  handed from one generation to the next, exactly as the accept socket has been:
+  a `packetSource` holds it and each generation reads a `packetFront`, which can
+  be closed without closing the socket. Those fronts are closed before the new
+  generation serves, so from the moment of the switch every datagram is answered
+  by the generation whose policy decided it — on these protocols a datagram is a
+  whole conversation, and one answered under the old rules a moment after a
+  reload is the bug an operator would report. Nothing is lost in between: the
+  socket is never closed, so what arrives during the handover waits in its
+  receive buffer. Writes are not stopped, because a reply the retiring
+  generation is composing belongs to a request it accepted.
+
+- **"Restart required" now means QUIC, and nothing else.** A QUIC connection is
+  not a datagram: it is cryptographic state inside the transport that holds the
+  socket, so handing the socket over would end every connection on it. That is
+  the one change a reload still refuses — a listener carrying `h3`, `tcp.quic`
+  or `dns.doq` changed on the same address — and the refusal now says why.
+  `config.ListenerHasQUIC` is what the engine and the dry run ask, where both
+  used to ask whether the listener bound UDP at all.
+
+- **Three documented limits were not limits.** The forward listener's page said
+  "the address and TLS settings need a restart like every listener": both
+  reload, the TLS settings by rebuilding the listener on the socket it already
+  holds and the address by binding the new one while the old drains. The dns
+  listener's page said "the address needs a restart"; it is the one change that
+  always worked. "Changing a tcp listener needs a restart" was true only with
+  `quic: true`. All three are corrected, and `docs/ARCHITECTURE.md` now
+  describes the datagram handover beside the stream one.
+
+### Added (WebSocket: a message policy, not only a frame policy)
+
+- **`websocket_guard.types` is the policy the application actually has.** The
+  frame bounds beside it answer the protocol's question, which is the same on
+  every route; `max_message_bytes` for a connection is the bound of its largest
+  message, which is the bound that lets every other message be that large too. A
+  route now names the kinds of message it carries — `type_field` is the JSON
+  member that names one, `type` by default — and gives each its own `max_bytes`,
+  its own `messages_per_second` (per connection and per direction), its own
+  `direction`, and a `schema_file` every message of that type must match. A
+  keepalive and an order stop sharing one bound.
+
+- **`unknown_types` is the positive half**: `deny` refuses a message whose type
+  the route does not name and is the default once `types` names anything, because
+  a list of what a route carries that also carries everything else is not a list;
+  `observe` records it and forwards it, which is how the list gets written from
+  the events and `xproxy_websocket_unknown_type_total` rather than from somebody's
+  memory of the API; `allow` ignores it, which is every configuration written
+  before this existed. `require_json` is the same question about a text message
+  that is not JSON at all.
+
+  Where each check decides is stated rather than implied. A type is read out of a
+  complete message: from the client that is still before anything reaches the
+  origin, because the guard already holds a client message until the whole of it
+  has passed inspection; from the origin it is at the end of the message, because
+  each frame is forwarded as it is checked. A schema needs the whole message, so
+  one larger than `max_inspect_bytes` is refused rather than passed — a check that
+  stops applying above a size the sender chooses is not a check — and validation
+  warns where a type's `max_bytes` makes that certain.
+
+- **`websocket_guard.compression` makes compression a decision instead of a
+  silent downgrade.** `strip` is what the previous version did and is still the
+  default: the client's `permessage-deflate` offer is taken out of the upgrade, so
+  both ends fall back to uncompressed frames. `refuse` answers the upgrade with
+  400 instead, for an estate that would rather a client's own logs recorded it.
+  `inspect` is new ground: the offer forwarded to the origin is narrowed to
+  `permessage-deflate; client_no_context_takeover; server_no_context_takeover`,
+  which makes every message a DEFLATE stream of its own, and each message is
+  inflated before the rest of the policy reads it. An acceptance that is not that
+  offer — an origin that kept context takeover, or claimed an extension nothing
+  offered — is refused at the 101 with 502, because a stream the guard cannot
+  inflate would leave it choosing between closing every connection and reading
+  nothing.
+
+  So a route can now be compressed *and* inspected, which it could not be
+  before: an estate that wanted its WebSocket messages read had to make every
+  client send them uncompressed. `max_inflate_ratio` (default 100) is the bound
+  that comes with that — a kilobyte on the wire becoming a megabyte in the
+  application is the shape of the attack rather than the size of it, and past it
+  the message is refused as `compression_bomb` without being inflated further.
+  The sizes, the UTF-8 check, the patterns, the type and the schema are all about
+  the inflated message, because that is the message.
+
+- **The report says which type a route is arguing with.** `GET /v1/websocket`
+  and `xproxyctl` carry the per-type message and violation counts, the
+  compression mode, and how many messages arrived with a type the route does not
+  name; the metrics are `xproxy_websocket_type_messages_total{route,type}`,
+  `xproxy_websocket_type_violations_total{route,type}` and
+  `xproxy_websocket_unknown_type_total{route}`. Every finding names itself in its
+  event: `compression`, `compression_bomb`, `json`, `message_type`, `type_size`,
+  `type_rate` and `schema` join the frame guard's own reasons.
+
+- **`docs/protocols/http.md` says what happens after the 101**, which it did not
+  mention at all: what the guard decides, and that a WebSocket over HTTP/2's
+  extended CONNECT is not served (so clients fall back to the upgrade the guard
+  reads) while a WebTransport session is relayed rather than inspected.
+
+### Added (forward proxy: HTTP-aware inspection inside intercepted tunnels)
+
+- **`intercept.http` reads the requests inside a tunnel this listener is already
+  decrypting, so the egress rules about a method, a path, a content type or a body
+  size decide there too.** Those selectors could only ever be decided on a plain
+  request through the proxy, which on an estate whose egress is nearly all HTTPS
+  meant they were a policy about almost nothing; the previous version said so in
+  its validation and its documentation, which is better than pretending otherwise
+  and is still not a policy. A decrypted tunnel carries ordinary HTTP messages:
+  each request is read, decided about and relayed, each response head is decided
+  about before its body travels, and it is the same rules, the same two phases, the
+  same events and the same counters as port 80 — because an operator should not
+  have to learn that a rule means one thing on one port and another on the next.
+
+  `auto` is the default and reads when there is something to decide, which is when
+  the listener has at least one rule needing a visible request: a policy about
+  destinations alone gains nothing from parsing, and an upgrade does not change
+  what a deployment does. `on` reads every intercepted tunnel, which is what to
+  set while writing such rules so the access log carries the requests first. `off`
+  relays the plaintext to the stream rules and to nothing else, and validation
+  warns when rules that need a request are written on a listener set that way.
+
+- **A refusal inside a tunnel is an HTTP 403 on the connection the client believes
+  is end to end**, naming the reason, after which the connection closes — keeping
+  it alive would mean reading the rest of a body nobody is allowed to send, which
+  is a bound an attacker would be choosing. The access line is
+  `forward_intercept_request` with the method, the destination and the status: the
+  method and not the path, because this listener logs destinations rather than URLs
+  everywhere else, and an intercepted connection is the last place to start
+  writing down more of what somebody asked for.
+
+- **The `Host` header is held to the destination the tunnel was opened to**, under
+  the same `sni` setting and for the same reason as the server name: otherwise a
+  client permitted to reach one name uses the connection to that name's address to
+  ask for another. `enforce` answers 403 with reason `host_mismatch`, `observe`
+  records `forward_tunnel_host_mismatch` and relays, `off` does not look; a tunnel
+  opened to an address is the same exception it is for `sni`. The new reason maps
+  to T1572 and T1090, and a ban trigger can name `forward_host_mismatch`.
+
+- **A head the proxy cannot frame is refused rather than passed on.** A request
+  carrying both a length and a chunked encoding is the request-smuggling shape, and
+  an intercepting proxy is the only place in this project that can see one inside
+  TLS at all: 400, reason `bad_request`, event `forward_tunnel_bad_request`, mapped
+  to T1190. Requests that are relayed are relayed as they arrived — no `Via`, no
+  forwarded headers — because the point of interception here is that the
+  destination sees the message the client wrote and the policy judged.
+
+- **Three things are relayed as bytes rather than read, and each is counted**, so
+  "nothing was read" is never a silent answer: a tunnel that negotiated `h2`, since
+  this reads HTTP/1 and a proxy guessing at HTTP/2 framing corrupts the stream it
+  is inspecting; a tunnel whose first bytes are not a request line, since SSH, a
+  database session and a line protocol inside TLS all happen and answering one with
+  a 400 breaks it for no reason; and everything after a 101, since the connection
+  has stopped being request-and-response and a WebSocket through an intercepting
+  proxy is ordinary traffic. The counters are `forward_intercept_requests` and
+  `forward_intercept_bytes_only`.
+
+  Whether the first bytes are a request line is decided by the version at the end
+  of the line and not by a list of methods, so `PROPFIND` and everything else an
+  extension invented is still HTTP.
+
+- **`GET /v1/listeners` carries an `egress` section for a forward listener with
+  rules**: how many there are, how many of them need a visible request, and
+  whether this listener reads inside the tunnels it decrypts. The previous
+  version's documentation promised that count and nothing served it — the policy
+  built a report that no endpoint reached. The two numbers belong side by side,
+  because rules that need a request on a listener that is not reading are a
+  policy about the plain path alone.
+
+- **The stream rules still see everything.** The scanning sits on the reads rather
+  than on the message bodies, so YARA sees the heads in both directions exactly as
+  it did when the tunnel was relayed unread: turning on a policy feature must not
+  turn off a detection one. A match in a head stops the request there, before it is
+  relayed, which is what the same rule did when this tunnel was bytes.
+
+### Added (forward proxy: an egress policy about who may send what, where and when)
+
+- **`forward.rules` is the egress policy, and `forward.categories` is what it is
+  written in.** `allow` and `deny` said whether a destination exists for a
+  listener; these say who may reach it, with which method, carrying which content
+  type, inside which hours. A rule names any of users, groups, networks,
+  categories, hosts, ports, methods, path globs, request and response media types,
+  request and response body bounds, and a schedule; first match decides, `observe`
+  records and keeps looking, and a destination no rule matched is refused under
+  `no_rule` — the same shape the OT relays use, for the same reason. A category
+  takes its patterns inline or from a file, because the list an estate actually
+  has came from somewhere else and is long.
+
+  An `allow` rule means this policy has nothing to object to; it does not skip
+  what follows. The imported threat lists and the estate's own `authorization`
+  section still decide, so a listener's rule narrows the estate's policy and can
+  never widen it.
+
+- **`forward.auth.groups` gives the listener an identity to write rules about** —
+  and gives the estate-wide `authorization` section something to compare its
+  `groups` selector against on this listener, which it had had nothing to put in
+  since it was written.
+
+- **`forward.sni` checks the server name inside a tunnel nothing is decrypting.**
+  A client allowed to reach a CDN could open a tunnel there and then handshake for
+  anything else that address serves, which is how domain fronting gets through a
+  name-based allow list: the destination policy had decided about a name the
+  client then did not use. `intercept` has carried this check for its own tunnels
+  since it was written; this is the same check for the ordinary case, and it costs
+  a peek at bytes the client was going to send anyway. `enforce` refuses,
+  `observe` (the default, so nothing changes for an existing deployment until an
+  operator asks) records and relays, `off` does not look. A handshake with no
+  server name — which is what Encrypted Client Hello looks like from here — is not
+  a mismatch, and neither is a tunnel opened to an address.
+
+- **What a rule can be decided from is stated rather than left to be
+  discovered.** A plain request through the proxy carries its method, its path and
+  its content types, so every selector decides about it. A CONNECT tunnel carries
+  a destination and nothing else, so a rule naming a method or a content type is
+  skipped there — and on an estate whose egress is nearly all HTTPS that means
+  such a rule covers almost nothing without `intercept` over those destinations.
+  Validation names those rules when nothing will read them — a listener with no
+  `intercept` section at all, or one that intercepts with `http: off` —
+  `GET /v1/listeners` carries the count, and `docs/protocols/forward.md` has a
+  section on it. Reading those rules inside an intercepted tunnel is
+  `intercept.http`, below.
+
+  The other two limits are in the same places: a response rule is decided when
+  the head arrives, which is after the destination was contacted — the body does
+  not arrive, the request did leave; and a byte bound on a chunked body is counted
+  as it travels and cut past the bound, because what has already gone cannot be
+  recalled, which is why a size rule is worth less on egress than a destination
+  rule.
+
+- **`rule_deny` and `no_rule` on a forward listener map to T1048, T1567 and
+  T1071**, so an egress refusal reads as exfiltration or as a channel in
+  `xproxyctl techniques` rather than as a number. T1071 (Application Layer
+  Protocol) and T1567 (Exfiltration Over Web Service) are new in the Enterprise
+  catalogue.
+
+- **`xproxyctl listeners` shows a kind's rule list as a guard.** Discovered by
+  shape rather than listed per kind, so the fifteen kinds that have had a `rules:`
+  section all along now say how many rules they are serving, which the inventory
+  previously did not mention at all.
+
+### Added (policy simulation: what a change would decide differently)
+
+- **`xproxy-simulate` sends traffic through a configuration and reports what it
+  decided; given two configurations it reports only what moved.** It is a
+  separate, offline binary next to `xproxy-replay`(8): it opens no management
+  socket, needs no running daemon, and every listener kind is linked into it, so
+  it answers about a configuration naming any role's listeners without the
+  operator working out which daemon would have served it. Exit status is 1
+  whenever the two configurations decide anything differently, so a change can be
+  gated on it in review or in a pipeline, and `-json` carries the whole answer
+  including every security event.
+
+  It is not a linter and it does not reason about the rules: it starts the engine
+  and sends the traffic through it, so the answer comes from the code that would
+  decide it in production — the same WAF profiles and rule files, the same route
+  matching, the same protocol policies, the same filters.
+
+- **Traffic comes from a text corpus of HTTP requests, a text corpus of protocol
+  frames as hex, or a pcapng file written by `xproxyctl capture`.** The two text
+  formats share a separator, comments and directives, and are text because of
+  what an operator has in the minute they need this: a request out of a security
+  log, a frame out of a vendor document, a ticket saying the shift supervisor's
+  tool stopped working after the change. A format they can type, paste and keep in
+  the repository beside the configuration is worth more than a richer one they
+  would have to generate. The pcapng reader is round-tripped in its tests against
+  the real capture writer rather than against a fixture somebody wrote by hand.
+
+- **Nothing reaches a real upstream, and the output names everything that was
+  switched off.** Every pool is pointed at a sink inside the process, keeping the
+  pool names and the per-route assignments because which pool a request goes to is
+  itself a decision; a TLS listener gets a throwaway certificate and the estate's
+  private keys are not read; `cluster`, `fleet`, `acme`, `tracing`, `icap`,
+  `scim`, `ingress`, `capture`, `threat_intel`, the OTLP exporter and `sandbox`
+  are switched off. A test asserts that every one of the top-level configuration
+  sections has a decision recorded about it, so a section added later cannot be
+  left unconsidered.
+
+- **Nothing is written outside the simulation's own directory.** The state a
+  decision depends on — the ban store, the access ledger, the asset and API
+  inventories — is copied into it, so a run starts from what the estate has: a
+  banned address stays banned, a grant still approves, a device already in the
+  inventory is not a new device. What a run produces — a learning report, a
+  session recording — is redirected into it; those change no decision, which is
+  why they were the half easy to overlook, and a learning report overwritten with
+  a simulation's traffic would be the worst of them because those get promoted
+  into policies. The output paths are found by type rather than by listing each
+  kind's field, so the eight learning sections and five recording ones are covered
+  and so is a kind added later. The configuration a caller passes in is deep
+  copied first, since the promise that it is not modified cannot rest on somebody
+  remembering to copy each struct before writing to it.
+
+- **`-offline` is required rather than assumed, and what it promises is stated
+  exactly.** Neutralising a configuration is not the same as making it inert: the
+  policy runs, which means the filters, any WebAssembly modules, the rule files
+  and the secrets provider load as the daemon loads them. That is the point — a
+  simulation of something other than the real policy answers the wrong question —
+  and it is a decision about this machine that belongs to the operator. The flag
+  does not sandbox anything. It asserts.
+
+- **An allow is asserted only on evidence.** The listener relayed the input to the
+  sink, or answered the client itself; absence of a refusal is not evidence. A
+  listener that speaks bytes rather than HTTP answers only when the device does,
+  so a frame it could not finish reading produces no reply and no event at all,
+  and reading that as `allowed` would put a hole in the report exactly where an
+  operator would rely on it. Such an input is reported as `error` with what it
+  probably is, and an input only one side could answer is counted as a change
+  rather than as agreement. Documented limits: inputs are serial, so policy that
+  depends on concurrency is not simulated; and the sink does not synthesise
+  device replies, so policy that decides on a reply is not simulated.
+
+- **A client address is delivered where the listener parses a PROXY protocol
+  header, and reported as undeliverable where it does not.** `client=` on a
+  corpus item, or the address out of a capture file, is sent as a header and
+  loopback is added to `trusted_proxies` so it is read; both appear in the
+  output. That makes address-based rules testable, which matters most on the
+  plant, where an address and a unit identifier are much of what a policy has
+  to work with. Where the listener parses no header the run names it and says
+  the policy saw the loopback address, rather than answering as though the
+  address had been used: an operator reading `allowed` for an input labelled
+  with an address their allow list excludes would conclude the allow list does
+  not work.
+
+### Added (work orders: the change reference somebody filed, which is not an approval)
+
+- **A work order can be filed against a device, from the Plant screen of the web
+  interface, `xproxyctl workorder` or `POST /v1/workorders`.** It is the identifier
+  the maintenance system already issued — `WO-2026-0481` — recorded against a
+  device for a window, with a note saying what the work is, in the same
+  hash-chained ledger as the grants. While it is open, every engineering event on
+  that device carries `work_order` and `work_order_by` and says `severity: notice`;
+  with nothing on file the same event says `severity: warning` and names no
+  reference. `xproxy_engineering_filed_total{kind,operation}` counts the subset
+  somebody filed, and the difference between it and `xproxy_engineering_total` is
+  the list an operations centre works through.
+
+  An engineering operation is worth an event either way — that has not changed.
+  What was missing was the answer to "was anybody expecting this", for the
+  estates that cannot yet run four-eyes approval on every program download but do
+  already have the work order number.
+
+- **A work order is not a grant and permits nothing.** A listener with
+  `engineering.require_grant: true` refuses an operation with no approved grant
+  whatever work orders are open, and the end-to-end test asserts exactly that. If
+  it were otherwise, the person who wanted the access could file one for
+  themselves and the approval requirement would be decoration. The distinction is
+  stated in the configuration reference (a table: who agrees, what it permits, what
+  it changes), in the command's own usage text, and above the form in the
+  interface, which is where somebody is most likely to assume the opposite.
+
+  The documentation used to use "approved work order" as a synonym for a grant,
+  and one code path logged the grant's reason under the attribute name
+  `work_order`. Both are corrected: a grant is a grant, its reason is
+  `grant_reason`, and `work_order` now names a work order. `access.max_work_order`
+  (default thirty days) bounds the window, because a work order with no end is the
+  one somebody files during a shutdown and never closes.
+
+- **`xproxyctl packs release ADDRESS -note ...` works as documented.** The tool's
+  usage puts the name before the flags, which is the order people type, but Go's
+  flag package stops parsing at the first non-flag argument — so every flag after
+  the address was silently unset and the command printed its usage instead. The
+  name is now taken off the front first, for `workorder` and for `packs release`.
+
+### Added (the listener inventory, and a web interface that admits the other thirty-three protocols exist)
+
+- **`GET /v1/listeners` and `xproxyctl listeners`: every listener with its
+  protocol, its bound address, its enforcement mode and its guards.** `GET
+  /v1/status` reported listeners as a map of name to address, which answers "is
+  it up" and nothing after it. A proxy that speaks thirty-four protocols needs
+  the kind and the mode beside the address before any other question can be
+  asked, and "which of my listeners is not enforcing" could until now only be
+  answered by re-reading the configuration file — which is the file somebody may
+  have got wrong in the first place.
+
+  The report gives, per listener: the kind, the role and daemon that own it, the
+  address it actually bound (so a listener configured on port 0 reports the port
+  the kernel handed out) and any further ports the kind took, `enforce`, `shadow`
+  or `monitor`, whether it terminates TLS, whether it holds its socket, and the
+  protocol's own guards — learning with whether it enforces what it learned,
+  anomaly detection with its action, engineering restrictions with theirs,
+  deception, session recording, a second factor, YARA, ICAP. Per protocol it
+  gives the refusals by reason and, from a separate table that is never added to
+  it, what the listeners in shadow mode would have refused.
+
+  A guard row exists for every guard the *protocol* has, not only the ones this
+  listener configured, so a listener with anomaly detection available and switched
+  off reads as switched off rather than as absent. Engineering is reported as on
+  where no block was written, because that is what the code does: an engineering
+  operation is an event on an OT listener whether or not anybody configured one.
+
+- **The web interface has a Listeners screen and a Policy screen.** Listeners is
+  the inventory above, with the listeners that are *not* enforcing listed first
+  and on their own — the one fact about a security proxy that must not be buried
+  in a table — and what the refusals meant in ATT&CK terms underneath. Policy is
+  the shadow ledger: what would have been refused, by kind, listener, reason and
+  rule, with one clipped example each, the ledger's bound stated when it is full,
+  and an operator button to empty it after a policy is fixed.
+
+- **Every management read the control tool can make, the web interface can now
+  make.** The pass-through table held twenty-five of them, chosen by whichever
+  screen had been written, so an estate could be running behaviour packs,
+  engineering restrictions, just-in-time grants and a shadow policy and the
+  interface would not mention any of it. It is now the whole set: packs, policy,
+  access, accounts, the API inventory, the device inventory's advisories, the bot
+  score, capture, decoys, degradation, drains, the fleet, handshake refusals,
+  maintenance, MASQUE, virtual patches, live sessions, the WebSocket guards and
+  the three TLS views. `GET /v1/origin-check` stays out on purpose: it reads like
+  a view and is a probe that dials the origins.
+
+- **An Alarms screen: everything that is asking for attention, on one page.**
+  Every fact on it was already reachable, in twelve different places, and an
+  operator who has to visit twelve pages to find out whether anything is wrong
+  visits none of them. A reload that failed, log records dropped, a hardening
+  mechanism not in force, a listener configured and not listening, certificates
+  near expiry, devices matching a published advisory, quarantined actors, any
+  table that hit its bound, cluster peers down — and, kept separate, the states
+  somebody chose and may have forgotten: maintenance mode, a drain, a listener
+  in shadow mode. Three levels and no more, because a page that painted a chosen
+  state red would be crying wolf at its own operator. When nothing is wrong it
+  says so, naming what it checked.
+
+- **Security, Plant and Sessions screens, and the fleet on the Cluster screen.**
+  Security is the guards that are neither the WAF nor a protocol's own: virtual
+  patches, deceptive answers, the WebSocket guards, the degradation levels,
+  handshake refusals, the account guard, the bot score, the API inventory and the
+  capture window. Plant is the OT half: the packs in force and who signed them,
+  the just-in-time grants with their windows and approvals, the device inventory
+  with what each device is and speaks, and the advisories matched against those
+  firmware versions. Sessions is what is being served right now.
+
+- **The navigation and the views are checked against each other, and so is every
+  endpoint the page reads — and every view is now rendered against the real
+  management API's own documents.** Nothing at run time noticed a menu entry pointing at
+  a view nobody wrote — the reader lands on the overview with no error — or a view
+  nothing links to. The second of those was already true: the ICAP page had been
+  unreachable, and now has a link from the subsystems screen that reaches it.
+
+  Six hundred lines of page JavaScript had never been run by anything. A test
+  now starts a real data plane and a real management server, asks it for every
+  document the page fetches, and renders all twenty views against what came
+  back, under a DOM small enough to run the page and no smaller. A field renamed
+  in Go, a list that is null rather than empty, a helper called with the wrong
+  shape: each of those used to be a card that threw in one view, which is
+  exactly where nobody looks until an operator needs it. The test skips where
+  `node` is not installed, and it does not replace the manual browser check --
+  it removes the part of it that was checking whether the code runs at all.
+
+### Fixed (the refusal counter counted engineering operations it had forwarded)
+
+- **An engineering operation outside every approved window is no longer counted as
+  a refusal.** On a listener with `engineering.require_grant` and `action: alert`
+  — the step every estate takes before it starts refusing — an operation with no
+  grant open for it is carried and alerted, reason `engineering_ungranted`. Six of
+  the eight kinds that recognise engineering routed that alert through the helper
+  that increments `xproxy_refusals_total`, and the other two did not. So the
+  refusal counter said the relay had refused a program download it had forwarded,
+  and disagreed with itself between protocols for the same event.
+
+  It now has a counter of its own, `xproxy_engineering_outside_window_total{kind,
+  operation}`, on all eight kinds, and `engineering_no_grant` — the actual refusal
+  — is the only engineering reason left in `xproxy_refusals_total`. The ATT&CK
+  technique is still observed, because an operation outside every window is a
+  detection whether or not anybody refused it, and the security event is byte for
+  byte the one it was, so the behaviour packs that read it are unaffected.
+
+  This surfaced while building the Listeners screen above, which prints refusals
+  per protocol: a plant running `action: alert` showed a refusal count for a
+  relay that had refused nothing.
+
+### Fixed (an inspected WebSocket route broke every browser that offered compression)
+
+- **The `permessage-deflate` offer is now stripped from an inspected upgrade
+  rather than forwarded.** The guard refuses a frame with a reserved bit set,
+  because a compressed frame cannot be inspected — but nothing stopped the two
+  *endpoints* agreeing compression behind the proxy. Browsers offer the
+  extension on every WebSocket by default, a compression-capable origin accepted
+  it, the client was told it had succeeded, and then the first data frame tripped
+  the reserved-bit check and the connection closed with a protocol error that
+  blamed the peer for what this proxy had let through. So turning
+  `websocket_guard` on broke every browser client of a compression-capable
+  application, in a way that looked like the application's fault.
+
+  Stripping the offer makes both ends fall back to uncompressed frames, which is
+  what the extension is designed to do when it is not agreed: the client works,
+  and the guard can read what it is inspecting. A reserved bit arriving anyway
+  now means what the message says — a peer using an extension nobody negotiated.
+
+- **An origin that claims an extension although none was offered is refused at
+  the 101**, with `502` and a `websocket:extension` violation, rather than at the
+  first frame. By then the client believes it has a working connection, and the
+  frames would be unreadable.
+
+- **The documentation said both things.** README claimed WebSocket "with
+  permessage-deflate" as a supported feature; docs/RFC.md said no extension is
+  negotiated on an inspected route. The first was false, and the second was true
+  only of what the proxy itself did rather than of the path. Both now describe
+  the behaviour above, as do the CONFIG, USAGE and TROUBLESHOOTING entries --
+  including the troubleshooting advice, which used to tell an operator to drop
+  the extension at the application or give up inspecting the route, and no longer
+  needs to.
+
+- **Why it is not decompressed instead is written down** in docs/RFC.md rather
+  than left implicit: `permessage-deflate` keeps its dictionary across messages,
+  so the state is per connection, and `client_max_window_bits` lets the peer
+  choose how much of it the proxy holds -- which is exactly the "memory as a
+  function of what a client sends" the guard is built to avoid. If it is ever
+  added it is an explicit per-route opt-in with its own bounds, not a side effect
+  of a client's offer.
+
 ### Added (behaviour packs as signed data, not as code and not as configurations)
 
 - **`internal/packs` is a pack format and an evaluator**, and a pack is a file:

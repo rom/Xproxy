@@ -337,9 +337,20 @@ routes: [{name: r, upstream: app}]
 		}
 	}
 	// The DoH path is part of the listener's routing, not its policy, so
-	// it rebuilds.
-	if got := listenerChange(from, parse(t, strings.Replace(base, "doh_path: /dns-query", "doh_path: /resolve", 1)), "d"); got == listenerInPlace {
-		t.Error("the DoH path changed in place")
+	// it rebuilds -- on the datagram socket the new generation is handed,
+	// which is why this is a rebuild and not a restart. It was a restart
+	// until that handover existed, and a dns listener could not be
+	// changed at all without one.
+	if got := listenerChange(from, parse(t, strings.Replace(base, "doh_path: /dns-query", "doh_path: /resolve", 1)), "d"); got != listenerRebuild {
+		t.Errorf("the DoH path changed = %v, want a rebuild", got)
+	}
+	// The same listener with DNS over QUIC: now the socket cannot be
+	// handed over, because what is on it is connections rather than
+	// datagrams.
+	withDoQ := strings.Replace(base, "doh_path: /dns-query", "doh_path: /dns-query, doq: true", 1)
+	doq := parse(t, withDoQ)
+	if got := listenerChange(doq, parse(t, strings.Replace(withDoQ, "doh_path: /dns-query", "doh_path: /resolve", 1)), "d"); got != listenerRestart {
+		t.Errorf("a changed dns listener with doq = %v, want a restart", got)
 	}
 
 	// An address change rebuilds: the old socket goes, the new one binds.
@@ -357,6 +368,34 @@ routes: [{name: r, upstream: app}]
 	changed := strings.Replace(withH3, "tls: {certificates:", `tls: {min_version: "1.3", certificates:`, 1)
 	if got := listenerChange(h3, parse(t, changed), "main"); got != listenerRestart {
 		t.Errorf("a changed h3 listener = %v, want a restart", got)
+	}
+}
+
+// TestListenerHasQUIC: the one datagram case a reload cannot rebuild on the
+// same address. Everything else that binds UDP hands the socket to the next
+// generation; a QUIC connection is state inside the transport holding it, so
+// the handover would end every connection and the change asks for a restart
+// instead.
+func TestListenerHasQUIC(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		l    Listener
+		want bool
+	}{
+		{"a plain http listener", Listener{}, false},
+		{"h1 and h2", Listener{Protocols: []Protocol{ProtocolH1, ProtocolH2}}, false},
+		{"h3", Listener{Protocols: []Protocol{ProtocolH1, ProtocolH3}}, true},
+		{"a tcp listener", Listener{Kind: "tcp", TCP: &TCPListener{}}, false},
+		{"a tcp listener relaying QUIC", Listener{Kind: "tcp", TCP: &TCPListener{QUIC: true}}, true},
+		{"a plain dns listener", Listener{Kind: "dns", DNS: &DNSListener{}}, false},
+		{"a dns listener with doq", Listener{Kind: "dns", DNS: &DNSListener{DoQ: true}}, true},
+		{"a dns listener with no section", Listener{Kind: "dns"}, false},
+		{"a datagram relay", Listener{Kind: "tftp"}, false},
+		{"a udp relay", Listener{Kind: "udp"}, false},
+	} {
+		if got := ListenerHasQUIC(c.l); got != c.want {
+			t.Errorf("%s: ListenerHasQUIC = %v, want %v", c.name, got, c.want)
+		}
 	}
 }
 

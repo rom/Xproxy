@@ -40,15 +40,54 @@ import (
 // decision is driven directly; here it could not be told apart from
 // eight attempts at the same port.)
 func TestAPortWhoseDatagramSideIsTakenIsReported(t *testing.T) {
+	// Run the whole scenario on a fresh port until one attempt can be checked
+	// without a sibling in the way.
+	//
+	// The check that matters -- nothing was left bound behind the failure --
+	// can only be made by binding the port again, and the port is an ephemeral
+	// one while this suite runs its packages in parallel. So a failed re-bind
+	// means either the engine leaked the socket or another test in another
+	// package happens to hold that port, and those two are indistinguishable
+	// in one attempt. They are not indistinguishable across three: a leaked
+	// socket is held for the life of this process, so an engine that leaks
+	// fails every attempt, while a coincidence on one particular ephemeral
+	// port out of three is not something to build a test failure on.
+	//
+	// This was a timeout before, first of two seconds and then of thirty, and a
+	// full run of the suite exceeded both -- failing a test about a leak on a
+	// machine that had none. Waiting longer was never going to be the answer,
+	// because how long a sibling holds a port is not this test's to bound.
+	const attempts = 3
+	var last error
+	for i := range attempts {
+		leaked, err := datagramSideTaken(t)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !leaked {
+			return
+		}
+		last = fmt.Errorf("attempt %d: the accept socket was not free again", i+1)
+	}
+	t.Errorf("the accept socket was left behind on %d ports in a row, so the engine "+
+		"kept it: %v", attempts, last)
+}
+
+// datagramSideTaken runs the scenario once: hold a port on UDP, ask the engine
+// to listen on it, and say whether the accept socket was still taken
+// afterwards. Every assertion that does not depend on an ephemeral port is made
+// here, once per attempt.
+func datagramSideTaken(t *testing.T) (bool, error) {
+	t.Helper()
 	// The UDP side of a port whose TCP side is free.
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatal(err)
+		return false, err
 	}
 	defer func() { _ = pc.Close() }()
 	_, port, err := net.SplitHostPort(pc.LocalAddr().String())
 	if err != nil {
-		t.Fatal(err)
+		return false, err
 	}
 	err = start(t, "127.0.0.1:"+port)
 	if err == nil {
@@ -57,36 +96,25 @@ func TestAPortWhoseDatagramSideIsTakenIsReported(t *testing.T) {
 	if !errors.Is(err, syscall.EADDRINUSE) {
 		t.Errorf("the failure was reported as %v", err)
 	}
-	// Nothing was left half-bound behind the failure: the datagram port
-	// is still the socket above's, and the accept socket is closed.
+	// Nothing was left half-bound behind the failure: the datagram port is
+	// still the socket above's. This one does not race -- the port is held by
+	// this test for the whole attempt, so anything else holding it would be the
+	// engine.
 	if extra, err := net.ListenPacket("udp", "127.0.0.1:"+port); err == nil {
 		_ = extra.Close()
 		t.Error("the datagram port came free, so the engine had taken it")
 	}
-	// The accept socket is free again. Bounded rather than immediate,
-	// because the port is an ephemeral one and this suite runs packages in
-	// parallel: another test taking it for a moment is indistinguishable
-	// from a leak in one attempt, and it happens. A socket this process
-	// leaked is held for the life of the process, so it fails every
-	// attempt and the test still says so.
-	//
-	// The bound is generous for that reason. It was two seconds and a full
-	// run of the suite exceeded it -- a sibling package had the port for
-	// longer than that -- which failed a test about a leak on a machine that
-	// had none. Half a minute costs nothing in the passing case, where the
-	// first attempt succeeds, and a real leak still fails every one of them.
-	deadline := time.Now().Add(30 * time.Second)
-	var last error
+	// And the accept socket. A moment's grace for the kernel to finish the
+	// close the engine has already asked for, then the answer.
+	deadline := time.Now().Add(2 * time.Second)
 	for {
 		ln, err := net.Listen("tcp", "127.0.0.1:"+port)
 		if err == nil {
 			_ = ln.Close()
-			break
+			return false, nil
 		}
-		last = err
 		if time.Now().After(deadline) {
-			t.Errorf("the accept socket was left behind: %v", last)
-			break
+			return true, nil
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

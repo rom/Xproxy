@@ -71,6 +71,7 @@ build:
 	$(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BIN)/xproxy-admin ./cmd/xproxy-admin
 	$(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BIN)/xproxy-fleet ./cmd/xproxy-fleet
 	$(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BIN)/xproxy-replay ./cmd/xproxy-replay
+	$(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BIN)/xproxy-simulate ./cmd/xproxy-simulate
 	$(GO) build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o $(BIN)/xsigner ./cmd/xsigner
 
 test:
@@ -91,8 +92,13 @@ test-race:
 # is the same reason the package is outside the gate, and `make test`
 # and `make test-race` run it in full.
 TESTPKGS = $$($(GO) list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' ./... | grep -v '/internal/sandbox$$')
+# cmd/xproxyctl is instrumented alongside internal/... because it is in the
+# gate: it is the operator interface rather than a flag parse over a package
+# that is gated on its own. Every other main package is excluded in
+# test/covergate, which is also where that exception is written down.
+COVERPKGS = ./internal/...,./cmd/xproxyctl
 cover:
-	$(GO) test -count=1 -race -coverpkg=./internal/... -coverprofile=coverage.out -covermode=atomic $(TESTPKGS)
+	$(GO) test -count=1 -race -coverpkg=$(COVERPKGS) -coverprofile=coverage.out -covermode=atomic $(TESTPKGS)
 	$(GO) tool cover -func=coverage.out | tail -1
 
 # Gate: core packages together at least COVER_MIN percent, no package
@@ -173,7 +179,7 @@ DARWIN_ARCHS ?= arm64 amd64
 # edge proxy, the control tools and the web GUI, and has no launchd job for xgate,
 # xrelay or xot, so those three are not built or shipped for it. deploy/macos/install.sh
 # installs exactly this list, and test/deploy holds the two together.
-DARWIN_BINARIES = xproxy xproxyctl xproxy-admin xproxy-fleet xproxy-replay
+DARWIN_BINARIES = xproxy xproxyctl xproxy-admin xproxy-fleet xproxy-replay xproxy-simulate
 
 build-darwin: export CGO_ENABLED = 0
 build-darwin:
@@ -215,7 +221,7 @@ vet-all: vet
 # to configure two daemons the tarball did not contain, so an SSH bastion or any
 # relay listener could not be run from a release at all. test/deploy holds this
 # list against the build rules above.
-LINUX_BINARIES = xproxy xgate xrelay xot xproxyctl xproxy-admin xproxy-fleet xproxy-replay xsigner
+LINUX_BINARIES = xproxy xgate xrelay xot xproxyctl xproxy-admin xproxy-fleet xproxy-replay xproxy-simulate xsigner
 
 release: build dist
 	rm -rf $(DIST) && mkdir -p $(DIST)/$(RELNAME)
@@ -255,6 +261,7 @@ install: build
 	install -D -m 0755 $(BIN)/xproxy-admin $(DESTDIR)$(PREFIX)/bin/xproxy-admin
 	install -D -m 0755 $(BIN)/xproxy-fleet $(DESTDIR)$(PREFIX)/bin/xproxy-fleet
 	install -D -m 0755 $(BIN)/xproxy-replay $(DESTDIR)$(PREFIX)/bin/xproxy-replay
+	install -D -m 0755 $(BIN)/xproxy-simulate $(DESTDIR)$(PREFIX)/bin/xproxy-simulate
 	install -D -m 0755 $(BIN)/xsigner $(DESTDIR)$(PREFIX)/bin/xsigner
 	install -D -m 0644 deploy/systemd/xproxy-fleet.service $(DESTDIR)/etc/systemd/system/xproxy-fleet.service
 	install -D -m 0644 docs/man/xproxy-fleet.8 $(DESTDIR)$(PREFIX)/share/man/man8/xproxy-fleet.8
@@ -291,6 +298,7 @@ install: build
 	install -D -m 0644 docs/man/xot.8 $(DESTDIR)$(PREFIX)/share/man/man8/xot.8
 	install -D -m 0644 docs/man/xproxyctl.8 $(DESTDIR)$(PREFIX)/share/man/man8/xproxyctl.8
 	install -D -m 0644 docs/man/xproxy-replay.8 $(DESTDIR)$(PREFIX)/share/man/man8/xproxy-replay.8
+	install -D -m 0644 docs/man/xproxy-simulate.8 $(DESTDIR)$(PREFIX)/share/man/man8/xproxy-simulate.8
 	install -D -m 0644 docs/man/xsigner.8 $(DESTDIR)$(PREFIX)/share/man/man8/xsigner.8
 	install -D -m 0644 docs/man/xproxy.yaml.5 $(DESTDIR)$(PREFIX)/share/man/man5/xproxy.yaml.5
 	install -D -m 0644 internal/config/schema/xproxy.schema.json $(DESTDIR)$(PREFIX)/share/xproxy/xproxy.schema.json

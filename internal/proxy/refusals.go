@@ -280,6 +280,106 @@ func (s *Stats) Engineering(kind, class string) {
 	c.Add(1)
 }
 
+// EngineeringFiled counts a recognised engineering operation that happened
+// while a work order was on file for the device.
+//
+// It is a subset of Engineering, not an alternative to it, because the useful
+// number is the difference: an estate reads "four hundred engineering
+// operations, three hundred and ninety of them filed" and then works through
+// the ten. A single total answers nothing, and so would a counter that only
+// had the unfiled ones, because there would be nothing to compare it with.
+func (s *Stats) EngineeringFiled(kind, class string) {
+	if _, known := listener.RoleOf(kind); !known || class == "" {
+		return
+	}
+	key := kind + "/" + class
+	e := &s.engineeringFiled
+	e.mu.RLock()
+	c := e.m[key]
+	e.mu.RUnlock()
+	if c == nil {
+		e.mu.Lock()
+		if e.m == nil {
+			e.m = make(map[string]*atomic.Uint64, 16)
+		}
+		if c = e.m[key]; c == nil {
+			c = new(atomic.Uint64)
+			e.m[key] = c
+		}
+		e.mu.Unlock()
+	}
+	c.Add(1)
+}
+
+// EngineeringFiledCounts copies the table, "kind/class" to count.
+func (s *Stats) EngineeringFiledCounts() map[string]uint64 {
+	e := &s.engineeringFiled
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if len(e.m) == 0 {
+		return nil
+	}
+	out := make(map[string]uint64, len(e.m))
+	for k, c := range e.m {
+		out[k] = c.Load()
+	}
+	return out
+}
+
+// EngineeringOutside counts an engineering operation that happened outside
+// every approved window, on a listener that does not require one.
+//
+// It is deliberately not a refusal, which is what it used to be: six of the
+// eight kinds routed this alert through the helper that counts a refusal and
+// the other two did not, so xproxy_refusals_total both disagreed with itself
+// between protocols and, where it did count, said the relay had refused
+// something it had forwarded. The operation was carried -- that is the whole
+// point of the distinction between `engineering_ungranted` and
+// `engineering_no_grant` -- so it belongs in a counter of its own.
+//
+// The ATT&CK technique is still observed here. An operation outside every
+// approved window is a detection whether or not anybody refused it, and
+// moving the count without the detection would have lost T0859 and T1078 on
+// exactly the listeners that only asked to be told.
+func (s *Stats) EngineeringOutside(kind, class, reason string) {
+	if _, known := listener.RoleOf(kind); !known || class == "" {
+		return
+	}
+	s.techniques.observe(kind, refusalReason(kind, reason))
+	key := kind + "/" + class
+	e := &s.engineeringOutside
+	e.mu.RLock()
+	c := e.m[key]
+	e.mu.RUnlock()
+	if c == nil {
+		e.mu.Lock()
+		if e.m == nil {
+			e.m = make(map[string]*atomic.Uint64, 16)
+		}
+		if c = e.m[key]; c == nil {
+			c = new(atomic.Uint64)
+			e.m[key] = c
+		}
+		e.mu.Unlock()
+	}
+	c.Add(1)
+}
+
+// EngineeringOutsideCounts copies the table, "kind/class" to count.
+func (s *Stats) EngineeringOutsideCounts() map[string]uint64 {
+	e := &s.engineeringOutside
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if len(e.m) == 0 {
+		return nil
+	}
+	out := make(map[string]uint64, len(e.m))
+	for k, c := range e.m {
+		out[k] = c.Load()
+	}
+	return out
+}
+
 // packCounts is the behaviour-pack matches per pack and severity.
 //
 // Bounded by the pack directory, which is a signed, curated set of files this

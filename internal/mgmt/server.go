@@ -84,6 +84,9 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 	mux.HandleFunc("GET /v1/health", s.health)
 	mux.HandleFunc("GET /v1/status", s.status)
 	mux.HandleFunc("GET /v1/stats", s.stats)
+	mux.HandleFunc("GET /v1/listeners", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, 200, s.proxy.ListenersReport())
+	})
 	mux.HandleFunc("GET /v1/upstreams", s.upstreams)
 	mux.HandleFunc("GET /v1/pools", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.Pools()) })
 	mux.HandleFunc("GET /v1/tls", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, s.proxy.Certificates()) })
@@ -197,6 +200,7 @@ func New(cfg config.Management, p *proxy.Server, logs *logging.Logs, a Actions) 
 	// Just-in-time access: the grants a gate listener admits sessions
 	// against, and the four calls that change them.
 	s.accessRoutes(mux)
+	s.workOrderRoutes(mux)
 	s.packRoutes(mux)
 	mux.HandleFunc("GET /v1/sessions", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, 200, s.proxy.Sessions().List())

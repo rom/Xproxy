@@ -278,7 +278,7 @@ on this kind, and the other four models carry it.
 On OPC UA one service runs something and the rest read and write. The
 `engineering` block — [documented once in docs/CONFIG.md](../CONFIG.md#engineering),
 the same on every OT kind — reads that one and the address-space services as
-their own class of event, and can hold them to an approved work order out of the
+their own class of event, and can hold them to an approved grant out of the
 [access ledger](../CONFIG.md#access).
 
 | Service | Class | Why |
@@ -299,11 +299,11 @@ in this relay at all.
 server's author decided — `LoadRecipe`, `Reset`, `StartBatch` — so a method call
 is an operation whose meaning this relay cannot read and whose consequences are
 the vendor's. The honest thing is to name it, record which method it was, and
-let the work order say whether it was expected. The finding carries the method's
+let the grant say whether it was expected. The finding carries the method's
 node identifier and the object it was called on.
 
 The subject is the session's authenticated user where the client supplied one,
-so a work order on this kind names a person and not an address.
+so a grant on this kind names a person and not an address.
 
 ## What it does not do
 

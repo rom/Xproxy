@@ -86,7 +86,7 @@ type server struct {
 	// anomaly is the behavioural models, nil when the block is off.
 	anomaly *anomaly.Detector
 	// engineering recognises a SET for what it is on this protocol -- a
-	// configuration change -- and ties it to an approved work order.
+	// configuration change -- and ties it to an approved grant.
 	engineering *engineering.Guard
 	// names is RFC 6353's certificate-to-security-name table, nil when the
 	// listener has none: a (D)TLS peer has proved it holds a key and that is

@@ -47,11 +47,11 @@ func (t *server) decideEngineering(ip netip.Addr, op wire.Op, path wire.Path) st
 	subject := ip.String()
 	return t.engineering.Decide(e, subject, t.m.Upstream, nil, t.enforcing(),
 		engineering.Handler{
-			Report: func(e engineering.Operation, grant *access.Grant) {
-				t.reportEngineering(ip, e, grant)
+			Report: func(e engineering.Operation, grant *access.Grant, order *access.WorkOrder) {
+				t.reportEngineering(ip, e, grant, order)
 			},
-			Ungranted: func(e engineering.Operation, reason string) {
-				t.deny(ip, reason, e.String())
+			Ungranted: func(e engineering.Operation, reason string, order *access.WorkOrder) {
+				t.engineeringOutside(ip, reason, e, order)
 			},
 			Would: func(e engineering.Operation, reason string) {
 				t.host.Counters().WouldRefuse("tftp", reason)
@@ -63,7 +63,7 @@ func (t *server) decideEngineering(ip netip.Addr, op wire.Op, path wire.Path) st
 		})
 }
 
-func (t *server) reportEngineering(ip netip.Addr, e engineering.Operation, grant *access.Grant) {
+func (t *server) reportEngineering(ip netip.Addr, e engineering.Operation, grant *access.Grant, order *access.WorkOrder) {
 	t.host.Counters().Engineering("tftp", string(e.Class))
 	t.host.ObserveFact(ip, correlate.Fact{
 		Class: correlate.ClassEngineering, Kind: "tftp", Listener: t.cfg.Name,
@@ -73,8 +73,43 @@ func (t *server) reportEngineering(ip netip.Addr, e engineering.Operation, grant
 		"class", string(e.Class), "operation", e.Detail,
 		"file", textsafe.Clip64(e.Point)}
 	if grant != nil {
-		attrs = append(attrs, "grant", grant.ID, "work_order", textsafe.Clip64(grant.Reason))
+		attrs = append(attrs, "grant", grant.ID, "grant_reason", textsafe.Clip64(grant.Reason))
+	}
+	// The work order on file for the device, and the tone that follows
+	// from it. A work order is not an approval and permits nothing: it
+	// says somebody was expecting work here, which is why the event is a
+	// notice rather than a warning.
+	attrs = append(attrs, "severity", engineering.Severity(order))
+	if order != nil {
+		t.host.Counters().EngineeringFiled("tftp", string(e.Class))
+		attrs = append(attrs, "work_order", order.Reference,
+			"work_order_by", textsafe.Clip64(order.By))
 	}
 	t.host.Logs().SecurityEvent(context.Background(), "engineering",
 		engineering.Reason(e.Class), attrs...)
+}
+
+// engineeringOutside records an operation that happened outside every approved
+// window on a listener that does not require one.
+//
+// It counts EngineeringOutside rather than a refusal: the operation was
+// carried. The event itself is unchanged -- same action, same reason -- so the
+// behaviour packs and the ATT&CK mapping that read it are unaffected.
+func (t *server) engineeringOutside(ip netip.Addr, reason string, op engineering.Operation, order *access.WorkOrder) {
+	t.host.Counters().EngineeringOutside("tftp", string(op.Class), reason)
+	if !t.alerts() {
+		return
+	}
+	a := []any{"listener", t.cfg.Name, "client_ip", ip.String(), "proto", "tftp",
+		"reason", reason, "class", string(op.Class),
+		"operation", textsafe.Clip64(op.String())}
+	// The tone follows the work order, the same way the report's does: an
+	// operation somebody filed is a notice, one nobody filed is a warning.
+	// Both are events, because the listener carried the operation either way.
+	a = append(a, "severity", engineering.Severity(order))
+	if order != nil {
+		a = append(a, "work_order", order.Reference,
+			"work_order_by", textsafe.Clip64(order.By))
+	}
+	t.host.Logs().SecurityEvent(context.Background(), "alert", "tftp_"+reason, a...)
 }

@@ -523,6 +523,73 @@ type Stats struct {
 	MMSServerErrors       atomic.Uint64
 	MMSServerRefusals     atomic.Uint64
 	MMSSelections         atomic.Uint64
+	// The three authentication relays.
+	//
+	// RADIUSBadDigest is the one to alert on: a packet whose
+	// Message-Authenticator or Response Authenticator did not verify is
+	// either a mismatched shared secret or somebody forging answers, and
+	// after a reload that clears it is the first number to read.
+	// RADIUSPlaintextPasswords counts the Access-Requests carrying
+	// User-Password, which is a fact about the estate's equipment rather
+	// than about this relay.
+	RADIUSRequests           atomic.Uint64
+	RADIUSBadDigest          atomic.Uint64
+	RADIUSNoDigest           atomic.Uint64
+	RADIUSPlaintextPasswords atomic.Uint64
+	RADIUSPrivilegeGrants    atomic.Uint64
+	RADIUSUnsolicited        atomic.Uint64
+	// The TACACS+ relay. TACACSCommands is the audit number -- how many
+	// command authorizations crossed this listener -- and
+	// TACACSHeaderOnly counts the packets whose body this listener could
+	// not read because it holds no key, which is the number that says a
+	// command policy is deciding nothing.
+	TACACSSessions           atomic.Uint64
+	TACACSCommands           atomic.Uint64
+	TACACSAccounting         atomic.Uint64
+	TACACSHeaderOnly         atomic.Uint64
+	TACACSPlaintextPasswords atomic.Uint64
+	TACACSPrivilegeGrants    atomic.Uint64
+	// The Kerberos KDC proxy. KKDCPPreauthFailures is password spraying
+	// seen from the one place it is visible, and KKDCPWeakTickets is a
+	// ticket that left in RC4 -- the Kerberoasting target -- whether or
+	// not this listener was configured to refuse it.
+	KKDCPRequests        atomic.Uint64
+	KKDCPPreauthFailures atomic.Uint64
+	KKDCPWeakTickets     atomic.Uint64
+	KKDCPPreauthExempt   atomic.Uint64
+	KKDCPDelegations     atomic.Uint64
+	KKDCPRealmMismatch   atomic.Uint64
+	// The two mailbox protocols. The numbers that matter here are about
+	// volume rather than access: IMAPFetchedMessages is how many messages
+	// the requests this relay carried named, and POP3RetrievedBytes how
+	// many octets left through RETR and TOP. A mailbox compromise is
+	// visible in those two long before it is visible anywhere else, because
+	// the mail server's own log says a client read its mail and not how
+	// much of it.
+	// Server-Sent Events: a stream is one response, so SSEStreams counts
+	// responses and the rest count what crossed inside them.
+	SSEStreams               atomic.Uint64
+	SSEEvents                atomic.Uint64
+	SSEEventBytes            atomic.Uint64
+	SSEComments              atomic.Uint64
+	SSEViolations            atomic.Uint64
+	SSEUnknownEvents         atomic.Uint64
+	SSECursorsStripped       atomic.Uint64
+	IMAPConnections          atomic.Uint64
+	IMAPCommands             atomic.Uint64
+	IMAPAuthFailures         atomic.Uint64
+	IMAPFetchedMessages      atomic.Uint64
+	IMAPAppendBytes          atomic.Uint64
+	IMAPPlaintextLogins      atomic.Uint64
+	IMAPCapabilitiesStripped atomic.Uint64
+	IMAPPreauthRefused       atomic.Uint64
+	POP3Connections          atomic.Uint64
+	POP3Commands             atomic.Uint64
+	POP3AuthFailures         atomic.Uint64
+	POP3RetrievedBytes       atomic.Uint64
+	POP3Deletes              atomic.Uint64
+	POP3PlaintextLogins      atomic.Uint64
+	POP3CapabilitiesStripped atomic.Uint64
 	// The device inventory.
 	//
 	// AssetFindings is the one to alert on: an identity change, or a device
@@ -669,6 +736,8 @@ type Stats struct {
 	InterceptRefused   atomic.Uint64
 	InterceptPassed    atomic.Uint64
 	InterceptBytes     atomic.Uint64
+	InterceptRequests  atomic.Uint64
+	InterceptBytesOnly atomic.Uint64
 	SSHRecorded        atomic.Uint64
 	SSHRejected        atomic.Uint64
 	SSHAuthFailed      atomic.Uint64
@@ -784,6 +853,15 @@ type Stats struct {
 	// class. Not refusals -- most of them are a plant being engineered --
 	// which is why they are counted apart from them.
 	engineering engineeringCounts
+	// engineeringOutside is the subset that happened outside every approved
+	// window on a listener that does not require one. Same shape, separate
+	// table, because the answer to "how much engineering" and the answer to
+	// "how much of it nobody filed" are two numbers.
+	engineeringOutside engineeringCounts
+	// engineeringFiled is the subset that happened while a work order was on
+	// file for the device. A subset of engineering, because the number an
+	// estate reads is the difference between the two.
+	engineeringFiled engineeringCounts
 	// packs counts behaviour-pack findings per pack and severity.
 	packs packCounts
 	// RefusalsUntracked counts refusals named under a kind the roster
@@ -969,219 +1047,259 @@ type Snapshot struct {
 	// it decided. ModbusWouldDeny counts the frames a policy would have
 	// refused while learning mode was observing rather than enforcing,
 	// which is the number that says whether a policy is ready.
-	ModbusSessions         uint64 `json:"modbus_sessions"`
-	ModbusSessionsOpen     int64  `json:"modbus_sessions_open"`
-	ModbusRequests         uint64 `json:"modbus_requests"`
-	ModbusResponses        uint64 `json:"modbus_responses"`
-	ModbusDenied           uint64 `json:"modbus_denied"`
-	ModbusWouldDeny        uint64 `json:"modbus_would_deny"`
-	ModbusExceptions       uint64 `json:"modbus_exceptions"`
-	ModbusMalformed        uint64 `json:"modbus_malformed"`
-	ModbusRefused          uint64 `json:"modbus_refused"`
-	ModbusValueUnknown     uint64 `json:"modbus_value_unknown"`
-	ModbusValuePoints      int64  `json:"modbus_value_points"`
-	ModbusRejected         uint64 `json:"modbus_rejected"`
-	ModbusRateLimited      uint64 `json:"modbus_rate_limited"`
-	ModbusQueueFull        uint64 `json:"modbus_queue_full"`
-	ModbusUpstreamFailed   uint64 `json:"modbus_upstream_failed"`
-	ModbusTraced           uint64 `json:"modbus_traced"`
-	ModbusLearned          uint64 `json:"modbus_learned"`
-	ModbusDeceived         uint64 `json:"modbus_deceived"`
-	ModbusTripwire         uint64 `json:"modbus_tripwire"`
-	IEC104Sessions         uint64 `json:"iec104_sessions"`
-	IEC104SessionsOpen     int64  `json:"iec104_sessions_open"`
-	IEC104Frames           uint64 `json:"iec104_frames"`
-	IEC104Deceived         uint64 `json:"iec104_deceived"`
-	IEC104Tripwire         uint64 `json:"iec104_tripwire"`
-	S7Deceived             uint64 `json:"s7_deceived"`
-	S7Tripwire             uint64 `json:"s7_tripwire"`
-	SNMPDeceived           uint64 `json:"snmp_deceived"`
-	SNMPTripwire           uint64 `json:"snmp_tripwire"`
-	SSHDeceived            uint64 `json:"ssh_deceived"`
-	SSHTripwire            uint64 `json:"ssh_tripwire"`
-	TelnetDeceived         uint64 `json:"telnet_deceived"`
-	TelnetTripwire         uint64 `json:"telnet_tripwire"`
-	PostgresDeceived       uint64 `json:"postgres_deceived"`
-	PostgresTripwire       uint64 `json:"postgres_tripwire"`
-	MySQLDeceived          uint64 `json:"mysql_deceived"`
-	MySQLTripwire          uint64 `json:"mysql_tripwire"`
-	RedisDeceived          uint64 `json:"redis_deceived"`
-	RedisTripwire          uint64 `json:"redis_tripwire"`
-	IEC104Commands         uint64 `json:"iec104_commands"`
-	IEC104SystemCmds       uint64 `json:"iec104_system_commands"`
-	IEC104Authentications  uint64 `json:"iec104_authentications"`
-	IEC104Denied           uint64 `json:"iec104_denied"`
-	IEC104WouldDeny        uint64 `json:"iec104_would_deny"`
-	IEC104Malformed        uint64 `json:"iec104_malformed"`
-	IEC104Rejected         uint64 `json:"iec104_rejected"`
-	IEC104RateLimited      uint64 `json:"iec104_rate_limited"`
-	IEC104Selects          uint64 `json:"iec104_selects"`
-	IEC104Executes         uint64 `json:"iec104_executes"`
-	IEC104Unselected       uint64 `json:"iec104_unselected"`
-	IEC104SelectsHeld      int64  `json:"iec104_selects_held"`
-	IEC104Failovers        uint64 `json:"iec104_failovers"`
-	IEC104Standby          uint64 `json:"iec104_standby"`
-	IEC104RedundancyActive int64  `json:"iec104_redundancy_active"`
-	IEC104Setpoints        uint64 `json:"iec104_setpoints"`
-	IEC104SetpointPoints   int64  `json:"iec104_setpoint_points"`
-	IEC104SetpointUnknown  int64  `json:"iec104_setpoint_unknown"`
-	IEC104SeqGaps          uint64 `json:"iec104_sequence_gaps"`
-	IEC104WindowFull       uint64 `json:"iec104_window_full"`
-	IEC104UpstreamFail     uint64 `json:"iec104_upstream_failed"`
-	SNMPMessages           uint64 `json:"snmp_messages"`
-	SNMPSessions           uint64 `json:"snmp_sessions"`
-	SNMPSessionsOpen       int64  `json:"snmp_sessions_open"`
-	SNMPReads              uint64 `json:"snmp_reads"`
-	SNMPWrites             uint64 `json:"snmp_writes"`
-	SNMPTraps              uint64 `json:"snmp_traps"`
-	SNMPDenied             uint64 `json:"snmp_denied"`
-	SNMPWouldDeny          uint64 `json:"snmp_would_deny"`
-	SNMPMalformed          uint64 `json:"snmp_malformed"`
-	SNMPRejected           uint64 `json:"snmp_rejected"`
-	SNMPRateLimited        uint64 `json:"snmp_rate_limited"`
-	SNMPAmplified          uint64 `json:"snmp_amplified"`
-	SNMPTruncated          uint64 `json:"snmp_truncated"`
-	SNMPUpgraded           uint64 `json:"snmp_upgraded"`
-	SNMPTimedOut           uint64 `json:"snmp_timed_out"`
-	SNMPUpstreamFail       uint64 `json:"snmp_upstream_failed"`
-	SNMPUnsolicited        uint64 `json:"snmp_unsolicited"`
-	SNMPVerified           uint64 `json:"snmp_verified"`
-	SNMPDecrypted          uint64 `json:"snmp_decrypted"`
-	SNMPAuthFailed         uint64 `json:"snmp_auth_failed"`
-	SNMPReplayed           uint64 `json:"snmp_replayed"`
-	SNMPDiscoveries        uint64 `json:"snmp_discoveries"`
-	SNMPOriginated         uint64 `json:"snmp_originated"`
-	SNMPPending            int64  `json:"snmp_pending"`
-	SNMPDTLSHandshakes     uint64 `json:"snmp_dtls_handshakes"`
-	SNMPDTLSHandshakeFail  uint64 `json:"snmp_dtls_handshake_failed"`
-	SNMPDTLSSessions       int64  `json:"snmp_dtls_sessions"`
-	SNMPDTLSDropped        uint64 `json:"snmp_dtls_datagrams_dropped"`
-	SNMPTSMMessages        uint64 `json:"snmp_tsm_messages"`
-	SNMPTSMUnnamed         uint64 `json:"snmp_tsm_unnamed"`
-	LDAPSessions           uint64 `json:"ldap_sessions"`
-	LDAPSessionsOpen       int64  `json:"ldap_sessions_open"`
-	LDAPRequests           uint64 `json:"ldap_requests"`
-	LDAPBinds              uint64 `json:"ldap_binds"`
-	LDAPBindFailures       uint64 `json:"ldap_bind_failures"`
-	LDAPSearches           uint64 `json:"ldap_searches"`
-	LDAPWrites             uint64 `json:"ldap_writes"`
-	LDAPEntries            uint64 `json:"ldap_entries"`
-	LDAPStripped           uint64 `json:"ldap_stripped"`
-	LDAPTruncated          uint64 `json:"ldap_truncated"`
-	LDAPStartTLS           uint64 `json:"ldap_starttls"`
-	LDAPDenied             uint64 `json:"ldap_denied"`
-	LDAPWouldDeny          uint64 `json:"ldap_would_deny"`
-	LDAPMalformed          uint64 `json:"ldap_malformed"`
-	LDAPRejected           uint64 `json:"ldap_rejected"`
-	LDAPRateLimited        uint64 `json:"ldap_rate_limited"`
-	LDAPUpstreamFail       uint64 `json:"ldap_upstream_failed"`
-	LDAPOutstanding        int64  `json:"ldap_outstanding"`
-	TFTPRequests           uint64 `json:"tftp_requests"`
-	TFTPTransfers          uint64 `json:"tftp_transfers"`
-	TFTPTransfersOpen      int64  `json:"tftp_transfers_open"`
-	TFTPReads              uint64 `json:"tftp_reads"`
-	TFTPWrites             uint64 `json:"tftp_writes"`
-	TFTPBytesIn            uint64 `json:"tftp_bytes_in"`
-	TFTPBytesOut           uint64 `json:"tftp_bytes_out"`
-	TFTPDenied             uint64 `json:"tftp_denied"`
-	TFTPWouldDeny          uint64 `json:"tftp_would_deny"`
-	TFTPPathRefused        uint64 `json:"tftp_path_refused"`
-	TFTPLowered            uint64 `json:"tftp_lowered"`
-	TFTPOversize           uint64 `json:"tftp_oversize"`
-	TFTPMalformed          uint64 `json:"tftp_malformed"`
-	TFTPRejected           uint64 `json:"tftp_rejected"`
-	TFTPRateLimited        uint64 `json:"tftp_rate_limited"`
-	TFTPTimedOut           uint64 `json:"tftp_timed_out"`
-	TFTPUpstreamFail       uint64 `json:"tftp_upstream_failed"`
-	TFTPUnsolicited        uint64 `json:"tftp_unsolicited"`
-	DHCPMessages           uint64 `json:"dhcp_messages"`
-	DHCPDiscovers          uint64 `json:"dhcp_discovers"`
-	DHCPRequests           uint64 `json:"dhcp_requests"`
-	DHCPReplies            uint64 `json:"dhcp_replies"`
-	DHCPLeases             uint64 `json:"dhcp_leases"`
-	DHCPReleases           uint64 `json:"dhcp_releases"`
-	DHCPDenied             uint64 `json:"dhcp_denied"`
-	DHCPWouldDeny          uint64 `json:"dhcp_would_deny"`
-	DHCPRogue              uint64 `json:"dhcp_rogue"`
-	DHCPStripped           uint64 `json:"dhcp_stripped"`
-	DHCPMalformed          uint64 `json:"dhcp_malformed"`
-	DHCPRejected           uint64 `json:"dhcp_rejected"`
-	DHCPRateLimited        uint64 `json:"dhcp_rate_limited"`
-	DHCPTimedOut           uint64 `json:"dhcp_timed_out"`
-	DHCPUpstreamFail       uint64 `json:"dhcp_upstream_failed"`
-	DHCPUnsolicited        uint64 `json:"dhcp_unsolicited"`
-	DHCPPending            int64  `json:"dhcp_pending"`
-	DHCPClients            int64  `json:"dhcp_clients"`
-	DHCP6Messages          uint64 `json:"dhcp6_messages"`
-	DHCP6Solicits          uint64 `json:"dhcp6_solicits"`
-	DHCP6Requests          uint64 `json:"dhcp6_requests"`
-	DHCP6Replies           uint64 `json:"dhcp6_replies"`
-	DHCP6Relayed           uint64 `json:"dhcp6_relayed"`
-	DHCP6Answered          uint64 `json:"dhcp6_answered"`
-	DHCP6Releases          uint64 `json:"dhcp6_releases"`
-	DHCP6Denied            uint64 `json:"dhcp6_denied"`
-	DHCP6WouldDeny         uint64 `json:"dhcp6_would_deny"`
-	DHCP6RogueServer       uint64 `json:"dhcp6_rogue_server"`
-	DHCP6OptionsStripped   uint64 `json:"dhcp6_options_stripped"`
-	DHCP6LeaseBounded      uint64 `json:"dhcp6_lease_bounded"`
-	DHCP6Malformed         uint64 `json:"dhcp6_malformed"`
-	DHCP6Rejected          uint64 `json:"dhcp6_rejected"`
-	DHCP6RateLimited       uint64 `json:"dhcp6_rate_limited"`
-	DHCP6UpstreamFail      uint64 `json:"dhcp6_upstream_failed"`
-	DHCP6SendFailed        uint64 `json:"dhcp6_send_failed"`
-	DHCP6Unsolicited       uint64 `json:"dhcp6_unsolicited"`
-	DHCP6Pending           int64  `json:"dhcp6_pending"`
-	DHCP6Clients           int64  `json:"dhcp6_clients"`
-	CoAPMessages           uint64 `json:"coap_messages"`
-	CoAPRequests           uint64 `json:"coap_requests"`
-	CoAPResponses          uint64 `json:"coap_responses"`
-	CoAPEmpty              uint64 `json:"coap_empty"`
-	CoAPRelayed            uint64 `json:"coap_relayed"`
-	CoAPAnswered           uint64 `json:"coap_answered"`
-	CoAPNotifications      uint64 `json:"coap_notifications"`
-	CoAPDenied             uint64 `json:"coap_denied"`
-	CoAPWouldDeny          uint64 `json:"coap_would_deny"`
-	CoAPRefusalsAnswered   uint64 `json:"coap_refusals_answered"`
-	CoAPRogueDevice        uint64 `json:"coap_rogue_device"`
-	CoAPAmplified          uint64 `json:"coap_amplified"`
-	CoAPProxyRefused       uint64 `json:"coap_proxy_refused"`
-	CoAPRefusedObserve     uint64 `json:"coap_refused_observe"`
-	CoAPOversize           uint64 `json:"coap_oversize"`
-	CoAPMalformed          uint64 `json:"coap_malformed"`
-	CoAPRejected           uint64 `json:"coap_rejected"`
-	CoAPRateLimited        uint64 `json:"coap_rate_limited"`
-	CoAPUpstreamFail       uint64 `json:"coap_upstream_failed"`
-	CoAPSendFailed         uint64 `json:"coap_send_failed"`
-	CoAPUnsolicited        uint64 `json:"coap_unsolicited"`
-	CoAPHandshakes         uint64 `json:"coap_handshakes"`
-	CoAPHandshakeFailed    uint64 `json:"coap_handshakes_failed"`
-	CoAPPSKSessions        uint64 `json:"coap_psk_sessions"`
-	CoAPUnknownIdentity    uint64 `json:"coap_unknown_identity"`
-	CoAPUnnamed            uint64 `json:"coap_unnamed_sessions"`
-	CoAPDatagramsDropped   uint64 `json:"coap_datagrams_dropped"`
-	CoAPPending            int64  `json:"coap_pending"`
-	CoAPObservers          int64  `json:"coap_observers"`
-	CoAPSessions           int64  `json:"coap_sessions"`
-	OPCUAChannels          uint64 `json:"opcua_channels"`
-	OPCUASessions          uint64 `json:"opcua_sessions"`
-	OPCUAOpaque            uint64 `json:"opcua_opaque_bodies"`
-	OPCUAServerErrors      uint64 `json:"opcua_server_errors"`
-	OPCUAServerFaults      uint64 `json:"opcua_server_faults"`
-	MMSAssociations        uint64 `json:"mms_associations"`
-	MMSSessions            uint64 `json:"mms_sessions"`
-	MMSPlaintextPasswords  uint64 `json:"mms_plaintext_passwords"`
-	MMSOpaque              uint64 `json:"mms_opaque_contexts"`
-	MMSServerErrors        uint64 `json:"mms_server_errors"`
-	MMSServerRefusals      uint64 `json:"mms_server_refusals"`
-	MMSSelections          uint64 `json:"mms_selections"`
-	AssetObservations      uint64 `json:"asset_observations"`
-	AssetFindings          uint64 `json:"asset_findings"`
-	AssetUnexpected        uint64 `json:"asset_unexpected_role"`
-	AssetSaveFailures      uint64 `json:"asset_save_failures"`
-	AdvisoryAffected       uint64 `json:"advisory_affected"`
-	AdvisoryNotAssessed    uint64 `json:"advisory_not_assessed"`
-	AdvisoryFindings       uint64 `json:"advisory_findings"`
-	AdvisoryFailures       uint64 `json:"advisory_failures"`
+	ModbusSessions           uint64 `json:"modbus_sessions"`
+	ModbusSessionsOpen       int64  `json:"modbus_sessions_open"`
+	ModbusRequests           uint64 `json:"modbus_requests"`
+	ModbusResponses          uint64 `json:"modbus_responses"`
+	ModbusDenied             uint64 `json:"modbus_denied"`
+	ModbusWouldDeny          uint64 `json:"modbus_would_deny"`
+	ModbusExceptions         uint64 `json:"modbus_exceptions"`
+	ModbusMalformed          uint64 `json:"modbus_malformed"`
+	ModbusRefused            uint64 `json:"modbus_refused"`
+	ModbusValueUnknown       uint64 `json:"modbus_value_unknown"`
+	ModbusValuePoints        int64  `json:"modbus_value_points"`
+	ModbusRejected           uint64 `json:"modbus_rejected"`
+	ModbusRateLimited        uint64 `json:"modbus_rate_limited"`
+	ModbusQueueFull          uint64 `json:"modbus_queue_full"`
+	ModbusUpstreamFailed     uint64 `json:"modbus_upstream_failed"`
+	ModbusTraced             uint64 `json:"modbus_traced"`
+	ModbusLearned            uint64 `json:"modbus_learned"`
+	ModbusDeceived           uint64 `json:"modbus_deceived"`
+	ModbusTripwire           uint64 `json:"modbus_tripwire"`
+	IEC104Sessions           uint64 `json:"iec104_sessions"`
+	IEC104SessionsOpen       int64  `json:"iec104_sessions_open"`
+	IEC104Frames             uint64 `json:"iec104_frames"`
+	IEC104Deceived           uint64 `json:"iec104_deceived"`
+	IEC104Tripwire           uint64 `json:"iec104_tripwire"`
+	S7Deceived               uint64 `json:"s7_deceived"`
+	S7Tripwire               uint64 `json:"s7_tripwire"`
+	SNMPDeceived             uint64 `json:"snmp_deceived"`
+	SNMPTripwire             uint64 `json:"snmp_tripwire"`
+	SSHDeceived              uint64 `json:"ssh_deceived"`
+	SSHTripwire              uint64 `json:"ssh_tripwire"`
+	TelnetDeceived           uint64 `json:"telnet_deceived"`
+	TelnetTripwire           uint64 `json:"telnet_tripwire"`
+	PostgresDeceived         uint64 `json:"postgres_deceived"`
+	PostgresTripwire         uint64 `json:"postgres_tripwire"`
+	MySQLDeceived            uint64 `json:"mysql_deceived"`
+	MySQLTripwire            uint64 `json:"mysql_tripwire"`
+	RedisDeceived            uint64 `json:"redis_deceived"`
+	RedisTripwire            uint64 `json:"redis_tripwire"`
+	IEC104Commands           uint64 `json:"iec104_commands"`
+	IEC104SystemCmds         uint64 `json:"iec104_system_commands"`
+	IEC104Authentications    uint64 `json:"iec104_authentications"`
+	IEC104Denied             uint64 `json:"iec104_denied"`
+	IEC104WouldDeny          uint64 `json:"iec104_would_deny"`
+	IEC104Malformed          uint64 `json:"iec104_malformed"`
+	IEC104Rejected           uint64 `json:"iec104_rejected"`
+	IEC104RateLimited        uint64 `json:"iec104_rate_limited"`
+	IEC104Selects            uint64 `json:"iec104_selects"`
+	IEC104Executes           uint64 `json:"iec104_executes"`
+	IEC104Unselected         uint64 `json:"iec104_unselected"`
+	IEC104SelectsHeld        int64  `json:"iec104_selects_held"`
+	IEC104Failovers          uint64 `json:"iec104_failovers"`
+	IEC104Standby            uint64 `json:"iec104_standby"`
+	IEC104RedundancyActive   int64  `json:"iec104_redundancy_active"`
+	IEC104Setpoints          uint64 `json:"iec104_setpoints"`
+	IEC104SetpointPoints     int64  `json:"iec104_setpoint_points"`
+	IEC104SetpointUnknown    int64  `json:"iec104_setpoint_unknown"`
+	IEC104SeqGaps            uint64 `json:"iec104_sequence_gaps"`
+	IEC104WindowFull         uint64 `json:"iec104_window_full"`
+	IEC104UpstreamFail       uint64 `json:"iec104_upstream_failed"`
+	SNMPMessages             uint64 `json:"snmp_messages"`
+	SNMPSessions             uint64 `json:"snmp_sessions"`
+	SNMPSessionsOpen         int64  `json:"snmp_sessions_open"`
+	SNMPReads                uint64 `json:"snmp_reads"`
+	SNMPWrites               uint64 `json:"snmp_writes"`
+	SNMPTraps                uint64 `json:"snmp_traps"`
+	SNMPDenied               uint64 `json:"snmp_denied"`
+	SNMPWouldDeny            uint64 `json:"snmp_would_deny"`
+	SNMPMalformed            uint64 `json:"snmp_malformed"`
+	SNMPRejected             uint64 `json:"snmp_rejected"`
+	SNMPRateLimited          uint64 `json:"snmp_rate_limited"`
+	SNMPAmplified            uint64 `json:"snmp_amplified"`
+	SNMPTruncated            uint64 `json:"snmp_truncated"`
+	SNMPUpgraded             uint64 `json:"snmp_upgraded"`
+	SNMPTimedOut             uint64 `json:"snmp_timed_out"`
+	SNMPUpstreamFail         uint64 `json:"snmp_upstream_failed"`
+	SNMPUnsolicited          uint64 `json:"snmp_unsolicited"`
+	SNMPVerified             uint64 `json:"snmp_verified"`
+	SNMPDecrypted            uint64 `json:"snmp_decrypted"`
+	SNMPAuthFailed           uint64 `json:"snmp_auth_failed"`
+	SNMPReplayed             uint64 `json:"snmp_replayed"`
+	SNMPDiscoveries          uint64 `json:"snmp_discoveries"`
+	SNMPOriginated           uint64 `json:"snmp_originated"`
+	SNMPPending              int64  `json:"snmp_pending"`
+	SNMPDTLSHandshakes       uint64 `json:"snmp_dtls_handshakes"`
+	SNMPDTLSHandshakeFail    uint64 `json:"snmp_dtls_handshake_failed"`
+	SNMPDTLSSessions         int64  `json:"snmp_dtls_sessions"`
+	SNMPDTLSDropped          uint64 `json:"snmp_dtls_datagrams_dropped"`
+	SNMPTSMMessages          uint64 `json:"snmp_tsm_messages"`
+	SNMPTSMUnnamed           uint64 `json:"snmp_tsm_unnamed"`
+	LDAPSessions             uint64 `json:"ldap_sessions"`
+	LDAPSessionsOpen         int64  `json:"ldap_sessions_open"`
+	LDAPRequests             uint64 `json:"ldap_requests"`
+	LDAPBinds                uint64 `json:"ldap_binds"`
+	LDAPBindFailures         uint64 `json:"ldap_bind_failures"`
+	LDAPSearches             uint64 `json:"ldap_searches"`
+	LDAPWrites               uint64 `json:"ldap_writes"`
+	LDAPEntries              uint64 `json:"ldap_entries"`
+	LDAPStripped             uint64 `json:"ldap_stripped"`
+	LDAPTruncated            uint64 `json:"ldap_truncated"`
+	LDAPStartTLS             uint64 `json:"ldap_starttls"`
+	LDAPDenied               uint64 `json:"ldap_denied"`
+	LDAPWouldDeny            uint64 `json:"ldap_would_deny"`
+	LDAPMalformed            uint64 `json:"ldap_malformed"`
+	LDAPRejected             uint64 `json:"ldap_rejected"`
+	LDAPRateLimited          uint64 `json:"ldap_rate_limited"`
+	LDAPUpstreamFail         uint64 `json:"ldap_upstream_failed"`
+	LDAPOutstanding          int64  `json:"ldap_outstanding"`
+	TFTPRequests             uint64 `json:"tftp_requests"`
+	TFTPTransfers            uint64 `json:"tftp_transfers"`
+	TFTPTransfersOpen        int64  `json:"tftp_transfers_open"`
+	TFTPReads                uint64 `json:"tftp_reads"`
+	TFTPWrites               uint64 `json:"tftp_writes"`
+	TFTPBytesIn              uint64 `json:"tftp_bytes_in"`
+	TFTPBytesOut             uint64 `json:"tftp_bytes_out"`
+	TFTPDenied               uint64 `json:"tftp_denied"`
+	TFTPWouldDeny            uint64 `json:"tftp_would_deny"`
+	TFTPPathRefused          uint64 `json:"tftp_path_refused"`
+	TFTPLowered              uint64 `json:"tftp_lowered"`
+	TFTPOversize             uint64 `json:"tftp_oversize"`
+	TFTPMalformed            uint64 `json:"tftp_malformed"`
+	TFTPRejected             uint64 `json:"tftp_rejected"`
+	TFTPRateLimited          uint64 `json:"tftp_rate_limited"`
+	TFTPTimedOut             uint64 `json:"tftp_timed_out"`
+	TFTPUpstreamFail         uint64 `json:"tftp_upstream_failed"`
+	TFTPUnsolicited          uint64 `json:"tftp_unsolicited"`
+	DHCPMessages             uint64 `json:"dhcp_messages"`
+	DHCPDiscovers            uint64 `json:"dhcp_discovers"`
+	DHCPRequests             uint64 `json:"dhcp_requests"`
+	DHCPReplies              uint64 `json:"dhcp_replies"`
+	DHCPLeases               uint64 `json:"dhcp_leases"`
+	DHCPReleases             uint64 `json:"dhcp_releases"`
+	DHCPDenied               uint64 `json:"dhcp_denied"`
+	DHCPWouldDeny            uint64 `json:"dhcp_would_deny"`
+	DHCPRogue                uint64 `json:"dhcp_rogue"`
+	DHCPStripped             uint64 `json:"dhcp_stripped"`
+	DHCPMalformed            uint64 `json:"dhcp_malformed"`
+	DHCPRejected             uint64 `json:"dhcp_rejected"`
+	DHCPRateLimited          uint64 `json:"dhcp_rate_limited"`
+	DHCPTimedOut             uint64 `json:"dhcp_timed_out"`
+	DHCPUpstreamFail         uint64 `json:"dhcp_upstream_failed"`
+	DHCPUnsolicited          uint64 `json:"dhcp_unsolicited"`
+	DHCPPending              int64  `json:"dhcp_pending"`
+	DHCPClients              int64  `json:"dhcp_clients"`
+	DHCP6Messages            uint64 `json:"dhcp6_messages"`
+	DHCP6Solicits            uint64 `json:"dhcp6_solicits"`
+	DHCP6Requests            uint64 `json:"dhcp6_requests"`
+	DHCP6Replies             uint64 `json:"dhcp6_replies"`
+	DHCP6Relayed             uint64 `json:"dhcp6_relayed"`
+	DHCP6Answered            uint64 `json:"dhcp6_answered"`
+	DHCP6Releases            uint64 `json:"dhcp6_releases"`
+	DHCP6Denied              uint64 `json:"dhcp6_denied"`
+	DHCP6WouldDeny           uint64 `json:"dhcp6_would_deny"`
+	DHCP6RogueServer         uint64 `json:"dhcp6_rogue_server"`
+	DHCP6OptionsStripped     uint64 `json:"dhcp6_options_stripped"`
+	DHCP6LeaseBounded        uint64 `json:"dhcp6_lease_bounded"`
+	DHCP6Malformed           uint64 `json:"dhcp6_malformed"`
+	DHCP6Rejected            uint64 `json:"dhcp6_rejected"`
+	DHCP6RateLimited         uint64 `json:"dhcp6_rate_limited"`
+	DHCP6UpstreamFail        uint64 `json:"dhcp6_upstream_failed"`
+	DHCP6SendFailed          uint64 `json:"dhcp6_send_failed"`
+	DHCP6Unsolicited         uint64 `json:"dhcp6_unsolicited"`
+	DHCP6Pending             int64  `json:"dhcp6_pending"`
+	DHCP6Clients             int64  `json:"dhcp6_clients"`
+	CoAPMessages             uint64 `json:"coap_messages"`
+	CoAPRequests             uint64 `json:"coap_requests"`
+	CoAPResponses            uint64 `json:"coap_responses"`
+	CoAPEmpty                uint64 `json:"coap_empty"`
+	CoAPRelayed              uint64 `json:"coap_relayed"`
+	CoAPAnswered             uint64 `json:"coap_answered"`
+	CoAPNotifications        uint64 `json:"coap_notifications"`
+	CoAPDenied               uint64 `json:"coap_denied"`
+	CoAPWouldDeny            uint64 `json:"coap_would_deny"`
+	CoAPRefusalsAnswered     uint64 `json:"coap_refusals_answered"`
+	CoAPRogueDevice          uint64 `json:"coap_rogue_device"`
+	CoAPAmplified            uint64 `json:"coap_amplified"`
+	CoAPProxyRefused         uint64 `json:"coap_proxy_refused"`
+	CoAPRefusedObserve       uint64 `json:"coap_refused_observe"`
+	CoAPOversize             uint64 `json:"coap_oversize"`
+	CoAPMalformed            uint64 `json:"coap_malformed"`
+	CoAPRejected             uint64 `json:"coap_rejected"`
+	CoAPRateLimited          uint64 `json:"coap_rate_limited"`
+	CoAPUpstreamFail         uint64 `json:"coap_upstream_failed"`
+	CoAPSendFailed           uint64 `json:"coap_send_failed"`
+	CoAPUnsolicited          uint64 `json:"coap_unsolicited"`
+	CoAPHandshakes           uint64 `json:"coap_handshakes"`
+	CoAPHandshakeFailed      uint64 `json:"coap_handshakes_failed"`
+	CoAPPSKSessions          uint64 `json:"coap_psk_sessions"`
+	CoAPUnknownIdentity      uint64 `json:"coap_unknown_identity"`
+	CoAPUnnamed              uint64 `json:"coap_unnamed_sessions"`
+	CoAPDatagramsDropped     uint64 `json:"coap_datagrams_dropped"`
+	CoAPPending              int64  `json:"coap_pending"`
+	CoAPObservers            int64  `json:"coap_observers"`
+	CoAPSessions             int64  `json:"coap_sessions"`
+	OPCUAChannels            uint64 `json:"opcua_channels"`
+	OPCUASessions            uint64 `json:"opcua_sessions"`
+	OPCUAOpaque              uint64 `json:"opcua_opaque_bodies"`
+	OPCUAServerErrors        uint64 `json:"opcua_server_errors"`
+	OPCUAServerFaults        uint64 `json:"opcua_server_faults"`
+	MMSAssociations          uint64 `json:"mms_associations"`
+	MMSSessions              uint64 `json:"mms_sessions"`
+	MMSPlaintextPasswords    uint64 `json:"mms_plaintext_passwords"`
+	MMSOpaque                uint64 `json:"mms_opaque_contexts"`
+	MMSServerErrors          uint64 `json:"mms_server_errors"`
+	MMSServerRefusals        uint64 `json:"mms_server_refusals"`
+	MMSSelections            uint64 `json:"mms_selections"`
+	RADIUSRequests           uint64 `json:"radius_requests"`
+	RADIUSBadDigest          uint64 `json:"radius_bad_digest"`
+	RADIUSNoDigest           uint64 `json:"radius_no_digest"`
+	RADIUSPlaintextPasswords uint64 `json:"radius_plaintext_passwords"`
+	RADIUSPrivilegeGrants    uint64 `json:"radius_privilege_grants"`
+	RADIUSUnsolicited        uint64 `json:"radius_unsolicited"`
+	TACACSSessions           uint64 `json:"tacacs_sessions"`
+	TACACSCommands           uint64 `json:"tacacs_commands"`
+	TACACSAccounting         uint64 `json:"tacacs_accounting"`
+	TACACSHeaderOnly         uint64 `json:"tacacs_header_only"`
+	TACACSPlaintextPasswords uint64 `json:"tacacs_plaintext_passwords"`
+	TACACSPrivilegeGrants    uint64 `json:"tacacs_privilege_grants"`
+	KKDCPRequests            uint64 `json:"kkdcp_requests"`
+	KKDCPPreauthFailures     uint64 `json:"kkdcp_preauth_failures"`
+	KKDCPWeakTickets         uint64 `json:"kkdcp_weak_tickets"`
+	KKDCPPreauthExempt       uint64 `json:"kkdcp_preauth_exempt"`
+	KKDCPDelegations         uint64 `json:"kkdcp_delegations"`
+	KKDCPRealmMismatch       uint64 `json:"kkdcp_realm_mismatch"`
+	SSEStreams               uint64 `json:"sse_streams"`
+	SSEEvents                uint64 `json:"sse_events"`
+	SSEEventBytes            uint64 `json:"sse_event_bytes"`
+	SSEComments              uint64 `json:"sse_comments"`
+	SSEViolations            uint64 `json:"sse_violations"`
+	SSEUnknownEvents         uint64 `json:"sse_unknown_events"`
+	SSECursorsStripped       uint64 `json:"sse_cursors_stripped"`
+	IMAPConnections          uint64 `json:"imap_connections"`
+	IMAPCommands             uint64 `json:"imap_commands"`
+	IMAPAuthFailures         uint64 `json:"imap_auth_failures"`
+	IMAPFetchedMessages      uint64 `json:"imap_fetched_messages"`
+	IMAPAppendBytes          uint64 `json:"imap_append_bytes"`
+	IMAPPlaintextLogins      uint64 `json:"imap_plaintext_logins"`
+	IMAPCapabilitiesStripped uint64 `json:"imap_capabilities_stripped"`
+	IMAPPreauthRefused       uint64 `json:"imap_preauth_refused"`
+	POP3Connections          uint64 `json:"pop3_connections"`
+	POP3Commands             uint64 `json:"pop3_commands"`
+	POP3AuthFailures         uint64 `json:"pop3_auth_failures"`
+	POP3RetrievedBytes       uint64 `json:"pop3_retrieved_bytes"`
+	POP3Deletes              uint64 `json:"pop3_deletes"`
+	POP3PlaintextLogins      uint64 `json:"pop3_plaintext_logins"`
+	POP3CapabilitiesStripped uint64 `json:"pop3_capabilities_stripped"`
+	AssetObservations        uint64 `json:"asset_observations"`
+	AssetFindings            uint64 `json:"asset_findings"`
+	AssetUnexpected          uint64 `json:"asset_unexpected_role"`
+	AssetSaveFailures        uint64 `json:"asset_save_failures"`
+	AdvisoryAffected         uint64 `json:"advisory_affected"`
+	AdvisoryNotAssessed      uint64 `json:"advisory_not_assessed"`
+	AdvisoryFindings         uint64 `json:"advisory_findings"`
+	AdvisoryFailures         uint64 `json:"advisory_failures"`
 	// Access is the just-in-time access ledger's summary, absent when the
 	// configuration has no access section. It is here rather than only on
 	// the management view because a grant queue nobody drains and sessions
@@ -1266,6 +1384,8 @@ type Snapshot struct {
 	InterceptRefused        uint64             `json:"forward_intercept_refused"`
 	InterceptPassed         uint64             `json:"forward_intercept_passed"`
 	InterceptBytes          uint64             `json:"forward_intercept_bytes"`
+	InterceptRequests       uint64             `json:"forward_intercept_requests"`
+	InterceptBytesOnly      uint64             `json:"forward_intercept_bytes_only"`
 	SSHRecorded             uint64             `json:"ssh_recorded"`
 	SSHRejected             uint64             `json:"ssh_rejected"`
 	SSHAuthFailed           uint64             `json:"ssh_auth_failed"`
@@ -1395,6 +1515,14 @@ type Snapshot struct {
 	// nothing has been recognised, which on a plant with no engineering
 	// station behind this relay is the ordinary state.
 	EngineeringOps map[string]uint64 `json:"engineering_ops,omitempty"`
+	// EngineeringOutside is the same keys for the operations that happened
+	// outside every approved window on a listener that does not require one.
+	// They were carried: this is not a refusal count, and the refusals are in
+	// Refusals under engineering_no_grant.
+	EngineeringOutside map[string]uint64 `json:"engineering_outside,omitempty"`
+	// EngineeringFiled is the same keys for the operations that happened while
+	// a work order was on file for the device. A subset of EngineeringOps.
+	EngineeringFiled map[string]uint64 `json:"engineering_filed,omitempty"`
 	// PackEngine is the behaviour-pack engine's own numbers: how many packs
 	// are in force, how many actors have state, how many are held out, and
 	// what the bounds have pushed out. Absent when no packs are loaded.
@@ -1414,482 +1542,526 @@ type Snapshot struct {
 
 func (s *Stats) snapshot() Snapshot {
 	return Snapshot{
-		StartedAt:               s.StartedAt,
-		UptimeSeconds:           time.Since(s.StartedAt).Seconds(),
-		Requests:                s.Requests.Load(),
-		Responses2xx:            s.Responses2xx.Load(),
-		Responses3xx:            s.Responses3xx.Load(),
-		Responses4xx:            s.Responses4xx.Load(),
-		Responses5xx:            s.Responses5xx.Load(),
-		BytesIn:                 s.BytesIn.Load(),
-		BytesOut:                s.BytesOut.Load(),
-		DeniedACL:               s.DeniedACL.Load(),
-		DeniedRateLimit:         s.DeniedRateLimit.Load(),
-		Tarpitted:               s.Tarpitted.Load(),
-		TarpitOverflow:          s.TarpitOverflow.Load(),
-		DeniedConcurrency:       s.DeniedConcurrency.Load(),
-		DeniedBodySize:          s.DeniedBodySize.Load(),
-		DeniedBodyBudget:        s.DeniedBodyBudget.Load(),
-		SecurityTxt:             s.SecurityTxt.Load(),
-		SCIMRequests:            s.SCIMRequests.Load(),
-		SCIMDenied:              s.SCIMDenied.Load(),
-		DeniedURILength:         s.DeniedURILength.Load(),
-		DeniedNoRoute:           s.DeniedNoRoute.Load(),
-		DeniedWebSocket:         s.DeniedWebSocket.Load(),
-		DeniedBadHost:           s.DeniedBadHost.Load(),
-		DeniedBan:               s.DeniedBan.Load(),
-		Shed:                    s.Shed.Load(),
-		RangesDropped:           s.RangesDropped.Load(),
-		ThreatIntelMatched:      s.ThreatIntelMatched.Load(),
-		ThreatIntelBlocked:      s.ThreatIntelBlocked.Load(),
-		ThreatIntelChallenged:   s.ThreatIntelChallenged.Load(),
-		RangesRefused:           s.RangesRefused.Load(),
-		DeniedWAF:               s.DeniedWAF.Load(),
-		DeniedJWT:               s.DeniedJWT.Load(),
-		DeniedICAP:              s.DeniedICAP.Load(),
-		DeniedFilter:            s.DeniedFilter.Load(),
-		DeniedGeo:               s.DeniedGeo.Load(),
-		DeniedPolicy:            s.DeniedPolicy.Load(),
-		DeniedVirtualPatch:      s.DeniedVirtualPatch.Load(),
-		DeniedNormalization:     s.DeniedNormalization.Load(),
-		DeniedMaintenance:       s.DeniedMaintenance.Load(),
-		DeniedSensitive:         s.DeniedSensitive.Load(),
-		DeniedAccount:           s.DeniedAccount.Load(),
-		HoneypotHits:            s.HoneypotHits.Load(),
-		HoneytokenHits:          s.HoneytokenHits.Load(),
-		HandshakesRefused:       s.HandshakesRefused.Load(),
-		KeyExchange:             s.KeyExchangeCounts(),
-		Refusals:                s.RefusalCounts(),
-		WouldRefusals:           s.WouldRefusalCounts(),
-		Techniques:              s.TechniqueCounts(),
-		EngineeringOps:          s.EngineeringCounts(),
-		PackMatches:             s.PackCounts(),
-		CorrelationMerged:       s.CorrelationMerged.Load(),
-		CorrelationRefused:      s.CorrelationRefused.Load(),
-		RefusalsUntracked:       s.RefusalsUntracked.Load(),
-		KeyExchangePQ:           s.KeyExchangePQ.Load(),
-		Degraded:                s.Degraded.Load(),
-		Deceived:                s.Deceived.Load(),
-		StaticServed:            s.StaticServed.Load(),
-		StaticNotFound:          s.StaticNotFound.Load(),
-		Compressed:              s.Compressed.Load(),
-		CompressedRawBytes:      s.CompressedRawBytes.Load(),
-		MirrorSent:              s.MirrorSent.Load(),
-		GRPCStatus:              grpcSnapshot(&s.GRPCStatus),
-		MirrorDropped:           s.MirrorDropped.Load(),
-		MirrorSkipped:           s.MirrorSkipped.Load(),
-		MirrorFailed:            s.MirrorFailed.Load(),
-		MirrorDiffMatch:         s.MirrorDiffMatch.Load(),
-		MirrorDiffStatus:        s.MirrorDiffStatus.Load(),
-		MirrorDiffHeader:        s.MirrorDiffHeader.Load(),
-		MirrorDiffBody:          s.MirrorDiffBody.Load(),
-		TCPConnections:          s.TCPConnections.Load(),
-		TCPRejected:             s.TCPRejected.Load(),
-		TCPErrors:               s.TCPErrors.Load(),
-		TCPBounded:              s.TCPBounded.Load(),
-		TCPBytesIn:              s.TCPBytesIn.Load(),
-		TCPBytesOut:             s.TCPBytesOut.Load(),
-		QUICFlows:               s.QUICFlows.Load(),
-		UDPSessions:             s.UDPSessions.Load(),
-		UDPSessionsOpen:         s.UDPSessionsOpen.Load(),
-		UDPDatagramsIn:          s.UDPDatagramsIn.Load(),
-		UDPDatagramsOut:         s.UDPDatagramsOut.Load(),
-		UDPBytesIn:              s.UDPBytesIn.Load(),
-		UDPBytesOut:             s.UDPBytesOut.Load(),
-		UDPDropped:              s.UDPDropped.Load(),
-		UDPRejected:             s.UDPRejected.Load(),
-		UDPErrors:               s.UDPErrors.Load(),
-		QUICRejected:            s.QUICRejected.Load(),
-		ForwardRequests:         s.ForwardRequests.Load(),
-		ForwardTunnels:          s.ForwardTunnels.Load(),
-		ForwardTunnelsOpen:      s.ForwardTunnelsOpen.Load(),
-		ForwardDenied:           s.ForwardDenied.Load(),
-		ForwardAuthFailed:       s.ForwardAuthFailed.Load(),
-		ForwardRejected:         s.ForwardRejected.Load(),
-		ForwardErrors:           s.ForwardErrors.Load(),
-		ForwardSOCKS:            s.ForwardSOCKS.Load(),
-		MasqueUDP:               s.MasqueUDP.Load(),
-		MasqueIP:                s.MasqueIP.Load(),
-		MasqueOpen:              s.MasqueOpen.Load(),
-		MasqueDropped:           s.MasqueDropped.Load(),
-		SMTPSessions:            s.SMTPSessions.Load(),
-		SMTPSessionsOpen:        s.SMTPSessionsOpen.Load(),
-		SMTPMessages:            s.SMTPMessages.Load(),
-		SMTPRefused:             s.SMTPRefused.Load(),
-		SMTPRejected:            s.SMTPRejected.Load(),
-		SMTPTLSUpgrades:         s.SMTPTLSUpgrades.Load(),
-		SMTPProtocolErrors:      s.SMTPProtocolErrors.Load(),
-		SMTPBytesIn:             s.SMTPBytesIn.Load(),
-		MQTTSessions:            s.MQTTSessions.Load(),
-		MQTTSessionsOpen:        s.MQTTSessionsOpen.Load(),
-		MQTTPublished:           s.MQTTPublished.Load(),
-		MQTTSubscribed:          s.MQTTSubscribed.Load(),
-		MQTTRefused:             s.MQTTRefused.Load(),
-		MQTTRejected:            s.MQTTRejected.Load(),
-		MQTTProtocolErrors:      s.MQTTProtocolErrors.Load(),
-		SSHSessions:             s.SSHSessions.Load(),
-		SSHSessionsOpen:         s.SSHSessionsOpen.Load(),
-		SSHChannels:             s.SSHChannels.Load(),
-		SSHRefused:              s.SSHRefused.Load(),
-		FTPSessions:             s.FTPSessions.Load(),
-		FTPSessionsOpen:         s.FTPSessionsOpen.Load(),
-		FTPRefused:              s.FTPRefused.Load(),
-		FTPRejected:             s.FTPRejected.Load(),
-		FTPAuthFailed:           s.FTPAuthFailed.Load(),
-		FTPTransfers:            s.FTPTransfers.Load(),
-		FTPScanned:              s.FTPScanned.Load(),
-		FTPScanBlocked:          s.FTPScanBlocked.Load(),
-		FTPRecorded:             s.FTPRecorded.Load(),
-		FTPMFAOK:                s.FTPMFAOK.Load(),
-		FTPMFAFailed:            s.FTPMFAFailed.Load(),
-		ModbusSessions:          s.ModbusSessions.Load(),
-		ModbusSessionsOpen:      s.ModbusSessionsOpen.Load(),
-		ModbusRequests:          s.ModbusRequests.Load(),
-		ModbusResponses:         s.ModbusResponses.Load(),
-		ModbusDenied:            s.ModbusDenied.Load(),
-		ModbusWouldDeny:         s.ModbusWouldDeny.Load(),
-		ModbusExceptions:        s.ModbusExceptions.Load(),
-		ModbusMalformed:         s.ModbusMalformed.Load(),
-		ModbusRefused:           s.ModbusRefused.Load(),
-		ModbusValueUnknown:      s.ModbusValueUnknown.Load(),
-		ModbusValuePoints:       s.ModbusValuePoints.Load(),
-		ModbusRejected:          s.ModbusRejected.Load(),
-		ModbusRateLimited:       s.ModbusRateLimited.Load(),
-		ModbusQueueFull:         s.ModbusQueueFull.Load(),
-		ModbusUpstreamFailed:    s.ModbusUpstreamFailed.Load(),
-		ModbusTraced:            s.ModbusTraced.Load(),
-		ModbusLearned:           s.ModbusLearned.Load(),
-		ModbusDeceived:          s.ModbusDeceived.Load(),
-		ModbusTripwire:          s.ModbusTripwire.Load(),
-		IEC104Sessions:          s.IEC104Sessions.Load(),
-		IEC104SessionsOpen:      s.IEC104SessionsOpen.Load(),
-		IEC104Frames:            s.IEC104Frames.Load(),
-		IEC104Deceived:          s.IEC104Deceived.Load(),
-		IEC104Tripwire:          s.IEC104Tripwire.Load(),
-		S7Deceived:              s.S7Deceived.Load(),
-		S7Tripwire:              s.S7Tripwire.Load(),
-		SNMPDeceived:            s.SNMPDeceived.Load(),
-		SNMPTripwire:            s.SNMPTripwire.Load(),
-		SSHDeceived:             s.SSHDeceived.Load(),
-		SSHTripwire:             s.SSHTripwire.Load(),
-		TelnetDeceived:          s.TelnetDeceived.Load(),
-		TelnetTripwire:          s.TelnetTripwire.Load(),
-		PostgresDeceived:        s.PostgresDeceived.Load(),
-		PostgresTripwire:        s.PostgresTripwire.Load(),
-		MySQLDeceived:           s.MySQLDeceived.Load(),
-		MySQLTripwire:           s.MySQLTripwire.Load(),
-		RedisDeceived:           s.RedisDeceived.Load(),
-		RedisTripwire:           s.RedisTripwire.Load(),
-		IEC104Commands:          s.IEC104Commands.Load(),
-		IEC104SystemCmds:        s.IEC104SystemCmds.Load(),
-		IEC104Authentications:   s.IEC104Authentications.Load(),
-		IEC104Denied:            s.IEC104Denied.Load(),
-		IEC104WouldDeny:         s.IEC104WouldDeny.Load(),
-		IEC104Malformed:         s.IEC104Malformed.Load(),
-		IEC104Rejected:          s.IEC104Rejected.Load(),
-		IEC104RateLimited:       s.IEC104RateLimited.Load(),
-		IEC104Selects:           s.IEC104Selects.Load(),
-		IEC104Executes:          s.IEC104Executes.Load(),
-		IEC104Unselected:        s.IEC104Unselected.Load(),
-		IEC104SelectsHeld:       s.IEC104SelectsHeld.Load(),
-		IEC104Failovers:         s.IEC104Failovers.Load(),
-		IEC104Standby:           s.IEC104Standby.Load(),
-		IEC104RedundancyActive:  s.IEC104RedundancyActive.Load(),
-		IEC104Setpoints:         s.IEC104Setpoints.Load(),
-		IEC104SetpointPoints:    s.IEC104SetpointPoints.Load(),
-		IEC104SetpointUnknown:   s.IEC104SetpointUnknown.Load(),
-		IEC104SeqGaps:           s.IEC104SeqGaps.Load(),
-		IEC104WindowFull:        s.IEC104WindowFull.Load(),
-		IEC104UpstreamFail:      s.IEC104UpstreamFail.Load(),
-		SNMPMessages:            s.SNMPMessages.Load(),
-		SNMPSessions:            s.SNMPSessions.Load(),
-		SNMPSessionsOpen:        s.SNMPSessionsOpen.Load(),
-		SNMPReads:               s.SNMPReads.Load(),
-		SNMPWrites:              s.SNMPWrites.Load(),
-		SNMPTraps:               s.SNMPTraps.Load(),
-		SNMPDenied:              s.SNMPDenied.Load(),
-		SNMPWouldDeny:           s.SNMPWouldDeny.Load(),
-		SNMPMalformed:           s.SNMPMalformed.Load(),
-		SNMPRejected:            s.SNMPRejected.Load(),
-		SNMPRateLimited:         s.SNMPRateLimited.Load(),
-		SNMPAmplified:           s.SNMPAmplified.Load(),
-		SNMPTruncated:           s.SNMPTruncated.Load(),
-		SNMPUpgraded:            s.SNMPUpgraded.Load(),
-		SNMPTimedOut:            s.SNMPTimedOut.Load(),
-		SNMPUpstreamFail:        s.SNMPUpstreamFail.Load(),
-		SNMPUnsolicited:         s.SNMPUnsolicited.Load(),
-		SNMPVerified:            s.SNMPVerified.Load(),
-		SNMPDecrypted:           s.SNMPDecrypted.Load(),
-		SNMPAuthFailed:          s.SNMPAuthFailed.Load(),
-		SNMPReplayed:            s.SNMPReplayed.Load(),
-		SNMPDiscoveries:         s.SNMPDiscoveries.Load(),
-		SNMPOriginated:          s.SNMPOriginated.Load(),
-		SNMPPending:             s.SNMPPending.Load(),
-		SNMPDTLSHandshakes:      s.SNMPDTLSHandshakes.Load(),
-		SNMPDTLSHandshakeFail:   s.SNMPDTLSHandshakeFailed.Load(),
-		SNMPDTLSSessions:        s.SNMPDTLSSessions.Load(),
-		SNMPDTLSDropped:         s.SNMPDTLSDropped.Load(),
-		SNMPTSMMessages:         s.SNMPTSMMessages.Load(),
-		SNMPTSMUnnamed:          s.SNMPTSMUnnamed.Load(),
-		LDAPSessions:            s.LDAPSessions.Load(),
-		LDAPSessionsOpen:        s.LDAPSessionsOpen.Load(),
-		LDAPRequests:            s.LDAPRequests.Load(),
-		LDAPBinds:               s.LDAPBinds.Load(),
-		LDAPBindFailures:        s.LDAPBindFailures.Load(),
-		LDAPSearches:            s.LDAPSearches.Load(),
-		LDAPWrites:              s.LDAPWrites.Load(),
-		LDAPEntries:             s.LDAPEntries.Load(),
-		LDAPStripped:            s.LDAPStripped.Load(),
-		LDAPTruncated:           s.LDAPTruncated.Load(),
-		LDAPStartTLS:            s.LDAPStartTLS.Load(),
-		LDAPDenied:              s.LDAPDenied.Load(),
-		LDAPWouldDeny:           s.LDAPWouldDeny.Load(),
-		LDAPMalformed:           s.LDAPMalformed.Load(),
-		LDAPRejected:            s.LDAPRejected.Load(),
-		LDAPRateLimited:         s.LDAPRateLimited.Load(),
-		LDAPUpstreamFail:        s.LDAPUpstreamFail.Load(),
-		LDAPOutstanding:         s.LDAPOutstanding.Load(),
-		TFTPRequests:            s.TFTPRequests.Load(),
-		TFTPTransfers:           s.TFTPTransfers.Load(),
-		TFTPTransfersOpen:       s.TFTPTransfersOpen.Load(),
-		TFTPReads:               s.TFTPReads.Load(),
-		TFTPWrites:              s.TFTPWrites.Load(),
-		TFTPBytesIn:             s.TFTPBytesIn.Load(),
-		TFTPBytesOut:            s.TFTPBytesOut.Load(),
-		TFTPDenied:              s.TFTPDenied.Load(),
-		TFTPWouldDeny:           s.TFTPWouldDeny.Load(),
-		TFTPPathRefused:         s.TFTPPathRefused.Load(),
-		TFTPLowered:             s.TFTPLowered.Load(),
-		TFTPOversize:            s.TFTPOversize.Load(),
-		TFTPMalformed:           s.TFTPMalformed.Load(),
-		TFTPRejected:            s.TFTPRejected.Load(),
-		TFTPRateLimited:         s.TFTPRateLimited.Load(),
-		TFTPTimedOut:            s.TFTPTimedOut.Load(),
-		TFTPUpstreamFail:        s.TFTPUpstreamFail.Load(),
-		TFTPUnsolicited:         s.TFTPUnsolicited.Load(),
-		DHCPMessages:            s.DHCPMessages.Load(),
-		DHCPDiscovers:           s.DHCPDiscovers.Load(),
-		DHCPRequests:            s.DHCPRequests.Load(),
-		DHCPReplies:             s.DHCPReplies.Load(),
-		DHCPLeases:              s.DHCPLeases.Load(),
-		DHCPReleases:            s.DHCPReleases.Load(),
-		DHCPDenied:              s.DHCPDenied.Load(),
-		DHCPWouldDeny:           s.DHCPWouldDeny.Load(),
-		DHCPRogue:               s.DHCPRogue.Load(),
-		DHCPStripped:            s.DHCPStripped.Load(),
-		DHCPMalformed:           s.DHCPMalformed.Load(),
-		DHCPRejected:            s.DHCPRejected.Load(),
-		DHCPRateLimited:         s.DHCPRateLimited.Load(),
-		DHCPTimedOut:            s.DHCPTimedOut.Load(),
-		DHCPUpstreamFail:        s.DHCPUpstreamFail.Load(),
-		DHCPUnsolicited:         s.DHCPUnsolicited.Load(),
-		DHCPPending:             s.DHCPPending.Load(),
-		DHCP6Messages:           s.DHCP6Messages.Load(),
-		DHCP6Solicits:           s.DHCP6Solicits.Load(),
-		DHCP6Requests:           s.DHCP6Requests.Load(),
-		DHCP6Replies:            s.DHCP6Replies.Load(),
-		DHCP6Relayed:            s.DHCP6Relayed.Load(),
-		DHCP6Answered:           s.DHCP6Answered.Load(),
-		DHCP6Releases:           s.DHCP6Releases.Load(),
-		DHCP6Denied:             s.DHCP6Denied.Load(),
-		DHCP6WouldDeny:          s.DHCP6WouldDeny.Load(),
-		DHCP6RogueServer:        s.DHCP6RogueServer.Load(),
-		DHCP6OptionsStripped:    s.DHCP6OptionsStripped.Load(),
-		DHCP6LeaseBounded:       s.DHCP6LeaseBounded.Load(),
-		DHCP6Malformed:          s.DHCP6Malformed.Load(),
-		DHCP6Rejected:           s.DHCP6Rejected.Load(),
-		DHCP6RateLimited:        s.DHCP6RateLimited.Load(),
-		DHCP6UpstreamFail:       s.DHCP6UpstreamFail.Load(),
-		DHCP6SendFailed:         s.DHCP6SendFailed.Load(),
-		DHCP6Unsolicited:        s.DHCP6Unsolicited.Load(),
-		DHCP6Pending:            s.DHCP6Pending.Load(),
-		DHCP6Clients:            s.DHCP6Clients.Load(),
-		CoAPMessages:            s.CoAPMessages.Load(),
-		CoAPRequests:            s.CoAPRequests.Load(),
-		CoAPResponses:           s.CoAPResponses.Load(),
-		CoAPEmpty:               s.CoAPEmpty.Load(),
-		CoAPRelayed:             s.CoAPRelayed.Load(),
-		CoAPAnswered:            s.CoAPAnswered.Load(),
-		CoAPNotifications:       s.CoAPNotifications.Load(),
-		CoAPDenied:              s.CoAPDenied.Load(),
-		CoAPWouldDeny:           s.CoAPWouldDeny.Load(),
-		CoAPRefusalsAnswered:    s.CoAPRefusalsAnswered.Load(),
-		CoAPRogueDevice:         s.CoAPRogueDevice.Load(),
-		CoAPAmplified:           s.CoAPAmplified.Load(),
-		CoAPProxyRefused:        s.CoAPProxyRefused.Load(),
-		CoAPRefusedObserve:      s.CoAPRefusedObserve.Load(),
-		CoAPOversize:            s.CoAPOversize.Load(),
-		CoAPMalformed:           s.CoAPMalformed.Load(),
-		CoAPRejected:            s.CoAPRejected.Load(),
-		CoAPRateLimited:         s.CoAPRateLimited.Load(),
-		CoAPUpstreamFail:        s.CoAPUpstreamFail.Load(),
-		CoAPSendFailed:          s.CoAPSendFailed.Load(),
-		CoAPUnsolicited:         s.CoAPUnsolicited.Load(),
-		CoAPHandshakes:          s.CoAPHandshakes.Load(),
-		CoAPHandshakeFailed:     s.CoAPHandshakeFailed.Load(),
-		CoAPPSKSessions:         s.CoAPPSKSessions.Load(),
-		CoAPUnknownIdentity:     s.CoAPUnknownIdentity.Load(),
-		CoAPUnnamed:             s.CoAPUnnamed.Load(),
-		CoAPDatagramsDropped:    s.CoAPDatagramsDropped.Load(),
-		CoAPPending:             s.CoAPPending.Load(),
-		CoAPObservers:           s.CoAPObservers.Load(),
-		CoAPSessions:            s.CoAPSessions.Load(),
-		OPCUAChannels:           s.OPCUAChannels.Load(),
-		OPCUASessions:           s.OPCUASessions.Load(),
-		OPCUAOpaque:             s.OPCUAOpaque.Load(),
-		OPCUAServerErrors:       s.OPCUAServerErrors.Load(),
-		OPCUAServerFaults:       s.OPCUAServerFaults.Load(),
-		MMSAssociations:         s.MMSAssociations.Load(),
-		MMSSessions:             s.MMSSessions.Load(),
-		MMSPlaintextPasswords:   s.MMSPlaintextPasswords.Load(),
-		MMSOpaque:               s.MMSOpaque.Load(),
-		MMSServerErrors:         s.MMSServerErrors.Load(),
-		MMSServerRefusals:       s.MMSServerRefusals.Load(),
-		MMSSelections:           s.MMSSelections.Load(),
-		DHCPClients:             s.DHCPClients.Load(),
-		AssetObservations:       s.AssetObservations.Load(),
-		AssetFindings:           s.AssetFindings.Load(),
-		AssetUnexpected:         s.AssetUnexpected.Load(),
-		AssetSaveFailures:       s.AssetSaveFailures.Load(),
-		AdvisoryAffected:        s.AdvisoryAffected.Load(),
-		AdvisoryNotAssessed:     s.AdvisoryNotAssessed.Load(),
-		AdvisoryFindings:        s.AdvisoryFindings.Load(),
-		AdvisoryFailures:        s.AdvisoryFailures.Load(),
-		NTPRequests:             s.NTPRequests.Load(),
-		NTPForwarded:            s.NTPForwarded.Load(),
-		NTPResponses:            s.NTPResponses.Load(),
-		NTPAnswered:             s.NTPAnswered.Load(),
-		NTPDenied:               s.NTPDenied.Load(),
-		NTPWouldDeny:            s.NTPWouldDeny.Load(),
-		NTPDropped:              s.NTPDropped.Load(),
-		NTPMalformed:            s.NTPMalformed.Load(),
-		NTPUnsolicited:          s.NTPUnsolicited.Load(),
-		NTPRateLimited:          s.NTPRateLimited.Load(),
-		NTPKissSent:             s.NTPKissSent.Load(),
-		NTPTimedOut:             s.NTPTimedOut.Load(),
-		NTPAssociations:         s.NTPAssociations.Load(),
-		NTPAssociationsOpen:     s.NTPAssociationsOpen.Load(),
-		NTPUpstreamFailed:       s.NTPUpstreamFailed.Load(),
-		NTPUpstreamUnavailable:  s.NTPUpstreamUnavailable.Load(),
-		NTPSendFailed:           s.NTPSendFailed.Load(),
-		NTPInterleaved:          s.NTPInterleaved.Load(),
-		NTPNTSForwarded:         s.NTPNTSForwarded.Load(),
-		NTPVersion5:             s.NTPVersion5.Load(),
-		NTPProbes:               s.NTPProbes.Load(),
-		NTPProbeFailed:          s.NTPProbeFailed.Load(),
-		NTPDisagreements:        s.NTPDisagreements.Load(),
-		NTPSourceHealthy:        s.NTPSourceHealthy.Load(),
-		NTPSourceUnhealthy:      s.NTPSourceUnhealthy.Load(),
-		NTPHoldoverExpired:      s.NTPHoldoverExpired.Load(),
-		NTPSourceChanged:        s.NTPSourceChanged.Load(),
-		NTPStratumJumped:        s.NTPStratumJumped.Load(),
-		NTPOffsetStepped:        s.NTPOffsetStepped.Load(),
-		NTPDispersionGrew:       s.NTPDispersionGrew.Load(),
-		NTPNTSLost:              s.NTPNTSLost.Load(),
-		NTPLeapAnnounced:        s.NTPLeapAnnounced.Load(),
-		NTPLeapUnexpected:       s.NTPLeapUnexpected.Load(),
-		NTSKESessions:           s.NTSKESessions.Load(),
-		NTSKERelayed:            s.NTSKERelayed.Load(),
-		NTSKERefused:            s.NTSKERefused.Load(),
-		NTSKERejected:           s.NTSKERejected.Load(),
-		NTSKENotNTS:             s.NTSKENotNTS.Load(),
-		NTSKEHandshakeLimited:   s.NTSKEHandshakeLimited.Load(),
-		NTSKEUpstreamFailed:     s.NTSKEUpstreamFailed.Load(),
-		NTSKEHandshakes:         s.NTSKEHandshakes.Load(),
-		NTSKETerminated:         s.NTSKETerminated.Load(),
-		NTSKECookies:            s.NTSKECookies.Load(),
-		NTSKENoTerms:            s.NTSKENoTerms.Load(),
-		NTPNTSVerified:          s.NTPNTSVerified.Load(),
-		NTPNTSUnverified:        s.NTPNTSUnverified.Load(),
-		NTPNTSCookieUnknown:     s.NTPNTSCookieUnknown.Load(),
-		NTPNTSCookiesIssued:     s.NTPNTSCookiesIssued.Load(),
-		NTPNTSSourceEstablished: s.NTPNTSSourceEstablished.Load(),
-		NTPNTSSourceFailed:      s.NTPNTSSourceFailed.Load(),
-		NTPNTSSourceVerified:    s.NTPNTSSourceVerified.Load(),
-		NTPNTSSourceUnverified:  s.NTPNTSSourceUnverified.Load(),
-		SyslogReceived:          s.SyslogReceived.Load(),
-		SyslogForwarded:         s.SyslogForwarded.Load(),
-		SyslogDropped:           s.SyslogDropped.Load(),
-		SyslogQueueDropped:      s.SyslogQueueDropped.Load(),
-		SyslogRefused:           s.SyslogRefused.Load(),
-		SyslogRejected:          s.SyslogRejected.Load(),
-		SyslogRateLimited:       s.SyslogRateLimited.Load(),
-		SyslogRedacted:          s.SyslogRedacted.Load(),
-		SyslogSendFailed:        s.SyslogSendFailed.Load(),
-		SyslogConnections:       s.SyslogConnections.Load(),
-		Intercepted:             s.Intercepted.Load(),
-		InterceptRefused:        s.InterceptRefused.Load(),
-		InterceptPassed:         s.InterceptPassed.Load(),
-		InterceptBytes:          s.InterceptBytes.Load(),
-		SSHRecorded:             s.SSHRecorded.Load(),
-		SSHRejected:             s.SSHRejected.Load(),
-		SSHAuthFailed:           s.SSHAuthFailed.Load(),
-		SSHHardwareAuths:        s.SSHHardwareAuths.Load(),
-		SSHHardwareRefused:      s.SSHHardwareRefused.Load(),
-		SSHBytesIn:              s.SSHBytesIn.Load(),
-		SSHBytesOut:             s.SSHBytesOut.Load(),
-		SFTPRequests:            s.SFTPRequests.Load(),
-		VNCSessions:             s.VNCSessions.Load(),
-		VNCSessionsOpen:         s.VNCSessionsOpen.Load(),
-		VNCRejected:             s.VNCRejected.Load(),
-		VNCRefused:              s.VNCRefused.Load(),
-		VNCRecorded:             s.VNCRecorded.Load(),
-		VNCMFAOK:                s.VNCMFAOK.Load(),
-		VNCMFAFailed:            s.VNCMFAFailed.Load(),
-		RDPSessions:             s.RDPSessions.Load(),
-		RDPSessionsOpen:         s.RDPSessionsOpen.Load(),
-		RDPRejected:             s.RDPRejected.Load(),
-		RDPRefused:              s.RDPRefused.Load(),
-		RDPRecorded:             s.RDPRecorded.Load(),
-		RDPMFAOK:                s.RDPMFAOK.Load(),
-		RDPMFAFailed:            s.RDPMFAFailed.Load(),
-		RDPChannelsRefused:      s.RDPChannelsRefused.Load(),
-		RDPDevicesRefused:       s.RDPDevicesRefused.Load(),
-		RDPDynamicChannelsSeen:  s.RDPDynamicChannelsSeen.Load(),
-		RDPLegacySessions:       s.RDPLegacySessions.Load(),
-		RDPLegacyClients:        s.RDPLegacyClients.Load(),
-		TelnetSessions:          s.TelnetSessions.Load(),
-		TelnetSessionsOpen:      s.TelnetSessionsOpen.Load(),
-		TelnetRejected:          s.TelnetRejected.Load(),
-		TelnetRefused:           s.TelnetRefused.Load(),
-		TelnetOptionsRefused:    s.TelnetOptionsRefused.Load(),
-		TelnetRecorded:          s.TelnetRecorded.Load(),
-		TelnetMFAOK:             s.TelnetMFAOK.Load(),
-		TelnetMFAFailed:         s.TelnetMFAFailed.Load(),
-		SFTPRefused:             s.SFTPRefused.Load(),
-		SFTPScanned:             s.SFTPScanned.Load(),
-		SFTPScanBlocked:         s.SFTPScanBlocked.Load(),
-		MFAVerified:             s.MFAVerified.Load(),
-		MFAPushSent:             s.MFAPushSent.Load(),
-		MFAPushApproved:         s.MFAPushApproved.Load(),
-		MFAPushDenied:           s.MFAPushDenied.Load(),
-		MFAPushFailed:           s.MFAPushFailed.Load(),
-		MFAPushThrottled:        s.MFAPushThrottled.Load(),
-		MFAFailed:               s.MFAFailed.Load(),
-		YARAMatches:             s.YARAMatches.Load(),
-		YARAScanned:             s.YARAScanned.Load(),
-		WSConnections:           s.WSConnections.Load(),
-		WSMessages:              s.WSMessages.Load(),
-		WSViolations:            s.WSViolations.Load(),
-		WSClosed:                s.WSClosed.Load(),
-		ForwardUDPAssociations:  s.ForwardUDPAssociations.Load(),
-		ForwardUDPOpen:          s.ForwardUDPOpen.Load(),
-		ForwardUDPDropped:       s.ForwardUDPDropped.Load(),
-		ForwardBytesIn:          s.ForwardBytesIn.Load(),
-		ForwardBytesOut:         s.ForwardBytesOut.Load(),
-		WAFDetected:             s.WAFDetected.Load(),
-		UpstreamErrors:          s.UpstreamErrors.Load(),
-		WebTransportSessions:    s.WebTransportSessions.Load(),
-		UpstreamRetries:         s.UpstreamRetries.Load(),
-		UpstreamStatusRetries:   s.UpstreamStatusRetries.Load(),
-		UpstreamCircuitOpen:     s.UpstreamCircuitOpen.Load(),
-		UpstreamQueueFull:       s.UpstreamQueueFull.Load(),
-		UpstreamQueueTimeouts:   s.UpstreamQueueTimeouts.Load(),
-		UpstreamTimeouts:        s.UpstreamTimeouts.Load(),
-		UpstreamNoHealthy:       s.UpstreamNoHealthy.Load(),
-		ClientAborts:            s.ClientAborts.Load(),
-		Reloads:                 s.Reloads.Load(),
-		ReloadFailures:          s.ReloadFailures.Load(),
+		StartedAt:                s.StartedAt,
+		UptimeSeconds:            time.Since(s.StartedAt).Seconds(),
+		Requests:                 s.Requests.Load(),
+		Responses2xx:             s.Responses2xx.Load(),
+		Responses3xx:             s.Responses3xx.Load(),
+		Responses4xx:             s.Responses4xx.Load(),
+		Responses5xx:             s.Responses5xx.Load(),
+		BytesIn:                  s.BytesIn.Load(),
+		BytesOut:                 s.BytesOut.Load(),
+		DeniedACL:                s.DeniedACL.Load(),
+		DeniedRateLimit:          s.DeniedRateLimit.Load(),
+		Tarpitted:                s.Tarpitted.Load(),
+		TarpitOverflow:           s.TarpitOverflow.Load(),
+		DeniedConcurrency:        s.DeniedConcurrency.Load(),
+		DeniedBodySize:           s.DeniedBodySize.Load(),
+		DeniedBodyBudget:         s.DeniedBodyBudget.Load(),
+		SecurityTxt:              s.SecurityTxt.Load(),
+		SCIMRequests:             s.SCIMRequests.Load(),
+		SCIMDenied:               s.SCIMDenied.Load(),
+		DeniedURILength:          s.DeniedURILength.Load(),
+		DeniedNoRoute:            s.DeniedNoRoute.Load(),
+		DeniedWebSocket:          s.DeniedWebSocket.Load(),
+		DeniedBadHost:            s.DeniedBadHost.Load(),
+		DeniedBan:                s.DeniedBan.Load(),
+		Shed:                     s.Shed.Load(),
+		RangesDropped:            s.RangesDropped.Load(),
+		ThreatIntelMatched:       s.ThreatIntelMatched.Load(),
+		ThreatIntelBlocked:       s.ThreatIntelBlocked.Load(),
+		ThreatIntelChallenged:    s.ThreatIntelChallenged.Load(),
+		RangesRefused:            s.RangesRefused.Load(),
+		DeniedWAF:                s.DeniedWAF.Load(),
+		DeniedJWT:                s.DeniedJWT.Load(),
+		DeniedICAP:               s.DeniedICAP.Load(),
+		DeniedFilter:             s.DeniedFilter.Load(),
+		DeniedGeo:                s.DeniedGeo.Load(),
+		DeniedPolicy:             s.DeniedPolicy.Load(),
+		DeniedVirtualPatch:       s.DeniedVirtualPatch.Load(),
+		DeniedNormalization:      s.DeniedNormalization.Load(),
+		DeniedMaintenance:        s.DeniedMaintenance.Load(),
+		DeniedSensitive:          s.DeniedSensitive.Load(),
+		DeniedAccount:            s.DeniedAccount.Load(),
+		HoneypotHits:             s.HoneypotHits.Load(),
+		HoneytokenHits:           s.HoneytokenHits.Load(),
+		HandshakesRefused:        s.HandshakesRefused.Load(),
+		KeyExchange:              s.KeyExchangeCounts(),
+		Refusals:                 s.RefusalCounts(),
+		WouldRefusals:            s.WouldRefusalCounts(),
+		Techniques:               s.TechniqueCounts(),
+		EngineeringOps:           s.EngineeringCounts(),
+		EngineeringOutside:       s.EngineeringOutsideCounts(),
+		EngineeringFiled:         s.EngineeringFiledCounts(),
+		PackMatches:              s.PackCounts(),
+		CorrelationMerged:        s.CorrelationMerged.Load(),
+		CorrelationRefused:       s.CorrelationRefused.Load(),
+		RefusalsUntracked:        s.RefusalsUntracked.Load(),
+		KeyExchangePQ:            s.KeyExchangePQ.Load(),
+		Degraded:                 s.Degraded.Load(),
+		Deceived:                 s.Deceived.Load(),
+		StaticServed:             s.StaticServed.Load(),
+		StaticNotFound:           s.StaticNotFound.Load(),
+		Compressed:               s.Compressed.Load(),
+		CompressedRawBytes:       s.CompressedRawBytes.Load(),
+		MirrorSent:               s.MirrorSent.Load(),
+		GRPCStatus:               grpcSnapshot(&s.GRPCStatus),
+		MirrorDropped:            s.MirrorDropped.Load(),
+		MirrorSkipped:            s.MirrorSkipped.Load(),
+		MirrorFailed:             s.MirrorFailed.Load(),
+		MirrorDiffMatch:          s.MirrorDiffMatch.Load(),
+		MirrorDiffStatus:         s.MirrorDiffStatus.Load(),
+		MirrorDiffHeader:         s.MirrorDiffHeader.Load(),
+		MirrorDiffBody:           s.MirrorDiffBody.Load(),
+		TCPConnections:           s.TCPConnections.Load(),
+		TCPRejected:              s.TCPRejected.Load(),
+		TCPErrors:                s.TCPErrors.Load(),
+		TCPBounded:               s.TCPBounded.Load(),
+		TCPBytesIn:               s.TCPBytesIn.Load(),
+		TCPBytesOut:              s.TCPBytesOut.Load(),
+		QUICFlows:                s.QUICFlows.Load(),
+		UDPSessions:              s.UDPSessions.Load(),
+		UDPSessionsOpen:          s.UDPSessionsOpen.Load(),
+		UDPDatagramsIn:           s.UDPDatagramsIn.Load(),
+		UDPDatagramsOut:          s.UDPDatagramsOut.Load(),
+		UDPBytesIn:               s.UDPBytesIn.Load(),
+		UDPBytesOut:              s.UDPBytesOut.Load(),
+		UDPDropped:               s.UDPDropped.Load(),
+		UDPRejected:              s.UDPRejected.Load(),
+		UDPErrors:                s.UDPErrors.Load(),
+		QUICRejected:             s.QUICRejected.Load(),
+		ForwardRequests:          s.ForwardRequests.Load(),
+		ForwardTunnels:           s.ForwardTunnels.Load(),
+		ForwardTunnelsOpen:       s.ForwardTunnelsOpen.Load(),
+		ForwardDenied:            s.ForwardDenied.Load(),
+		ForwardAuthFailed:        s.ForwardAuthFailed.Load(),
+		ForwardRejected:          s.ForwardRejected.Load(),
+		ForwardErrors:            s.ForwardErrors.Load(),
+		ForwardSOCKS:             s.ForwardSOCKS.Load(),
+		MasqueUDP:                s.MasqueUDP.Load(),
+		MasqueIP:                 s.MasqueIP.Load(),
+		MasqueOpen:               s.MasqueOpen.Load(),
+		MasqueDropped:            s.MasqueDropped.Load(),
+		SMTPSessions:             s.SMTPSessions.Load(),
+		SMTPSessionsOpen:         s.SMTPSessionsOpen.Load(),
+		SMTPMessages:             s.SMTPMessages.Load(),
+		SMTPRefused:              s.SMTPRefused.Load(),
+		SMTPRejected:             s.SMTPRejected.Load(),
+		SMTPTLSUpgrades:          s.SMTPTLSUpgrades.Load(),
+		SMTPProtocolErrors:       s.SMTPProtocolErrors.Load(),
+		SMTPBytesIn:              s.SMTPBytesIn.Load(),
+		MQTTSessions:             s.MQTTSessions.Load(),
+		MQTTSessionsOpen:         s.MQTTSessionsOpen.Load(),
+		MQTTPublished:            s.MQTTPublished.Load(),
+		MQTTSubscribed:           s.MQTTSubscribed.Load(),
+		MQTTRefused:              s.MQTTRefused.Load(),
+		MQTTRejected:             s.MQTTRejected.Load(),
+		MQTTProtocolErrors:       s.MQTTProtocolErrors.Load(),
+		SSHSessions:              s.SSHSessions.Load(),
+		SSHSessionsOpen:          s.SSHSessionsOpen.Load(),
+		SSHChannels:              s.SSHChannels.Load(),
+		SSHRefused:               s.SSHRefused.Load(),
+		FTPSessions:              s.FTPSessions.Load(),
+		FTPSessionsOpen:          s.FTPSessionsOpen.Load(),
+		FTPRefused:               s.FTPRefused.Load(),
+		FTPRejected:              s.FTPRejected.Load(),
+		FTPAuthFailed:            s.FTPAuthFailed.Load(),
+		FTPTransfers:             s.FTPTransfers.Load(),
+		FTPScanned:               s.FTPScanned.Load(),
+		FTPScanBlocked:           s.FTPScanBlocked.Load(),
+		FTPRecorded:              s.FTPRecorded.Load(),
+		FTPMFAOK:                 s.FTPMFAOK.Load(),
+		FTPMFAFailed:             s.FTPMFAFailed.Load(),
+		ModbusSessions:           s.ModbusSessions.Load(),
+		ModbusSessionsOpen:       s.ModbusSessionsOpen.Load(),
+		ModbusRequests:           s.ModbusRequests.Load(),
+		ModbusResponses:          s.ModbusResponses.Load(),
+		ModbusDenied:             s.ModbusDenied.Load(),
+		ModbusWouldDeny:          s.ModbusWouldDeny.Load(),
+		ModbusExceptions:         s.ModbusExceptions.Load(),
+		ModbusMalformed:          s.ModbusMalformed.Load(),
+		ModbusRefused:            s.ModbusRefused.Load(),
+		ModbusValueUnknown:       s.ModbusValueUnknown.Load(),
+		ModbusValuePoints:        s.ModbusValuePoints.Load(),
+		ModbusRejected:           s.ModbusRejected.Load(),
+		ModbusRateLimited:        s.ModbusRateLimited.Load(),
+		ModbusQueueFull:          s.ModbusQueueFull.Load(),
+		ModbusUpstreamFailed:     s.ModbusUpstreamFailed.Load(),
+		ModbusTraced:             s.ModbusTraced.Load(),
+		ModbusLearned:            s.ModbusLearned.Load(),
+		ModbusDeceived:           s.ModbusDeceived.Load(),
+		ModbusTripwire:           s.ModbusTripwire.Load(),
+		IEC104Sessions:           s.IEC104Sessions.Load(),
+		IEC104SessionsOpen:       s.IEC104SessionsOpen.Load(),
+		IEC104Frames:             s.IEC104Frames.Load(),
+		IEC104Deceived:           s.IEC104Deceived.Load(),
+		IEC104Tripwire:           s.IEC104Tripwire.Load(),
+		S7Deceived:               s.S7Deceived.Load(),
+		S7Tripwire:               s.S7Tripwire.Load(),
+		SNMPDeceived:             s.SNMPDeceived.Load(),
+		SNMPTripwire:             s.SNMPTripwire.Load(),
+		SSHDeceived:              s.SSHDeceived.Load(),
+		SSHTripwire:              s.SSHTripwire.Load(),
+		TelnetDeceived:           s.TelnetDeceived.Load(),
+		TelnetTripwire:           s.TelnetTripwire.Load(),
+		PostgresDeceived:         s.PostgresDeceived.Load(),
+		PostgresTripwire:         s.PostgresTripwire.Load(),
+		MySQLDeceived:            s.MySQLDeceived.Load(),
+		MySQLTripwire:            s.MySQLTripwire.Load(),
+		RedisDeceived:            s.RedisDeceived.Load(),
+		RedisTripwire:            s.RedisTripwire.Load(),
+		IEC104Commands:           s.IEC104Commands.Load(),
+		IEC104SystemCmds:         s.IEC104SystemCmds.Load(),
+		IEC104Authentications:    s.IEC104Authentications.Load(),
+		IEC104Denied:             s.IEC104Denied.Load(),
+		IEC104WouldDeny:          s.IEC104WouldDeny.Load(),
+		IEC104Malformed:          s.IEC104Malformed.Load(),
+		IEC104Rejected:           s.IEC104Rejected.Load(),
+		IEC104RateLimited:        s.IEC104RateLimited.Load(),
+		IEC104Selects:            s.IEC104Selects.Load(),
+		IEC104Executes:           s.IEC104Executes.Load(),
+		IEC104Unselected:         s.IEC104Unselected.Load(),
+		IEC104SelectsHeld:        s.IEC104SelectsHeld.Load(),
+		IEC104Failovers:          s.IEC104Failovers.Load(),
+		IEC104Standby:            s.IEC104Standby.Load(),
+		IEC104RedundancyActive:   s.IEC104RedundancyActive.Load(),
+		IEC104Setpoints:          s.IEC104Setpoints.Load(),
+		IEC104SetpointPoints:     s.IEC104SetpointPoints.Load(),
+		IEC104SetpointUnknown:    s.IEC104SetpointUnknown.Load(),
+		IEC104SeqGaps:            s.IEC104SeqGaps.Load(),
+		IEC104WindowFull:         s.IEC104WindowFull.Load(),
+		IEC104UpstreamFail:       s.IEC104UpstreamFail.Load(),
+		SNMPMessages:             s.SNMPMessages.Load(),
+		SNMPSessions:             s.SNMPSessions.Load(),
+		SNMPSessionsOpen:         s.SNMPSessionsOpen.Load(),
+		SNMPReads:                s.SNMPReads.Load(),
+		SNMPWrites:               s.SNMPWrites.Load(),
+		SNMPTraps:                s.SNMPTraps.Load(),
+		SNMPDenied:               s.SNMPDenied.Load(),
+		SNMPWouldDeny:            s.SNMPWouldDeny.Load(),
+		SNMPMalformed:            s.SNMPMalformed.Load(),
+		SNMPRejected:             s.SNMPRejected.Load(),
+		SNMPRateLimited:          s.SNMPRateLimited.Load(),
+		SNMPAmplified:            s.SNMPAmplified.Load(),
+		SNMPTruncated:            s.SNMPTruncated.Load(),
+		SNMPUpgraded:             s.SNMPUpgraded.Load(),
+		SNMPTimedOut:             s.SNMPTimedOut.Load(),
+		SNMPUpstreamFail:         s.SNMPUpstreamFail.Load(),
+		SNMPUnsolicited:          s.SNMPUnsolicited.Load(),
+		SNMPVerified:             s.SNMPVerified.Load(),
+		SNMPDecrypted:            s.SNMPDecrypted.Load(),
+		SNMPAuthFailed:           s.SNMPAuthFailed.Load(),
+		SNMPReplayed:             s.SNMPReplayed.Load(),
+		SNMPDiscoveries:          s.SNMPDiscoveries.Load(),
+		SNMPOriginated:           s.SNMPOriginated.Load(),
+		SNMPPending:              s.SNMPPending.Load(),
+		SNMPDTLSHandshakes:       s.SNMPDTLSHandshakes.Load(),
+		SNMPDTLSHandshakeFail:    s.SNMPDTLSHandshakeFailed.Load(),
+		SNMPDTLSSessions:         s.SNMPDTLSSessions.Load(),
+		SNMPDTLSDropped:          s.SNMPDTLSDropped.Load(),
+		SNMPTSMMessages:          s.SNMPTSMMessages.Load(),
+		SNMPTSMUnnamed:           s.SNMPTSMUnnamed.Load(),
+		LDAPSessions:             s.LDAPSessions.Load(),
+		LDAPSessionsOpen:         s.LDAPSessionsOpen.Load(),
+		LDAPRequests:             s.LDAPRequests.Load(),
+		LDAPBinds:                s.LDAPBinds.Load(),
+		LDAPBindFailures:         s.LDAPBindFailures.Load(),
+		LDAPSearches:             s.LDAPSearches.Load(),
+		LDAPWrites:               s.LDAPWrites.Load(),
+		LDAPEntries:              s.LDAPEntries.Load(),
+		LDAPStripped:             s.LDAPStripped.Load(),
+		LDAPTruncated:            s.LDAPTruncated.Load(),
+		LDAPStartTLS:             s.LDAPStartTLS.Load(),
+		LDAPDenied:               s.LDAPDenied.Load(),
+		LDAPWouldDeny:            s.LDAPWouldDeny.Load(),
+		LDAPMalformed:            s.LDAPMalformed.Load(),
+		LDAPRejected:             s.LDAPRejected.Load(),
+		LDAPRateLimited:          s.LDAPRateLimited.Load(),
+		LDAPUpstreamFail:         s.LDAPUpstreamFail.Load(),
+		LDAPOutstanding:          s.LDAPOutstanding.Load(),
+		TFTPRequests:             s.TFTPRequests.Load(),
+		TFTPTransfers:            s.TFTPTransfers.Load(),
+		TFTPTransfersOpen:        s.TFTPTransfersOpen.Load(),
+		TFTPReads:                s.TFTPReads.Load(),
+		TFTPWrites:               s.TFTPWrites.Load(),
+		TFTPBytesIn:              s.TFTPBytesIn.Load(),
+		TFTPBytesOut:             s.TFTPBytesOut.Load(),
+		TFTPDenied:               s.TFTPDenied.Load(),
+		TFTPWouldDeny:            s.TFTPWouldDeny.Load(),
+		TFTPPathRefused:          s.TFTPPathRefused.Load(),
+		TFTPLowered:              s.TFTPLowered.Load(),
+		TFTPOversize:             s.TFTPOversize.Load(),
+		TFTPMalformed:            s.TFTPMalformed.Load(),
+		TFTPRejected:             s.TFTPRejected.Load(),
+		TFTPRateLimited:          s.TFTPRateLimited.Load(),
+		TFTPTimedOut:             s.TFTPTimedOut.Load(),
+		TFTPUpstreamFail:         s.TFTPUpstreamFail.Load(),
+		TFTPUnsolicited:          s.TFTPUnsolicited.Load(),
+		DHCPMessages:             s.DHCPMessages.Load(),
+		DHCPDiscovers:            s.DHCPDiscovers.Load(),
+		DHCPRequests:             s.DHCPRequests.Load(),
+		DHCPReplies:              s.DHCPReplies.Load(),
+		DHCPLeases:               s.DHCPLeases.Load(),
+		DHCPReleases:             s.DHCPReleases.Load(),
+		DHCPDenied:               s.DHCPDenied.Load(),
+		DHCPWouldDeny:            s.DHCPWouldDeny.Load(),
+		DHCPRogue:                s.DHCPRogue.Load(),
+		DHCPStripped:             s.DHCPStripped.Load(),
+		DHCPMalformed:            s.DHCPMalformed.Load(),
+		DHCPRejected:             s.DHCPRejected.Load(),
+		DHCPRateLimited:          s.DHCPRateLimited.Load(),
+		DHCPTimedOut:             s.DHCPTimedOut.Load(),
+		DHCPUpstreamFail:         s.DHCPUpstreamFail.Load(),
+		DHCPUnsolicited:          s.DHCPUnsolicited.Load(),
+		DHCPPending:              s.DHCPPending.Load(),
+		DHCP6Messages:            s.DHCP6Messages.Load(),
+		DHCP6Solicits:            s.DHCP6Solicits.Load(),
+		DHCP6Requests:            s.DHCP6Requests.Load(),
+		DHCP6Replies:             s.DHCP6Replies.Load(),
+		DHCP6Relayed:             s.DHCP6Relayed.Load(),
+		DHCP6Answered:            s.DHCP6Answered.Load(),
+		DHCP6Releases:            s.DHCP6Releases.Load(),
+		DHCP6Denied:              s.DHCP6Denied.Load(),
+		DHCP6WouldDeny:           s.DHCP6WouldDeny.Load(),
+		DHCP6RogueServer:         s.DHCP6RogueServer.Load(),
+		DHCP6OptionsStripped:     s.DHCP6OptionsStripped.Load(),
+		DHCP6LeaseBounded:        s.DHCP6LeaseBounded.Load(),
+		DHCP6Malformed:           s.DHCP6Malformed.Load(),
+		DHCP6Rejected:            s.DHCP6Rejected.Load(),
+		DHCP6RateLimited:         s.DHCP6RateLimited.Load(),
+		DHCP6UpstreamFail:        s.DHCP6UpstreamFail.Load(),
+		DHCP6SendFailed:          s.DHCP6SendFailed.Load(),
+		DHCP6Unsolicited:         s.DHCP6Unsolicited.Load(),
+		DHCP6Pending:             s.DHCP6Pending.Load(),
+		DHCP6Clients:             s.DHCP6Clients.Load(),
+		CoAPMessages:             s.CoAPMessages.Load(),
+		CoAPRequests:             s.CoAPRequests.Load(),
+		CoAPResponses:            s.CoAPResponses.Load(),
+		CoAPEmpty:                s.CoAPEmpty.Load(),
+		CoAPRelayed:              s.CoAPRelayed.Load(),
+		CoAPAnswered:             s.CoAPAnswered.Load(),
+		CoAPNotifications:        s.CoAPNotifications.Load(),
+		CoAPDenied:               s.CoAPDenied.Load(),
+		CoAPWouldDeny:            s.CoAPWouldDeny.Load(),
+		CoAPRefusalsAnswered:     s.CoAPRefusalsAnswered.Load(),
+		CoAPRogueDevice:          s.CoAPRogueDevice.Load(),
+		CoAPAmplified:            s.CoAPAmplified.Load(),
+		CoAPProxyRefused:         s.CoAPProxyRefused.Load(),
+		CoAPRefusedObserve:       s.CoAPRefusedObserve.Load(),
+		CoAPOversize:             s.CoAPOversize.Load(),
+		CoAPMalformed:            s.CoAPMalformed.Load(),
+		CoAPRejected:             s.CoAPRejected.Load(),
+		CoAPRateLimited:          s.CoAPRateLimited.Load(),
+		CoAPUpstreamFail:         s.CoAPUpstreamFail.Load(),
+		CoAPSendFailed:           s.CoAPSendFailed.Load(),
+		CoAPUnsolicited:          s.CoAPUnsolicited.Load(),
+		CoAPHandshakes:           s.CoAPHandshakes.Load(),
+		CoAPHandshakeFailed:      s.CoAPHandshakeFailed.Load(),
+		CoAPPSKSessions:          s.CoAPPSKSessions.Load(),
+		CoAPUnknownIdentity:      s.CoAPUnknownIdentity.Load(),
+		CoAPUnnamed:              s.CoAPUnnamed.Load(),
+		CoAPDatagramsDropped:     s.CoAPDatagramsDropped.Load(),
+		CoAPPending:              s.CoAPPending.Load(),
+		CoAPObservers:            s.CoAPObservers.Load(),
+		CoAPSessions:             s.CoAPSessions.Load(),
+		OPCUAChannels:            s.OPCUAChannels.Load(),
+		OPCUASessions:            s.OPCUASessions.Load(),
+		OPCUAOpaque:              s.OPCUAOpaque.Load(),
+		OPCUAServerErrors:        s.OPCUAServerErrors.Load(),
+		OPCUAServerFaults:        s.OPCUAServerFaults.Load(),
+		MMSAssociations:          s.MMSAssociations.Load(),
+		MMSSessions:              s.MMSSessions.Load(),
+		MMSPlaintextPasswords:    s.MMSPlaintextPasswords.Load(),
+		MMSOpaque:                s.MMSOpaque.Load(),
+		MMSServerErrors:          s.MMSServerErrors.Load(),
+		MMSServerRefusals:        s.MMSServerRefusals.Load(),
+		MMSSelections:            s.MMSSelections.Load(),
+		RADIUSRequests:           s.RADIUSRequests.Load(),
+		RADIUSBadDigest:          s.RADIUSBadDigest.Load(),
+		RADIUSNoDigest:           s.RADIUSNoDigest.Load(),
+		RADIUSPlaintextPasswords: s.RADIUSPlaintextPasswords.Load(),
+		RADIUSPrivilegeGrants:    s.RADIUSPrivilegeGrants.Load(),
+		RADIUSUnsolicited:        s.RADIUSUnsolicited.Load(),
+		TACACSSessions:           s.TACACSSessions.Load(),
+		TACACSCommands:           s.TACACSCommands.Load(),
+		TACACSAccounting:         s.TACACSAccounting.Load(),
+		TACACSHeaderOnly:         s.TACACSHeaderOnly.Load(),
+		TACACSPlaintextPasswords: s.TACACSPlaintextPasswords.Load(),
+		TACACSPrivilegeGrants:    s.TACACSPrivilegeGrants.Load(),
+		KKDCPRequests:            s.KKDCPRequests.Load(),
+		KKDCPPreauthFailures:     s.KKDCPPreauthFailures.Load(),
+		KKDCPWeakTickets:         s.KKDCPWeakTickets.Load(),
+		KKDCPPreauthExempt:       s.KKDCPPreauthExempt.Load(),
+		KKDCPDelegations:         s.KKDCPDelegations.Load(),
+		KKDCPRealmMismatch:       s.KKDCPRealmMismatch.Load(),
+		SSEStreams:               s.SSEStreams.Load(),
+		SSEEvents:                s.SSEEvents.Load(),
+		SSEEventBytes:            s.SSEEventBytes.Load(),
+		SSEComments:              s.SSEComments.Load(),
+		SSEViolations:            s.SSEViolations.Load(),
+		SSEUnknownEvents:         s.SSEUnknownEvents.Load(),
+		SSECursorsStripped:       s.SSECursorsStripped.Load(),
+		IMAPConnections:          s.IMAPConnections.Load(),
+		IMAPCommands:             s.IMAPCommands.Load(),
+		IMAPAuthFailures:         s.IMAPAuthFailures.Load(),
+		IMAPFetchedMessages:      s.IMAPFetchedMessages.Load(),
+		IMAPAppendBytes:          s.IMAPAppendBytes.Load(),
+		IMAPPlaintextLogins:      s.IMAPPlaintextLogins.Load(),
+		IMAPCapabilitiesStripped: s.IMAPCapabilitiesStripped.Load(),
+		IMAPPreauthRefused:       s.IMAPPreauthRefused.Load(),
+		POP3Connections:          s.POP3Connections.Load(),
+		POP3Commands:             s.POP3Commands.Load(),
+		POP3AuthFailures:         s.POP3AuthFailures.Load(),
+		POP3RetrievedBytes:       s.POP3RetrievedBytes.Load(),
+		POP3Deletes:              s.POP3Deletes.Load(),
+		POP3PlaintextLogins:      s.POP3PlaintextLogins.Load(),
+		POP3CapabilitiesStripped: s.POP3CapabilitiesStripped.Load(),
+		DHCPClients:              s.DHCPClients.Load(),
+		AssetObservations:        s.AssetObservations.Load(),
+		AssetFindings:            s.AssetFindings.Load(),
+		AssetUnexpected:          s.AssetUnexpected.Load(),
+		AssetSaveFailures:        s.AssetSaveFailures.Load(),
+		AdvisoryAffected:         s.AdvisoryAffected.Load(),
+		AdvisoryNotAssessed:      s.AdvisoryNotAssessed.Load(),
+		AdvisoryFindings:         s.AdvisoryFindings.Load(),
+		AdvisoryFailures:         s.AdvisoryFailures.Load(),
+		NTPRequests:              s.NTPRequests.Load(),
+		NTPForwarded:             s.NTPForwarded.Load(),
+		NTPResponses:             s.NTPResponses.Load(),
+		NTPAnswered:              s.NTPAnswered.Load(),
+		NTPDenied:                s.NTPDenied.Load(),
+		NTPWouldDeny:             s.NTPWouldDeny.Load(),
+		NTPDropped:               s.NTPDropped.Load(),
+		NTPMalformed:             s.NTPMalformed.Load(),
+		NTPUnsolicited:           s.NTPUnsolicited.Load(),
+		NTPRateLimited:           s.NTPRateLimited.Load(),
+		NTPKissSent:              s.NTPKissSent.Load(),
+		NTPTimedOut:              s.NTPTimedOut.Load(),
+		NTPAssociations:          s.NTPAssociations.Load(),
+		NTPAssociationsOpen:      s.NTPAssociationsOpen.Load(),
+		NTPUpstreamFailed:        s.NTPUpstreamFailed.Load(),
+		NTPUpstreamUnavailable:   s.NTPUpstreamUnavailable.Load(),
+		NTPSendFailed:            s.NTPSendFailed.Load(),
+		NTPInterleaved:           s.NTPInterleaved.Load(),
+		NTPNTSForwarded:          s.NTPNTSForwarded.Load(),
+		NTPVersion5:              s.NTPVersion5.Load(),
+		NTPProbes:                s.NTPProbes.Load(),
+		NTPProbeFailed:           s.NTPProbeFailed.Load(),
+		NTPDisagreements:         s.NTPDisagreements.Load(),
+		NTPSourceHealthy:         s.NTPSourceHealthy.Load(),
+		NTPSourceUnhealthy:       s.NTPSourceUnhealthy.Load(),
+		NTPHoldoverExpired:       s.NTPHoldoverExpired.Load(),
+		NTPSourceChanged:         s.NTPSourceChanged.Load(),
+		NTPStratumJumped:         s.NTPStratumJumped.Load(),
+		NTPOffsetStepped:         s.NTPOffsetStepped.Load(),
+		NTPDispersionGrew:        s.NTPDispersionGrew.Load(),
+		NTPNTSLost:               s.NTPNTSLost.Load(),
+		NTPLeapAnnounced:         s.NTPLeapAnnounced.Load(),
+		NTPLeapUnexpected:        s.NTPLeapUnexpected.Load(),
+		NTSKESessions:            s.NTSKESessions.Load(),
+		NTSKERelayed:             s.NTSKERelayed.Load(),
+		NTSKERefused:             s.NTSKERefused.Load(),
+		NTSKERejected:            s.NTSKERejected.Load(),
+		NTSKENotNTS:              s.NTSKENotNTS.Load(),
+		NTSKEHandshakeLimited:    s.NTSKEHandshakeLimited.Load(),
+		NTSKEUpstreamFailed:      s.NTSKEUpstreamFailed.Load(),
+		NTSKEHandshakes:          s.NTSKEHandshakes.Load(),
+		NTSKETerminated:          s.NTSKETerminated.Load(),
+		NTSKECookies:             s.NTSKECookies.Load(),
+		NTSKENoTerms:             s.NTSKENoTerms.Load(),
+		NTPNTSVerified:           s.NTPNTSVerified.Load(),
+		NTPNTSUnverified:         s.NTPNTSUnverified.Load(),
+		NTPNTSCookieUnknown:      s.NTPNTSCookieUnknown.Load(),
+		NTPNTSCookiesIssued:      s.NTPNTSCookiesIssued.Load(),
+		NTPNTSSourceEstablished:  s.NTPNTSSourceEstablished.Load(),
+		NTPNTSSourceFailed:       s.NTPNTSSourceFailed.Load(),
+		NTPNTSSourceVerified:     s.NTPNTSSourceVerified.Load(),
+		NTPNTSSourceUnverified:   s.NTPNTSSourceUnverified.Load(),
+		SyslogReceived:           s.SyslogReceived.Load(),
+		SyslogForwarded:          s.SyslogForwarded.Load(),
+		SyslogDropped:            s.SyslogDropped.Load(),
+		SyslogQueueDropped:       s.SyslogQueueDropped.Load(),
+		SyslogRefused:            s.SyslogRefused.Load(),
+		SyslogRejected:           s.SyslogRejected.Load(),
+		SyslogRateLimited:        s.SyslogRateLimited.Load(),
+		SyslogRedacted:           s.SyslogRedacted.Load(),
+		SyslogSendFailed:         s.SyslogSendFailed.Load(),
+		SyslogConnections:        s.SyslogConnections.Load(),
+		Intercepted:              s.Intercepted.Load(),
+		InterceptRefused:         s.InterceptRefused.Load(),
+		InterceptPassed:          s.InterceptPassed.Load(),
+		InterceptRequests:        s.InterceptRequests.Load(),
+		InterceptBytesOnly:       s.InterceptBytesOnly.Load(),
+		InterceptBytes:           s.InterceptBytes.Load(),
+		SSHRecorded:              s.SSHRecorded.Load(),
+		SSHRejected:              s.SSHRejected.Load(),
+		SSHAuthFailed:            s.SSHAuthFailed.Load(),
+		SSHHardwareAuths:         s.SSHHardwareAuths.Load(),
+		SSHHardwareRefused:       s.SSHHardwareRefused.Load(),
+		SSHBytesIn:               s.SSHBytesIn.Load(),
+		SSHBytesOut:              s.SSHBytesOut.Load(),
+		SFTPRequests:             s.SFTPRequests.Load(),
+		VNCSessions:              s.VNCSessions.Load(),
+		VNCSessionsOpen:          s.VNCSessionsOpen.Load(),
+		VNCRejected:              s.VNCRejected.Load(),
+		VNCRefused:               s.VNCRefused.Load(),
+		VNCRecorded:              s.VNCRecorded.Load(),
+		VNCMFAOK:                 s.VNCMFAOK.Load(),
+		VNCMFAFailed:             s.VNCMFAFailed.Load(),
+		RDPSessions:              s.RDPSessions.Load(),
+		RDPSessionsOpen:          s.RDPSessionsOpen.Load(),
+		RDPRejected:              s.RDPRejected.Load(),
+		RDPRefused:               s.RDPRefused.Load(),
+		RDPRecorded:              s.RDPRecorded.Load(),
+		RDPMFAOK:                 s.RDPMFAOK.Load(),
+		RDPMFAFailed:             s.RDPMFAFailed.Load(),
+		RDPChannelsRefused:       s.RDPChannelsRefused.Load(),
+		RDPDevicesRefused:        s.RDPDevicesRefused.Load(),
+		RDPDynamicChannelsSeen:   s.RDPDynamicChannelsSeen.Load(),
+		RDPLegacySessions:        s.RDPLegacySessions.Load(),
+		RDPLegacyClients:         s.RDPLegacyClients.Load(),
+		TelnetSessions:           s.TelnetSessions.Load(),
+		TelnetSessionsOpen:       s.TelnetSessionsOpen.Load(),
+		TelnetRejected:           s.TelnetRejected.Load(),
+		TelnetRefused:            s.TelnetRefused.Load(),
+		TelnetOptionsRefused:     s.TelnetOptionsRefused.Load(),
+		TelnetRecorded:           s.TelnetRecorded.Load(),
+		TelnetMFAOK:              s.TelnetMFAOK.Load(),
+		TelnetMFAFailed:          s.TelnetMFAFailed.Load(),
+		SFTPRefused:              s.SFTPRefused.Load(),
+		SFTPScanned:              s.SFTPScanned.Load(),
+		SFTPScanBlocked:          s.SFTPScanBlocked.Load(),
+		MFAVerified:              s.MFAVerified.Load(),
+		MFAPushSent:              s.MFAPushSent.Load(),
+		MFAPushApproved:          s.MFAPushApproved.Load(),
+		MFAPushDenied:            s.MFAPushDenied.Load(),
+		MFAPushFailed:            s.MFAPushFailed.Load(),
+		MFAPushThrottled:         s.MFAPushThrottled.Load(),
+		MFAFailed:                s.MFAFailed.Load(),
+		YARAMatches:              s.YARAMatches.Load(),
+		YARAScanned:              s.YARAScanned.Load(),
+		WSConnections:            s.WSConnections.Load(),
+		WSMessages:               s.WSMessages.Load(),
+		WSViolations:             s.WSViolations.Load(),
+		WSClosed:                 s.WSClosed.Load(),
+		ForwardUDPAssociations:   s.ForwardUDPAssociations.Load(),
+		ForwardUDPOpen:           s.ForwardUDPOpen.Load(),
+		ForwardUDPDropped:        s.ForwardUDPDropped.Load(),
+		ForwardBytesIn:           s.ForwardBytesIn.Load(),
+		ForwardBytesOut:          s.ForwardBytesOut.Load(),
+		WAFDetected:              s.WAFDetected.Load(),
+		UpstreamErrors:           s.UpstreamErrors.Load(),
+		WebTransportSessions:     s.WebTransportSessions.Load(),
+		UpstreamRetries:          s.UpstreamRetries.Load(),
+		UpstreamStatusRetries:    s.UpstreamStatusRetries.Load(),
+		UpstreamCircuitOpen:      s.UpstreamCircuitOpen.Load(),
+		UpstreamQueueFull:        s.UpstreamQueueFull.Load(),
+		UpstreamQueueTimeouts:    s.UpstreamQueueTimeouts.Load(),
+		UpstreamTimeouts:         s.UpstreamTimeouts.Load(),
+		UpstreamNoHealthy:        s.UpstreamNoHealthy.Load(),
+		ClientAborts:             s.ClientAborts.Load(),
+		Reloads:                  s.Reloads.Load(),
+		ReloadFailures:           s.ReloadFailures.Load(),
 	}
 }
 

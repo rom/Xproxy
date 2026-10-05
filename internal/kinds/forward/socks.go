@@ -308,7 +308,7 @@ func (f *forwardServer) socksConnect(c net.Conn, p *forwardPolicy, ip netip.Addr
 	h := f.host
 	ctx, cancel := context.WithTimeout(context.Background(), p.cfg.ConnectTimeout.D())
 	defer cancel()
-	ips, reason := f.check(ctx, p, ip, user, host, port, "")
+	ips, reason := f.check(ctx, p, ip, user, host, port, "", nil)
 	if reason != "" {
 		_ = socksReply(c, socksDenyCode(reason), netip.AddrPort{})
 		h.Counters().ForwardDenied.Add(1)
@@ -360,7 +360,7 @@ func (f *forwardServer) socksConnect(c net.Conn, p *forwardPolicy, ip netip.Addr
 		// SOCKS is the same listener under the same policy. A tunnel
 		// that escapes interception by asking for it in the other
 		// protocol on the same port is not a policy.
-		in, out, reason := f.intercept(c, dst, host, ip, user)
+		in, out, reason := f.intercept(c, dst, host, port, p, ip, user)
 		h.Counters().ForwardBytesIn.Add(uint64(in))   //nolint:gosec // non-negative
 		h.Counters().ForwardBytesOut.Add(uint64(out)) //nolint:gosec // non-negative
 		f.logSOCKS(ip, user, dest, in, out, start, reason)
@@ -668,7 +668,7 @@ func (a *socksAssoc) toDestination(msg []byte, _ netip.AddrPort) (int64, bool) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), a.p.cfg.ConnectTimeout.D())
 	defer cancel()
-	ips, reason := a.f.check(ctx, a.p, a.client, a.user, host, port, "")
+	ips, reason := a.f.check(ctx, a.p, a.client, a.user, host, port, "", nil)
 	if reason != "" {
 		a.f.host.Counters().ForwardDenied.Add(1)
 		a.f.host.Counters().ForwardUDPDropped.Add(1)

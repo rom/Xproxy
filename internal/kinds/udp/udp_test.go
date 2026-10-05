@@ -370,12 +370,8 @@ upstreams:
 // holds the TCP port itself and gives the listener the same number: if
 // the engine bound a stream socket, it could not start.
 func TestUDPListenerBindsNoStreamPort(t *testing.T) {
-	hold, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
+	hold, port := heldStreamPort(t)
 	defer func() { _ = hold.Close() }()
-	port := hold.Addr().(*net.TCPAddr).Port
 
 	e := startEchoUDP(t, "echo:")
 	yaml := fmt.Sprintf(`
@@ -403,6 +399,35 @@ upstreams:
 	eventually(t, 5*time.Second, "the session to be counted", func() bool {
 		return s.Stats().UDPSessions == 1
 	})
+}
+
+// heldStreamPort returns a stream port this test holds whose datagram side is
+// free.
+//
+// Both halves matter. The stream side has to be taken, because the test is that
+// a udp listener never wants one. The datagram side has to be free, because the
+// listener is about to take it -- and this suite runs its packages in parallel,
+// every one of them binding ephemeral ports, so the first port the kernel offers
+// may have its datagram side held by a sibling. That failed this test on a tree
+// where nothing was wrong. Probing before the start turns a coincidence into
+// another attempt instead of a failure.
+func heldStreamPort(t *testing.T) (net.Listener, int) {
+	t.Helper()
+	for range 32 {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := ln.Addr().(*net.TCPAddr).Port
+		probe, err := net.ListenPacket("udp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err == nil {
+			_ = probe.Close()
+			return ln, port
+		}
+		_ = ln.Close()
+	}
+	t.Fatal("no ephemeral port came up with its datagram side free")
+	return nil, 0
 }
 
 // Every refusal has a reason, and the reason reaches the metrics

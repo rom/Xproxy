@@ -24,7 +24,6 @@ import (
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/passwd"
 	"github.com/rom/xproxy/internal/proxy"
-	"github.com/rom/xproxy/internal/relay"
 	"github.com/rom/xproxy/internal/textsafe"
 )
 
@@ -74,6 +73,8 @@ type forwardPolicy struct {
 	allow []destRule
 	deny  []destRule
 	users map[string]string
+	// egress is the rules section, nil on a listener that has none.
+	egress *egressPolicy
 }
 
 // destRule matches a destination by name (exact or *.suffix) or by
@@ -140,6 +141,9 @@ func (f *forwardServer) apply(fc *config.ForwardListener) error {
 			return fmt.Errorf("forward auth: %w", err)
 		}
 		p.users = users
+	}
+	if p.egress, err = compileEgress(fc); err != nil {
+		return fmt.Errorf("forward egress: %w", err)
 	}
 	f.policy.Store(p)
 	f.authMu.Lock()
@@ -256,12 +260,14 @@ func (f *forwardServer) shadowed(reason, dest string) bool {
 // dial, or the deny reason.
 //
 // client is who asked, user the name they authenticated as where this listener
-// asks for one, and reqURL the whole request target where there is one (a plain
+// asks for one, rf the facts of a visible request where there is one -- which is
+// what lets the egress rules about a method or a content type decide here --
+// and reqURL the whole request target where there is one (a plain
 // http request through the proxy); a CONNECT, a SOCKS request and a MASQUE
 // association name a host and a port and nothing more, and pass "". client and
 // reqURL are for the imported threat lists at the end; user is for the estate's
 // authorisation policy, which is the one question here that is about a person.
-func (f *forwardServer) check(ctx context.Context, p *forwardPolicy, client netip.Addr, user, host string, port int, reqURL string) ([]netip.Addr, string) {
+func (f *forwardServer) check(ctx context.Context, p *forwardPolicy, client netip.Addr, user, host string, port int, reqURL string, rf *requestFacts) ([]netip.Addr, string) {
 	if !p.ports[port] && !f.shadowed("port", net.JoinHostPort(host, strconv.Itoa(port))) {
 		return nil, "port"
 	}
@@ -297,6 +303,27 @@ func (f *forwardServer) check(ctx context.Context, p *forwardPolicy, client neti
 	if len(p.allow) > 0 && !anyRule(p.allow, host, ips) && !f.shadowed("not_allowed", host) {
 		return nil, "not_allowed"
 	}
+	// The listener's own egress rules next: allow and deny said whether the
+	// destination exists for this listener at all, and these say who may reach
+	// it with what, and when. A rule that allows means this policy has nothing
+	// to object to -- it does not skip what follows, because a listener's rule
+	// must not be able to overrule the estate's own section below.
+	if p.egress != nil {
+		sub := egressSubject{client: client, user: user, host: host, ips: ips,
+			port: port, at: time.Now(), phase: phaseSession}
+		if rf != nil {
+			// A plain request through the proxy: the method, the target and the
+			// content type are right here, so the rules that name them are
+			// asked now rather than skipped.
+			sub.phase, sub.method, sub.path = phaseRequest, rf.method, rf.path
+			sub.reqType, sub.reqBytes = rf.contentType, rf.bytes
+		}
+		d := p.egress.Decide(sub)
+		f.recordEgress(client, user, host, port, d)
+		if !d.Allowed && !f.shadowed(d.Reason, egressDetail(d, host, port)) {
+			return nil, d.Reason
+		}
+	}
 	// Imported threat intelligence last, after this estate's own allow and
 	// deny rules. Those are local policy about local destinations; a list is
 	// an import, and a destination an operator here wrote an allow rule for
@@ -308,7 +335,7 @@ func (f *forwardServer) check(ctx context.Context, p *forwardPolicy, client neti
 	// that a destination nothing else objects to is the only kind this has to
 	// answer about -- and a refusal here is about the person rather than the
 	// place, which is what the rule an operator reads says.
-	if reason := f.admitByPolicy(client, user, host, port); reason != "" {
+	if reason := f.admitByPolicy(p, client, user, host, port); reason != "" {
 		return nil, reason
 	}
 	return ips, ""
@@ -329,16 +356,23 @@ func (f *forwardServer) check(ctx context.Context, p *forwardPolicy, client neti
 // matches nobody here, and the default decides -- which with the default deny
 // means such a listener needs a rule about networks or destinations rather than
 // about people.
-func (f *forwardServer) admitByPolicy(client netip.Addr, user, host string, port int) string {
+func (f *forwardServer) admitByPolicy(p *forwardPolicy, client netip.Addr, user, host string, port int) string {
 	dest := host
 	if port > 0 {
 		dest = net.JoinHostPort(host, strconv.Itoa(port))
+	}
+	// p is nil where a caller asks before a policy has been applied, which is
+	// what a test that drives this decision directly does.
+	var groups []string
+	if p != nil {
+		groups = p.egress.groupsOf(user)
 	}
 	return f.host.Authorization().Ask(authorization.Subject{
 		Listener: f.name,
 		Kind:     "forward",
 		Client:   client,
 		User:     user,
+		Groups:   groups,
 		Target:   dest,
 		Action:   authorization.ActionConnect,
 	}, textsafe.Clip64(user), authorization.Gate{
@@ -352,6 +386,43 @@ func (f *forwardServer) admitByPolicy(client netip.Addr, user, host string, port
 		// here. Counting it twice would put the policy's refusals at double
 		// everything else's.
 	})
+}
+
+// recordEgress writes down what the egress rules decided.
+//
+// An observe match is recorded whether or not anything later refuses, because
+// that is the whole point of observe: a rule is tried on real traffic, and what
+// it would have done has to be readable before it is allowed to do it.
+func (f *forwardServer) recordEgress(client netip.Addr, user, host string, port int, d egressDecision) {
+	dest := net.JoinHostPort(host, strconv.Itoa(port))
+	for _, name := range d.Observed {
+		f.host.Counters().WouldRefuse("forward", "rule_observe")
+		f.host.Shadow().Record("forward", f.name, "rule_observe", name, dest)
+		f.host.Logs().SecurityEvent(context.Background(), "alert", "forward_egress_observed",
+			"listener", f.name, "client_ip", client.String(), "user", textsafe.Clip64(user),
+			"destination", dest, "rule", textsafe.Clip64(name))
+	}
+	if d.Allowed || d.Rule == "" {
+		return
+	}
+	// The refusal itself is counted and logged by the caller, which is where
+	// every other refusal on this listener is counted: what is added here is
+	// the rule's name and its comment, which are the two things a refusal
+	// reason cannot carry and the operator most needs.
+	f.host.Logs().SecurityEvent(context.Background(), "deny", "forward_egress_denied",
+		"listener", f.name, "client_ip", client.String(), "user", textsafe.Clip64(user),
+		"destination", dest, "rule", textsafe.Clip64(d.Rule),
+		"comment", textsafe.Clip256(d.Comment))
+}
+
+// egressDetail is what the shadow ledger shows for a refusal this policy would
+// have made: the destination, and the rule that decided where one did.
+func egressDetail(d egressDecision, host string, port int) string {
+	dest := net.JoinHostPort(host, strconv.Itoa(port))
+	if d.Rule == "" {
+		return dest
+	}
+	return d.Rule + " -> " + dest
 }
 
 // intel asks the imported threat lists about one forward request: who is
@@ -583,7 +654,7 @@ func (f *forwardServer) connect(w http.ResponseWriter, r *http.Request, p *forwa
 		f.deny(w, r, ip, user, http.StatusBadRequest, "authority", start)
 		return
 	}
-	ips, reason := f.check(r.Context(), p, ip, user, host, port, "")
+	ips, reason := f.check(r.Context(), p, ip, user, host, port, "", nil)
 	if reason != "" {
 		f.deny(w, r, ip, user, http.StatusForbidden, reason, start)
 		return
@@ -651,25 +722,22 @@ func (f *forwardServer) connect(w http.ResponseWriter, r *http.Request, p *forwa
 		// Whatever the client sent before our reply is the start of the
 		// handshake this is about to terminate, so it stays on the
 		// client's side rather than being sent on to the destination.
-		in, out, reason := f.intercept(bufferedConn(client, bufrw.Reader), dst, host, ip, user)
+		in, out, reason := f.intercept(bufferedConn(client, bufrw.Reader), dst, host, port, p, ip, user)
 		h.Counters().ForwardBytesIn.Add(uint64(in))   //nolint:gosec // non-negative
 		h.Counters().ForwardBytesOut.Add(uint64(out)) //nolint:gosec // non-negative
 		f.log(r, ip, user, r.Host, http.StatusOK, in, out, start, reason)
 		return
 	}
-	var early int64
-	if n := bufrw.Reader.Buffered(); n > 0 { // bytes the client sent before our reply
-		b, _ := bufrw.Peek(n)
-		if _, err := dst.Write(b); err != nil {
-			_ = client.Close()
-			_ = dst.Close()
-			return
-		}
-		early = int64(n)
-		_, _ = bufrw.Discard(n)
+	// Nothing is decrypting this tunnel, which is where the server name inside
+	// it is worth a look: see sniGuard.
+	br, reason := f.sniGuard(p.cfg.SNI, client, bufrw.Reader, host, ip, p.cfg.ConnectTimeout.D())
+	if reason != "" {
+		_ = client.Close()
+		_ = dst.Close()
+		f.log(r, ip, user, r.Host, http.StatusOK, 0, 0, start, reason)
+		return
 	}
-	in, out := relay.Splice(client, dst, p.cfg.IdleTimeout.D())
-	in += early
+	in, out, _ := f.spliceBuffered(br, client, dst, p.cfg.IdleTimeout.D())
 	h.Counters().ForwardBytesIn.Add(uint64(in))   //nolint:gosec // non-negative
 	h.Counters().ForwardBytesOut.Add(uint64(out)) //nolint:gosec // non-negative
 	f.log(r, ip, user, r.Host, http.StatusOK, in, out, start, "")
@@ -706,7 +774,7 @@ func (f *forwardServer) connectH2(w http.ResponseWriter, r *http.Request, p *for
 		// hijacked HTTP/1 connection. Adapt it to net.Conn so interception
 		// cannot be bypassed by selecting h2 on the outer proxy connection.
 		client := &h2StreamConn{body: r.Body, w: w, rc: rc}
-		in, out, reason := f.intercept(client, dst, host, ip, user)
+		in, out, reason := f.intercept(client, dst, host, portOf(r.Host, 443), p, ip, user)
 		h.Counters().ForwardBytesIn.Add(uint64(in))   //nolint:gosec // non-negative
 		h.Counters().ForwardBytesOut.Add(uint64(out)) //nolint:gosec // non-negative
 		f.log(r, ip, user, r.Host, http.StatusOK, in, out, start, reason)
@@ -811,14 +879,32 @@ func (f *forwardServer) plain(w http.ResponseWriter, r *http.Request, p *forward
 		port = n
 	}
 	// A plain request through the proxy has a path, so a url list can be
-	// asked about the whole target rather than the host alone.
-	ips, reason := f.check(r.Context(), p, ip, user, host, port, r.URL.Host+r.URL.RequestURI())
+	// asked about the whole target rather than the host alone -- and the egress
+	// rules can be asked about the method, the path and the content type, which
+	// inside a tunnel they cannot.
+	rf := &requestFacts{method: r.Method, path: r.URL.Path,
+		contentType: r.Header.Get("Content-Type"), bytes: r.ContentLength}
+	ips, reason := f.check(r.Context(), p, ip, user, host, port, r.URL.Host+r.URL.RequestURI(), rf)
 	if reason != "" {
 		f.deny(w, r, ip, user, http.StatusForbidden, reason, start)
 		return
 	}
 	ctx := context.WithValue(r.Context(), forwardDialKey{}, ips)
 	out := r.Clone(ctx)
+	// A body whose length nobody declared is counted as it is read, and the
+	// round trip fails at the size a rule refuses. Without this a size rule is
+	// avoided by not sending Content-Length, which is one header's worth of
+	// bypass.
+	var overRule, overComment string
+	if p.egress != nil && r.ContentLength < 0 && out.Body != nil {
+		sub := egressSubject{client: ip, user: user, host: host, ips: ips, port: port,
+			at: time.Now(), phase: phaseRequest, method: r.Method, path: r.URL.Path,
+			reqType: r.Header.Get("Content-Type")}
+		if bound, rule, comment := p.egress.BodyBound(sub); bound > 0 {
+			overRule, overComment = rule, comment
+			out.Body = &boundedBody{ReadCloser: out.Body, left: bound}
+		}
+	}
 	out.RequestURI = ""
 	out.Host = r.URL.Host
 	httpx.StripHopByHop(out.Header)
@@ -828,24 +914,77 @@ func (f *forwardServer) plain(w http.ResponseWriter, r *http.Request, p *forward
 	}
 	resp, err := f.tr.RoundTrip(out)
 	if err != nil {
+		if errors.Is(err, errBodyTooLarge) {
+			// The upload was cut at the size the rule names. What had already
+			// gone is gone; the rest did not follow it.
+			f.host.Logs().SecurityEvent(r.Context(), "deny", "forward_egress_denied",
+				"listener", f.name, "client_ip", ip.String(), "user", textsafe.Clip64(user),
+				"destination", r.URL.Host, "rule", textsafe.Clip64(overRule),
+				"comment", textsafe.Clip256(overComment), "detail", "undeclared body over the bound")
+			if !f.shadowed("rule_deny", overRule+" -> "+r.URL.Host) {
+				f.deny(w, r, ip, user, http.StatusForbidden, "rule_deny", start)
+				return
+			}
+		}
 		h.Counters().ForwardErrors.Add(1)
 		f.deny(w, r, ip, user, http.StatusBadGateway, "upstream", start)
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
+	// The response head is the one chance to decide on what is coming back
+	// before any of it reaches the client. The destination has already been
+	// contacted by now -- that is unavoidable, and the protocol page says so --
+	// but a body nobody is allowed to receive still does not have to arrive.
+	if p.egress != nil {
+		d := p.egress.Decide(egressSubject{client: ip, user: user, host: host,
+			ips: ips, port: port, at: time.Now(), phase: phaseResponse,
+			method: r.Method, path: r.URL.Path, reqType: r.Header.Get("Content-Type"),
+			reqBytes: r.ContentLength, respType: resp.Header.Get("Content-Type"),
+			respBytes: resp.ContentLength})
+		f.recordEgress(ip, user, host, port, d)
+		if !d.Allowed && !f.shadowed(d.Reason, egressDetail(d, host, port)) {
+			f.deny(w, r, ip, user, http.StatusForbidden, d.Reason, start)
+			return
+		}
+	}
 	httpx.StripHopByHop(resp.Header)
 	for k, v := range resp.Header {
 		w.Header()[k] = v
 	}
 	w.Header().Add("Via", "1.1 xproxy")
 	w.WriteHeader(resp.StatusCode)
+	// The listener's own bound, and the smallest bound a rule would refuse at
+	// for a response whose length was not declared: whichever is lower decides
+	// how much may be copied.
+	limit := p.cfg.MaxResponseBytes
+	var byRule, byComment string
+	if p.egress != nil && resp.ContentLength < 0 {
+		sub := egressSubject{client: ip, user: user, host: host, ips: ips, port: port,
+			at: time.Now(), phase: phaseResponse, method: r.Method, path: r.URL.Path,
+			reqType: r.Header.Get("Content-Type"), reqBytes: r.ContentLength,
+			respType: resp.Header.Get("Content-Type")}
+		if bound, rule, comment := p.egress.BodyBound(sub); bound > 0 && (limit == 0 || bound < limit) {
+			limit, byRule, byComment = bound, rule, comment
+		}
+	}
 	var body io.Reader = resp.Body
-	if p.cfg.MaxResponseBytes > 0 {
-		body = io.LimitReader(resp.Body, p.cfg.MaxResponseBytes+1)
+	if limit > 0 {
+		body = io.LimitReader(resp.Body, limit+1)
 	}
 	n, _ := io.Copy(w, body)
-	if p.cfg.MaxResponseBytes > 0 && n > p.cfg.MaxResponseBytes {
+	if limit > 0 && n > limit {
 		h.Counters().ForwardErrors.Add(1)
+		if byRule != "" {
+			// It was a rule's bound rather than the listener's, so the event
+			// names the rule: a truncated response with nothing saying why is a
+			// support call rather than a finding.
+			h.Counters().Refuse("forward", "rule_deny")
+			h.Logs().SecurityEvent(r.Context(), "deny", "forward_egress_denied",
+				"listener", f.name, "client_ip", ip.String(), "user", textsafe.Clip64(user),
+				"destination", r.URL.Host, "rule", textsafe.Clip64(byRule),
+				"comment", textsafe.Clip256(byComment),
+				"detail", "undeclared response body over the bound")
+		}
 		// Cut the connection so the client sees a truncated response
 		// rather than a complete looking one.
 		if c, _, err := http.NewResponseController(w).Hijack(); err == nil {

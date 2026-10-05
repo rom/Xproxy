@@ -150,9 +150,9 @@ func (t *server) request(raw []byte, from net.Addr) {
 	}
 	// Engineering: a write is an image or a configuration going where devices
 	// boot from. Reported whatever the policy said, and refused where this
-	// listener requires an approved work order for it.
+	// listener requires an approved grant for it.
 	if reason := t.decideEngineering(ip, p.Op, pa); reason != "" {
-		t.answer(from, wire.ErrAccessViolation, "no approved work order")
+		t.answer(from, wire.ErrAccessViolation, "no approved grant")
 		return
 	}
 	// The bounds, applied by rewriting the request rather than refusing it.

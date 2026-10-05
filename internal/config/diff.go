@@ -163,7 +163,7 @@ func Diff(from, to *Config, fromLabel, toLabel string) *Changes {
 		case c.Section == "server.listeners" && c.Kind == "changed":
 			switch listenerChange(from, to, c.Name) {
 			case listenerRestart:
-				ch.RestartNeeded = append(ch.RestartNeeded, "listener "+c.Name+" changed on the same address with a UDP socket (h3, quic or dns)")
+				ch.RestartNeeded = append(ch.RestartNeeded, "listener "+c.Name+" carries QUIC (h3, tcp.quic or dns.doq) and changed on the same address")
 			case listenerRebuild:
 				ch.Drains = append(ch.Drains, "listener "+c.Name+" rebuilt (connections drained)")
 			}
@@ -325,10 +325,35 @@ func listenerChange(from, to *Config, name string) listenerChangeKind {
 	if marshal(&na) == marshal(&nb) {
 		return listenerInPlace
 	}
-	if a.Address == b.Address && ListenerHasUDP(*a) {
+	if a.Address == b.Address && ListenerHasQUIC(*a) {
 		return listenerRestart
 	}
 	return listenerRebuild
+}
+
+// ListenerHasQUIC reports whether the listener carries QUIC on a datagram
+// socket: HTTP/3, the QUIC relay of a tcp listener, or DNS over QUIC.
+//
+// It is the one datagram case a reload cannot rebuild on the same address. A
+// plain datagram socket is handed from one generation to the next, because a
+// datagram is a whole conversation and the socket's receive buffer holds what
+// arrives in between. A QUIC connection is not: it is cryptographic state
+// inside the transport that holds the socket, so handing the socket over would
+// end every connection on it -- which is the dropped connection the handover
+// exists to avoid.
+func ListenerHasQUIC(lc Listener) bool {
+	switch lc.Kind {
+	case "tcp":
+		return lc.TCP != nil && lc.TCP.QUIC
+	case "dns":
+		return lc.DNS != nil && lc.DNS.DoQ
+	}
+	for _, p := range lc.Protocols {
+		if p == ProtocolH3 {
+			return true
+		}
+	}
+	return false
 }
 
 // ListenerHasUDP reports whether the listener binds a UDP socket at all:

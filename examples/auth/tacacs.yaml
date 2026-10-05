@@ -1,0 +1,292 @@
+# TACACS+ relay: the protocol with the commands in it.
+#
+# Where RADIUS answers "may this user onto the network", TACACS+ answers "may
+# this user, at this privilege level, run `configure terminal` on this
+# router". It authorises each command separately and the command is in the
+# packet, which is why this is the file where a policy is worth the most per
+# line -- and why the first key in every listener here is secret_file.
+#
+# RFC 8907 calls its MD5 construction "obfuscation", not encryption, and
+# section 10.3 says plainly that it is not cryptographically sound. Anybody
+# with the key reads everything, and this listener uses that: with the key it
+# reads the user, the command and the privilege level, and without one it
+# reads a twelve-octet header and forwards the body unexamined. Naming
+# `commands` with no key is a load error rather than a setting that silently
+# matches nothing.
+#
+# The command patterns are words with an optional trailing "...", matched
+# against the command line the device sends split across `cmd` and one
+# `cmd-arg` per word. A wildcard in the middle is refused at load: a pattern
+# whose author and whose reader disagree about what it covers is worse than no
+# pattern on a protocol that authorises each command separately.
+#
+# Validate with: xproxyctl -config examples/auth/tacacs.yaml validate
+version: 1
+
+logging:
+  directory: /var/log/xproxy
+  access: {file: access.log}
+  security: {file: security.log}
+  audit: {file: audit.log}
+
+management:
+  socket: /run/xproxy/mgmt.sock
+  socket_mode: "0660"
+
+server:
+  listeners:
+    # ---------------------------------------------------------------
+    # The core and distribution routers: read freely, change in a window.
+    #
+    # Three lines do most of the work here.
+    #
+    #   deny_commands is checked first and no rule overrides it, which is
+    #   where the commands nobody runs from a keyboard go: `write erase`
+    #   removes the configuration, `copy ... tftp:` is the configuration
+    #   leaving the estate, and `debug all` takes a router's CPU away from
+    #   routing.
+    #
+    #   max_privilege_level: 1 outside the change window is a bound on the
+    #   SERVER's answer as well as on the request. priv-lvl in an
+    #   authorization response is a mandatory argument and the device must
+    #   apply it, so this is the line that stops one compromised TACACS+
+    #   server from handing out enable on every router behind this relay.
+    #
+    #   allow_unauthenticated_authorization: false refuses an authorization
+    #   request whose authen_method says the device authenticated nobody.
+    #   That is a whole attack in one octet: a device asking "may this
+    #   unnamed user run this command" and being told yes.
+    - name: core
+      address: "10.20.1.10:49"
+      kind: tacacs
+      tacacs:
+        upstream: tacacs-servers
+        secret_file: /etc/xproxy/tacacs/core.secret
+
+        allow_clients:
+          - 10.40.0.0/24     # core
+          - 10.40.1.0/24     # distribution
+
+        refuse_unencrypted: true
+        allow_follow: false
+        allow_change_password: false
+        allow_sendauth: false
+        allow_unauthenticated_authorization: false
+
+        authen_types: [ascii, pap, chap]
+        authen_services: [login, enable]
+        services: [shell]
+
+        # A pattern wildcards only at the end, so "copy ... tftp:" is not
+        # one -- and does not need to be: what matters is which file is
+        # being copied, not where to. `copy running-config` is the estate's
+        # own description of its network leaving it whatever the destination
+        # says, and the engineering report names the destination anyway.
+        deny_commands:
+          - "write erase"
+          - "erase ..."
+          - "copy running-config ..."
+          - "copy startup-config ..."
+          - "debug all"
+
+        max_privilege_level: 1
+        max_sessions_per_connection: 64
+        idle_timeout: 5m
+        session_timeout: 1h
+        rate_limit: 30
+
+        default_action: deny
+        rules:
+          # Looking is always allowed, at privilege 1, for the whole network
+          # operations group.
+          - name: look
+            action: allow
+            commands:
+              - "show ..."
+              - "ping ..."
+              - "traceroute ..."
+              - "display ..."
+              - "dir ..."
+
+          # Changing is allowed to the three engineers, at privilege 15,
+          # during the change window -- and the window is on the rule rather
+          # than on the listener, so the looking above is unaffected by it.
+          - name: change-window
+            action: allow
+            users: [netops1, netops2, netops3]
+            commands:
+              - "configure ..."
+              - "write memory"
+              - "clear counters ..."
+            max_privilege_level: 15
+            schedule:
+              days: [tue, wed, thu]
+              from: "20:00"
+              to: "23:00"
+              timezone: Europe/Stockholm
+
+          # Accounting is always carried: the record of what was run is the
+          # thing this listener exists to keep a copy of, and refusing it
+          # would mean refusing the audit trail rather than the command.
+          - name: accounting
+            action: allow
+            exchanges: [accounting]
+
+        log_accounting: true
+
+        # A configuration command is engineering activity on a router the
+        # same way a download is on a PLC. require_grant is off here and on
+        # for the edge firewalls below, which is the difference between
+        # "reported" and "refused without an approved work order".
+        engineering:
+          enabled: true
+
+        anomaly:
+          enabled: true
+          novelty: {symbols: true}
+          talkers: {enabled: true}
+
+    # ---------------------------------------------------------------
+    # The edge firewalls: the same protocol, and a stricter answer.
+    #
+    # require_grant means a configuration command is refused unless an
+    # approved grant is open for it in the access ledger. On the devices that
+    # are the boundary between this estate and the internet, "somebody
+    # approved this change" is a precondition rather than a note in a log.
+    - name: edge
+      address: "10.20.1.11:49"
+      kind: tacacs
+      tacacs:
+        upstream: tacacs-servers
+        secret_file: /etc/xproxy/tacacs/edge.secret
+        # A second key makes this listener a key boundary: the firewall's key
+        # never reaches the server and the server's never reaches a firewall.
+        upstream_secret_file: /etc/xproxy/tacacs/server.secret
+
+        allow_clients: [10.41.0.0/28]
+
+        authen_types: [ascii]
+        authen_services: [login, enable]
+        services: [shell]
+        users: [netops1, netops2, secops1]
+
+        commands:
+          - "show ..."
+          - "configure ..."
+          - "write memory"
+        # With per-command authorization each configuration line arrives as
+        # its own request -- `no logging host 1.2.3.4` is cmd=no with
+        # cmd-arg=logging and the rest -- so the commands inside
+        # configuration mode are patterns in their own right.
+        deny_commands:
+          - "no logging ..."
+          - "no access-list ..."
+          - "write erase"
+
+        max_privilege_level: 15
+        rate_limit: 10
+
+        default_action: deny
+        rules:
+          - name: look
+            action: allow
+            commands: ["show ..."]
+            max_privilege_level: 1
+          - name: change
+            action: allow
+            users: [netops1, secops1]
+            commands: ["configure ...", "write memory"]
+            max_privilege_level: 15
+          - name: accounting
+            action: allow
+            exchanges: [accounting]
+
+        engineering:
+          enabled: true
+          require_grant: true
+
+    # ---------------------------------------------------------------
+    # The listener for the equipment that speaks TACACS+ over TLS, which is
+    # the fix for everything section 10.3 admits about the obfuscation.
+    #
+    # require_tls is on, so a device that connects without it is refused
+    # rather than quietly served over the MD5 pad; upstream_tls_mode: prefer
+    # tries TLS to the server and falls back, which is what an estate
+    # migrating its servers needs.
+    - name: tls
+      address: "10.20.1.12:49"
+      kind: tacacs
+      tls:
+        certificates:
+          - cert_file: /etc/xproxy/tls/tacacs.pem
+            key_file: /etc/xproxy/tls/tacacs.key
+        client_auth: require
+        client_ca_file: /etc/xproxy/tls/device-ca.pem
+      tacacs:
+        upstream: tacacs-servers
+        secret_file: /etc/xproxy/tacacs/tls.secret
+        require_tls: true
+        upstream_tls_mode: prefer
+        upstream_tls:
+          ca_file: /etc/xproxy/tls/tacacs-server-ca.pem
+          min_version: "1.3"
+        allow_clients: [10.42.0.0/24]
+        commands: ["show ...", "configure ..."]
+        max_privilege_level: 15
+        default_action: deny
+        rules:
+          - name: everything-the-lists-allow
+            action: allow
+
+    # ---------------------------------------------------------------
+    # A shadow-mode trial for a command policy nobody has run yet.
+    #
+    # This is the listener to start with on a real estate: the command
+    # patterns above are a guess until the accounting records say what is
+    # actually run, and a command policy that refuses the wrong thing refuses
+    # an engineer at three in the morning.
+    #
+    # What is still refused in shadow mode: a body in the clear, a FOLLOW
+    # reply, a malformed packet, and every bound. None of those is a policy
+    # question -- carrying a FOLLOW to see what would have happened sends the
+    # next credential to a host the server named.
+    - name: trial
+      address: "10.20.1.13:49"
+      kind: tacacs
+      policy: {mode: shadow}
+      tacacs:
+        upstream: tacacs-servers
+        secret_file: /etc/xproxy/tacacs/trial.secret
+        allow_clients: [10.43.0.0/16]
+        commands: ["show ..."]
+        max_privilege_level: 1
+        default_action: deny
+        rules:
+          - name: observe-everything
+            action: observe
+        log_accounting: true
+
+upstreams:
+  - name: tacacs-servers
+    endpoints:
+      - {address: "10.10.0.30:49"}
+      - {address: "10.10.0.31:49"}
+    health_check:
+      type: tcp
+      interval: 10s
+
+access:
+  ledger: /var/lib/xproxy/access.log
+  approvals: 1            # four eyes: the person who asked and one other
+  max_duration: 4h        # one change window, not a shift
+  max_lead: 168h          # a change filed a week ahead, not a quarter
+  max_open: 32
+
+bans:
+  triggers:
+    - name: tacacs-refusals
+      reasons: [tacacs_denied]
+      threshold: 20
+      window: 10m
+      duration: 30m
+      max_duration: 4h

@@ -1,8 +1,16 @@
-# WebSocket routes with frame inspection.
+# WebSocket routes with frame and message inspection.
 #
 # Without a guard an upgrade is an opaque tunnel: everything before the
 # 101 is inspected and everything after it is not. Applications put
 # their real API in there, so this is where to look.
+#
+# There are two policies here and they answer different questions. The
+# frame bounds are the protocol's own and are the same on every route.
+# The `types` list is the application's: this connection carries five
+# kinds of message, one of them joins a room and one of them is a
+# keepalive, and one max_message_bytes for the connection is the bound of
+# its largest message -- which is the bound that lets every other message
+# be that large too.
 #
 # Validate: xproxy -config examples/routes/websocket.yaml -validate
 version: 1
@@ -36,6 +44,48 @@ routes:
         - "(?i)<script[^>]*>"
         - "(?i)\\bDROP\\s+TABLE\\b"
       action: close
+
+      # The messages this API actually has. The member that names a
+      # message's type is `type` by default; this application calls it
+      # `op`.
+      type_field: op
+      types:
+        # A keepalive is a few bytes twice a minute. Saying so means a
+        # client cannot send a quarter of a megabyte of one.
+        - {name: ping, max_bytes: 64, messages_per_second: 2}
+        # Joining a room is checked against a schema, because it is the
+        # message that names something the backend then looks up.
+        - name: join
+          max_bytes: 4096
+          messages_per_second: 5
+          schema_file: /etc/xproxy/ws/join.json
+        - name: message
+          max_bytes: 16384
+          messages_per_second: 20
+          schema_file: /etc/xproxy/ws/message.json
+        # The server's own messages. A type that only ever travels one
+        # way is one more thing a client cannot claim to be.
+        - {name: presence, direction: server}
+        - {name: history, direction: server, max_bytes: 262144}
+
+      # Start here. observe records a message whose type is not in the
+      # list and forwards it, so the list can be finished from the events
+      # and the xproxy_websocket_unknown_type_total counter rather than
+      # from somebody's memory of the API. Then set deny, which is the
+      # default once types names anything.
+      unknown_types: observe
+
+      # Every message on this route is JSON, so one that is not is not a
+      # message this API has.
+      require_json: true
+
+      # Browsers offer permessage-deflate on every WebSocket. strip (the
+      # default) takes the offer out and both ends fall back to
+      # uncompressed frames; inspect keeps compression and reads it,
+      # which costs an inflate per message and is what an estate wants
+      # where the messages are large and the link is thin.
+      compression: inspect
+      max_inflate_ratio: 50
     upstream: chat
   # A market data feed: large binary frames, one way, high rate. The
   # bounds are wide and the inspection is off, because the content is

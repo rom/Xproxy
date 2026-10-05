@@ -10,13 +10,14 @@ configuration patterns and reading the logs. Installation is covered in
 
 | Binary | Purpose |
 |--------|---------|
-| `xproxy` | The edge data plane: `http`, `forward`, `tcp`, `udp` and `dns` listeners |
+| `xproxy` | The edge data plane: `http`, `forward`, `tcp`, `udp` and `dns` listeners, and `kkdcp`, the Kerberos KDC proxy, which it shares with `xrelay` |
 | `xgate` | The gate: `ssh`, `telnet`, `vnc` and `rdp` listeners — the bastion and the remote access gateways, their policy, second factor and session recording |
-| `xrelay` | The relay: `smtp`, `ftp`, `ldap`, `postgres`, `mysql`, `tds`, `redis` and `amqp` listeners, and the eight it shares with `xot` |
-| `xot` | The OT daemon: `modbus`, `iec104`, `s7`, `mms`, `bacnet`, `opcua` and `coap` listeners, and the shared `mqtt`, `syslog`, `snmp`, `tftp`, `dhcp`, `dhcp6`, `ntp` and `ntske` — the binary for level 3.5, with none of the relay's own protocols in it |
+| `xrelay` | The relay: `smtp`, `imap`, `pop3`, `ftp`, `ldap`, `postgres`, `mysql`, `tds`, `redis` and `amqp` listeners, `kkdcp` where the KDC proxy stands inside the network, and the ten it shares with `xot` |
+| `xot` | The OT daemon: `modbus`, `iec104`, `s7`, `mms`, `bacnet`, `opcua` and `coap` listeners, and the shared `mqtt`, `syslog`, `snmp`, `tftp`, `dhcp`, `dhcp6`, `ntp`, `ntske`, `radius` and `tacacs` — the binary for level 3.5, with none of the relay's own protocols in it |
 | `xproxyctl` | Control tool talking to a daemon's Unix socket |
 | `xproxy-admin` | Web GUI: a separate process serving a browser interface over the same socket |
 | `xproxy-replay` | Reads a session recording and shows it: a terminal session replayed with its timing, a VNC one decoded into frames or one self-contained page, an RDP one as the timeline of what it did. It opens no sockets and needs no daemon |
+| `xproxy-simulate` | Sends traffic through a configuration, offline, and reports what it decided — or through two configurations, and reports only what a change would decide differently. Every listener kind is in it, so it answers about any role's listeners; it opens no management socket and needs no daemon |
 
 ### The four daemons
 
@@ -29,12 +30,19 @@ than present and unconfigured. The same argument is why `xot` exists: the
 proxy in front of a process network has no mail parser, no FTP, no
 directory and no database wire protocol in it.
 
-Eight kinds are served by both relays — `mqtt`, `syslog`, `snmp`, `tftp`,
-`dhcp`, `dhcp6`, `ntp` and `ntske`, which a plant and a data centre both
-run — and a listener of one of those says which daemon binds it with
-`daemon: xot`.
+Ten kinds are served by both relays — `mqtt`, `syslog`, `snmp`, `tftp`,
+`dhcp`, `dhcp6`, `ntp`, `ntske`, `radius` and `tacacs`, which a plant and a
+data centre both run; a plant's switches authenticate their administrators
+against RADIUS and TACACS+ exactly as a data centre's servers do — and a
+listener of one of those says which daemon binds it with `daemon: xot`.
 Left unset it is `xrelay`'s, so a configuration written before `xot`
-existed is served by the daemon that has always served it. Every other
+existed is served by the daemon that has always served it.
+
+One kind is shared the other way round. `kkdcp`, the Kerberos KDC proxy, is
+`xproxy`'s by default, because MS-KKDCP exists so that a client outside the
+network can reach a KDC inside it and the deployment it was designed for is
+an internet-facing HTTPS endpoint; an estate that runs one in front of its
+own domain controllers writes `daemon: xrelay` on the listener. Every other
 kind belongs to exactly one daemon, and naming a different one is a load
 error.
 
@@ -109,6 +117,8 @@ are where the shipped units put the other three.
 |---------|-------------|
 | `status` | Version, pid, generation, listeners, counters |
 | `stats` | Counters only |
+| `listeners` | Every listener with its protocol, bound address, enforcement mode, TLS and the protocol guards that are on, then the refusals and shadow decisions per protocol; `-reasons` breaks them down by reason, `-kind K` and `-mode M` narrow |
+| `workorder` | Change references filed against a device: list, `file REFERENCE -device D -duration T`, `close REFERENCE`. Not grants -- they permit nothing, and a listener that requires a grant still refuses without one. What they change is how the engineering on that device is reported |
 | `upstreams` | Table of endpoints with health, ejection, active requests, request and error counts |
 | `quotas` | Usage per tenant, per route (requests by class, denied, rate limited, bytes) and per rate limit policy (decisions, top consumers with tokens left, `-top 10`), plus request share per upstream |
 | `config` | Active configuration as YAML, defaults filled in |
@@ -875,11 +885,314 @@ socket is handed to the new listener, so a socket passed by systemd or
 bound on a privileged port is kept and no client sees a refused
 connection; the old generation drains as for a removal. Certificate
 files, forward and dns policies still apply in place without a drain.
+A datagram socket is handed over the same way, so a `dns`, `udp`,
+`tftp`, `ntp`, `dhcp`, `dhcpv6`, `bacnet`, `coap`, `syslog` or `snmp`
+listener is rebuilt on the socket it already holds: the retiring
+generation stops reading before the new one starts, so every datagram
+after the switch is answered by the new policy, and one that arrives
+during the switch waits in the socket's receive buffer rather than
+being lost.
+
 The dry run lists the drains and the one case that still needs a
-restart, a listener with a UDP socket (`h3`, `tcp.quic`, plain `dns`)
-changed on the same address, because that socket stays bound until the
-drain ends. A port that cannot be bound fails the reload with the
-running set untouched.
+restart: a listener **carrying QUIC** (`h3`, `tcp.quic`, `dns.doq`)
+changed on the same address. A QUIC connection is cryptographic state
+inside the transport holding the socket, so handing the socket over
+would end every connection on it — refusing that one change is what
+keeps "a reload drops nothing" true. A port that cannot be bound fails
+the reload with the running set untouched.
+
+### What is listening, and is it enforcing
+
+`xproxyctl status` answers "is it up". The question after that -- which of
+the thirty-four protocols is this daemon actually serving, and which of
+them is refusing anything -- is `xproxyctl listeners`:
+
+```
+$ xproxyctl listeners
+xot, generation 4: 5 listeners, 4 enforcing, 1 in shadow mode
+
+LISTENER   KIND     ADDRESS           MODE     TLS  GUARDS
+line1      modbus   10.20.0.4:502     enforce  no   learn=enforce anomaly=alert engineering=deny
+line2      modbus   10.20.0.4:5020    shadow   no   learn=observe anomaly=alert engineering=alert
+substation iec104   10.20.0.4:2404    enforce  no   anomaly=alert engineering=deny
+plc-eng    s7       10.20.0.4:102     enforce  no   engineering=deny
+field-log  syslog   10.20.0.4:514     enforce  no   none of 1
+
+KIND    LISTENERS  REFUSED  WOULD REFUSE
+iec104  1          17       0
+modbus  2          204      31
+s7      1          2        0
+syslog  1          0        0
+```
+
+The two columns `status` cannot give are `KIND` and `MODE`, and the mode
+is the one an operator checks after a change window: a listener somebody
+believes is enforcing and is not is worse than no listener. `enforce` is
+the default and `shadow` comes from `policy.mode`; `monitor` is a kind's
+own `monitor_only`. What shadow mode does *not* stop is still refused --
+a malformed message, a failed authentication or second factor, a ban, a
+rate limit, a bound, a TLS handshake refusal -- because forwarding those
+would mean acting on bytes the code could not read.
+
+`GUARDS` is what the protocol's own section switched on, with what each
+one does where it says so. A protocol that has guards and has none of
+them on reads `none of N` rather than a blank column: "no anomaly
+detection here" is the finding, and an empty cell reads as nothing to
+report. `-reasons` adds the refusal breakdown per protocol, and
+`-kind` and `-mode` narrow both tables together.
+
+Refusals are counted per protocol and reason, not per listener, so the
+two `modbus` listeners share one row and `LISTENERS` says so. `REFUSED`
+and `WOULD REFUSE` come from two separate tables and are never added
+together: one is what happened, the other is what a listener in shadow
+mode decided not to do. `xproxyctl policy report` is the detail behind
+the second column -- which rule, and an example of what was asked for.
+
+Over the socket it is `GET /v1/listeners`, which also carries the further
+addresses a kind took (an HTTP/3 endpoint, a datagram port beside a
+stream one), whether each listener is holding its socket, and the role
+and daemon that own it. A forward listener with egress rules carries an
+`egress` section besides: how many rules it has, how many of them need a
+visible request, and whether it reads the requests inside the tunnels it
+decrypts. The last two belong together — rules that need a request, on a
+listener that is not reading, are a policy about the plain path alone. It covers *this* daemon's listeners: a shared
+estate configuration names the other roles' as well and each daemon drops
+the ones it does not own before the engine sees them, so ask each
+socket, or `GET /v1/fleet` for the estate.
+
+### Policy simulation: what a change would decide differently
+
+Every other answer in this document is about traffic that already happened.
+The one an operator actually needs before a change window is about traffic
+that has not: introduce a WAF profile, narrow a Modbus write window, tighten
+a forward-proxy destination list — what stops working, and what starts?
+
+`xproxy-simulate` answers that by running the engine. It loads a
+configuration, starts it in its own process with everything that reaches
+outward switched off, sends traffic through it, and reports the decision for
+each piece. Given two configurations it reports only what moved:
+
+```
+$ xproxy-simulate -offline -a /etc/xproxy/xproxy.yaml -b /tmp/with-waf.yaml \
+    -requests corpus/edge.http
+/etc/xproxy/xproxy.yaml: 4 listeners, switched off: acme cluster metrics
+  copied, not opened: bans.state_file
+/tmp/with-waf.yaml: 4 listeners, switched off: acme cluster metrics
+  copied, not opened: bans.state_file
+
+7 inputs, 5 the same, 2 changed: 2 newly refused
+
+CHANGE         LISTENER  INPUT                                    BEFORE       AFTER
+newly refused  edge      what the scanner report had              allowed 200  refused (waf) 403
+newly refused  edge      a checkout with an implausible quantity   allowed 200  refused (waf) 403
+```
+
+The second row is the one this is for. Nobody needed a tool to tell them the
+injection would be refused; the checkout being refused with it is the finding,
+and it is cheaper to read here than in an incident. Where a change moves
+decisions both ways, newly allowed is listed first, because a hole is worse
+than an outage. Exit status is 1 whenever anything moved, so the command gates
+a change in review or in a pipeline; `-json` gives the whole answer, every
+event included.
+
+The same thing on the plant, where the question is a write window rather
+than a rule set:
+
+```
+$ xproxy-simulate -offline -a /etc/xproxy/xot.yaml -b /tmp/narrower.yaml \
+    -frames corpus/line1.hex -listener line1
+
+4 inputs, 2 the same, 2 changed: 1 newly allowed, 1 newly refused
+
+CHANGE         LISTENER  INPUT               BEFORE             AFTER
+newly allowed  line1     write register 400  refused (no_rule)  allowed
+newly refused  line1     write register 0    allowed            refused (no_rule)
+```
+
+Traffic comes from one of three places. `-requests` and `-frames` are text
+files somebody can type, paste and keep in the repository beside the
+configuration, because what an operator has in the minute they need this is
+a request out of a security log or a frame out of a vendor document:
+
+```
+# corpus/edge.http -- a comment between items is ignored
+>>> listener=edge name="what the scanner report had"
+GET /?id=1%27+OR+1%3D1-- HTTP/1.1
+Host: shop.example.com
+
+>>> listener=edge name="the checkout that has to keep working"
+POST /checkout HTTP/1.1
+Host: shop.example.com
+Content-Length: 9
+
+qty=99999
+```
+
+```
+# corpus/line1.hex -- whitespace inside a frame is ignored
+>>> listener=line1 name="write multiple registers at 40001"
+0002 0000 0009 01 10 0000 0001 02 0064
+```
+
+`-pcap` is the third: a capture file from `xproxyctl capture` replayed
+against the proposed configuration, which is how to ask the question about
+traffic the estate actually carried rather than traffic somebody imagined.
+
+```
+$ xproxyctl capture start -duration 10m
+$ xproxy-simulate -offline -a active.yaml -b proposed.yaml \
+    -pcap /var/lib/xproxy/capture/xproxy-20260930-101500.pcapng -listener edge
+```
+
+#### What is switched off, and what is not
+
+Nothing reaches a real upstream: every pool is pointed at a sink inside the
+process, keeping the pool names and the per-route assignments, since which
+pool a request goes to is itself a decision. A TLS listener gets a throwaway
+certificate and the estate's private keys are not read.
+
+Nothing is written outside the simulation's own directory either, which is
+two different problems. The state a decision depends on — the ban store, the
+access ledger, the asset and API inventories — is **copied** in, so the run
+starts from what the estate has: a banned address stays banned, an approved
+grant still approves, a device already in the inventory is not a new device.
+What the run produces — a learning report, a session recording — is
+**redirected** there. Those change no decision, which is exactly why they are
+easy to overlook, and a learning report overwritten with a simulation's
+traffic is the worst of them, because somebody promotes those into a policy
+later. `cluster`, `fleet`, `acme`, `tracing`,
+`icap`, `scim`, `ingress`, `capture`, `threat_intel` and the OTLP exporter in
+`metrics` are switched off, and so is `sandbox` — Landlock applied by a
+simulator locks the simulator. The output names every section that was.
+
+What is **not** switched off is the policy, which is the point: the filters,
+any WebAssembly modules, the rule files and the secrets provider load
+exactly as the daemon loads them. That is why `-offline` is required rather
+than assumed — it is the operator saying this configuration may be started
+on this machine — and it is worth being precise about what the flag does and
+does not promise. It does not sandbox anything. It asserts.
+
+#### What it does not answer
+
+Three limits, each of them deliberate.
+
+Inputs are sent one at a time, and every security event between the write
+and the reply is attributed to that input. That exactness is what makes the
+report worth acting on, and it means a rate limit, a correlation window or
+an abuse sequence sees a serial client rather than the estate's concurrency.
+Policy that depends on concurrency is not policy this answers.
+
+The sink reads and says nothing. It does not pretend to be a PLC, a mail
+server or a directory, because synthesising a plausible reply for thirty
+protocols would mean inventing answers, so policy that decides on what the
+device replied is outside what this covers.
+
+A client address reaches the policy only where the listener parses a PROXY
+protocol header. Where it does, the simulation sends one -- `client=` on a
+corpus item, or the address out of a capture -- and adds loopback to
+`trusted_proxies` so the header is read, saying both in the output. That is
+what makes an address-based rule testable, which matters most on the plant,
+where an address and a unit identifier are most of what a policy has to work
+with:
+
+```
+DECISION  LISTENER  KIND    REASON   INPUT
+allowed   line1     modbus           a master writing the setpoint
+refused   line1     modbus  no_rule  somebody else writing the setpoint
+```
+
+Where the listener does not parse a header the address cannot be delivered,
+and the run names that listener and says the policy saw the loopback address
+instead. It is reported rather than ignored for the obvious reason: an
+operator reading `allowed` for an input they had labelled with an address
+their allow list excludes would conclude the allow list does not work.
+
+#### allowed, refused, and neither
+
+A refusal is an event that refused, named with the reason the security log
+uses, or an HTTP status of 400 or more. An alert that did not refuse is not a
+refusal — the alert-only modes exist precisely so the operation goes through
+— but it is in the output, because a rule about to start refusing usually
+alerts first.
+
+`allowed` is asserted only on evidence: the listener relayed the input to the
+sink, or answered the client itself. Absence of a refusal is not evidence. A
+listener that speaks bytes rather than HTTP answers only when the device
+does, so a frame it could not finish reading produces no reply and no event
+at all, and reading that as `allowed` would put a hole in the report exactly
+where an operator would rely on it. So there is a third answer:
+
+```
+DECISION  LISTENER  KIND    REASON                                                          INPUT
+error     line1     modbus  nothing was relayed, answered or refused: an incomplete input?   a frame with a wrong length
+```
+
+`error` is a real answer rather than a failure of the tool: no decision was
+taken, and the corpus is usually why. It is never counted as agreement
+between two configurations either — an input only one side could answer is
+reported as unanswerable, not as unchanged.
+
+### Work orders: the change reference somebody filed
+
+An engineering operation on a controller is worth an event whether or not
+anybody approved it. The question an operations centre actually has, reading a
+week of those events, is which of them somebody was expecting -- and in most
+plants the answer exists already, as a work order number in the maintenance
+system. Filing it here puts it in the hash-chained trail and changes the tone of
+the events on that device while it is open:
+
+```
+$ xproxyctl workorder file WO-2026-0481 -device cpu-line1 -duration 8h \
+    -note "die change, drive replacement" -by maintenance
+work order WO-2026-0481 on file for cpu-line1, open until 2026-09-30T22:14:07+02:00
+It permits nothing: engineering on that device is now reported as expected work
+rather than as work nobody filed.
+
+$ xproxyctl workorder
+1 work orders, 1 open
+
+REFERENCE      DEVICE      LISTENER  STATE  FROM                       UNTIL                      FILED BY     WORK
+WO-2026-0481   cpu-line1   any       open   2026-09-30T14:14:07+02:00  2026-09-30T22:14:07+02:00  maintenance  die change, drive replacement
+
+$ xproxyctl workorder close WO-2026-0481 -by maintenance -note "finished early"
+work order WO-2026-0481 closed; engineering on cpu-line1 is unfiled again
+```
+
+**It is not a grant, and it permits nothing.** That is worth repeating because
+it is the one way to misread this feature. A grant is requested by one person,
+approved by another, short, and can refuse; a work order is one person writing a
+reference down. A listener with `engineering.require_grant: true` refuses an
+operation with no approved grant whatever work orders are open — if it did not,
+the person who wanted the access could file one for themselves and the approval
+requirement would be decoration. See
+[a work order is not a grant](CONFIG.md#a-work-order-is-not-a-grant) for the
+table.
+
+What it changes is the reporting. While a work order is open for the device,
+every engineering event on it carries `work_order` and `work_order_by` and says
+`severity: notice`; with nothing on file the same event says `severity: warning`
+and names no reference. The counters follow:
+`xproxy_engineering_filed_total{kind,operation}` is the subset somebody filed,
+and the difference between it and `xproxy_engineering_total` is the list to work
+through. The trail carries `work_order_ref` on the engineering record, so a year
+later "was that download expected, and who said so" is answered by the file
+rather than by somebody's memory.
+
+`-device` is matched literally against what the listener knows: the upstream
+pool name, an endpoint address, or a device address. No prefixes and no
+wildcards, because a work order that quietly covered a neighbouring controller
+would be worse than one that covered nothing. `-listener` narrows it to one
+listener; the default is every listener that reaches the device, which is
+usually right because the work is on the controller and not on a port.
+`-duration` is required and bounded by `access.max_work_order` (thirty days by
+default): a work order with no end is the one somebody files during a shutdown
+and never closes, after which every download on that device reads as expected
+work forever.
+
+Work orders live in the `access` ledger, so a daemon with no `access.ledger` has
+nowhere to file one and says so. Over the socket it is `GET`, `POST` and
+`DELETE` on `/v1/workorders`; in the web interface it is a form on the **Plant**
+screen, where the filer's name comes from the session rather than from the page.
 
 ### Usage per tenant and route
 
@@ -2599,6 +2912,102 @@ the default command set because they answer whether an address exists.
 
 `examples/mail/submission.yaml` has both listeners, the ban trigger and
 the upstream TLS.
+
+### Mailboxes (IMAP and POP3)
+
+Submission is a message on its way out, decided one message at a time.
+A mailbox is the opposite problem: a client that already has a
+credential, asking for everything that ever arrived.
+
+```yaml
+server:
+  listeners:
+    - name: imaps
+      address: "0.0.0.0:993"
+      kind: imap
+      tls: {certificates: [{cert_file: /etc/xproxy/certs/mail.pem, key_file: /etc/xproxy/certs/mail-key.pem}]}
+      imap:
+        upstream: mailboxes
+        tls_mode: implicit
+        mechanisms: [login, plain, oauthbearer]
+        max_fetch_messages: 200      # messages a sequence set may NAME
+        max_append_bytes: 26214400   # the literal's DECLARED size
+        mailboxes: [INBOX, "INBOX/*", Sent, Drafts, Trash, "Shared/%"]
+        rules:
+          - name: archiver           # the one account that really does sync it all
+            users: [archive-service]
+            clients: [10.0.9.7/32]
+            max_fetch_messages: 50000
+        log_fetches: true
+
+    - name: pop3s
+      address: "0.0.0.0:995"
+      kind: pop3
+      tls: {certificates: [{cert_file: /etc/xproxy/certs/mail.pem, key_file: /etc/xproxy/certs/mail-key.pem}]}
+      pop3:
+        upstream: mailboxes
+        tls_mode: implicit
+        mechanisms: [user, apop, plain]
+        read_only: true              # refuses DELE and RSET
+        max_messages: 500            # a running total, per connection
+        max_retr_bytes: 209715200
+```
+
+Nothing here catches a malformed request, because an emptied mailbox is
+not malformed: it is `UID FETCH 1:* (BODY[])`, which is also what a mail
+client does the first time it syncs. The bounds are what tell those two
+apart.
+
+- **`max_fetch_messages` counts what a sequence set *names*,** not what
+  comes back, and refuses before the mail server reads anything. An
+  open-ended set (`1:*`, `*`) is refused outright once the bound is set,
+  because the size of that request is the mailbox's rather than the
+  client's — `allow_open_sets: true` is the exemption, and a `rules`
+  entry naming the account that legitimately synchronises everything is
+  the better way to write it.
+- **`max_append_bytes` is checked against the *declared* size** of a
+  literal. RFC 7888's LITERAL+ lets a client write `{310+}` and send the
+  octets without waiting for anybody to agree, so a bound applied to
+  what arrived would be applied too late. A refused command's octets are
+  then read and dropped rather than left to desynchronise the
+  connection.
+- **On POP3 the bound is a running total,** counted as the octets pass
+  and enforced *mid-transfer*. A bound that only applied to the next
+  command is one a client walks past one message at a time, and a single
+  `RETR` of a very large message is a mailbox copy by itself. Reaching
+  `max_messages` is a refusal the connection survives; reaching
+  `max_retr_bytes` inside a message ends it, because a truncated message
+  presented as whole would be worse.
+- **A credential never crosses a transport that cannot carry it.**
+  `require_tls` defaults on and refuses `LOGIN`, `AUTHENTICATE PLAIN`,
+  `USER`/`PASS` and `APOP` in the clear. The refusal is **not
+  shadowable**: by the time a policy could be consulted the password has
+  travelled. On 143 or 110, `tls_mode: starttls` has this relay
+  terminate the RFC 2595 upgrade itself rather than forwarding it, which
+  is how a device nobody can reconfigure gets TLS anyway — and anything
+  pipelined behind the upgrade ends the session, the same reasoning as
+  SMTP's.
+- **What the server says it can do is narrowed.** A mechanism
+  `mechanisms` does not name is removed from the capability list as well
+  as refused, so a client asks for something it can use instead of
+  sending a password into a refusal; `LOGINDISABLED` is added where
+  `LOGIN` would be refused, which RFC 3501 §6.2.3 makes the way a server
+  says so; and `COMPRESS=DEFLATE` goes, because a deflated connection
+  cannot be inspected.
+- **A `mailboxes` entry is compared on the decoded name.** RFC 3501
+  §5.1.3 spells a non-ASCII mailbox in a modified UTF-7, so
+  `~peter/mail/&U,BTFw-` and `~peter/mail/台北` are one mailbox; a policy
+  that compared the spelling would compare nothing. `*` crosses the
+  hierarchy and `%` stays within one level, exactly as IMAP's own `LIST`
+  does, so `Shared/%` admits `Shared/HR` and not `Shared/HR/Payroll`.
+- **A PREAUTH greeting is refused.** It says the connection is
+  authenticated before anybody claimed an identity, which would make
+  every later decision here about a name this relay never saw.
+
+`examples/mail/mailbox.yaml` has three listeners — IMAPS, IMAP with the
+upgrade terminated here, and a read-only POP3S for the scripts and
+printers — with the rules, the behavioural blocks and the two ban
+triggers.
 
 ### MQTT for a device fleet
 
@@ -5052,12 +5461,115 @@ before any frame exists, so an application that answers with an
 unlisted one never gets a connection. Messages over
 `max_inspect_bytes` are checked up to that bound and forwarded, because
 the alternative is buffering whatever a client sends. And
-`permessage-deflate` is refused rather than ignored: a compressed frame
-cannot be inspected, so a negotiated compression extension would turn
-every check above off silently.
+`permessage-deflate` is never negotiated: the offer is stripped from the
+upgrade, so a client that asks for compression — which every browser does by
+default — gets a working uncompressed connection rather than a broken
+compressed one. A compressed frame cannot be inspected, so agreeing the
+extension would turn every check above off silently.
 
 `examples/routes/websocket.yaml` pairs a chat route with tight bounds
 and a market-data feed with wide ones and no inspection.
+
+### Server-Sent Events (text/event-stream)
+
+The other long-lived HTTP response, and the only one nothing else in a
+configuration bounds: one GET, a response with no length, flushed per
+event, held open for hours.
+
+```yaml
+routes:
+  - name: dashboard
+    paths: ["/events"]
+    upstream: app
+    sse_guard:
+      max_event_bytes: 65536
+      events_per_second: 50
+      max_events: 100000
+      max_duration: 2h
+      idle_timeout: 90s
+      allow_events: [price, volume, heartbeat]
+      events:
+        - {name: heartbeat, max_bytes: 128, events_per_second: 1}
+      last_event_id_pattern: "[0-9]{1,19}"
+      min_retry: 5s
+      deny_patterns: ["BEGIN [A-Z ]*PRIVATE KEY"]
+```
+
+This reads like the WebSocket guard above and it is answering a
+different question. Two facts about SSE decide what a policy here can
+be, and both are worth having in mind before setting a number.
+
+**It is one-directional, and the direction is outward.** The client
+sends a GET and then says nothing; everything after that is your
+application talking. So `deny_patterns` here is not a check on what
+somebody sent you — it is a check on what is *leaving*, which puts this
+in the same position as the `dhcp` kind, whose whole policy is about
+replies. It matters because an event stream is exactly what you would
+build to move data out quietly: arbitrary text, chunked, flushed per
+event, on a port that is already open, under a Content-Type a dashboard
+uses. Nothing about it is malformed. `max_events`, `max_stream_bytes`
+and `max_duration` are what tell a price feed from a copy of a database,
+and they are the settings a stream has none of by default.
+
+**A single event cannot be refused.** By the time an event is read the
+status line has gone and the response is committed, so there is no way
+to say "not that one" inside a sequence a client is reading in order.
+`action` therefore has two values rather than three: the stream ends, or
+the event is carried and reported. A refusal is a decision to end the
+stream *at* that event — the client sees a closed body, which is what it
+sees when an application finishes, and reconnects. That is the right
+outcome for a dashboard and a dead end for a channel.
+
+A few things worth knowing.
+
+- **Events are read and written out again**, not spliced. SSE has three
+  line terminators (CRLF, LF **and a bare CR**), a blank line as its only
+  separator and a field with no colon that means an empty value; a
+  spliced stream leaves all of that to be resolved twice, and the two
+  ends can disagree about where an event ends. What the client reads is
+  what the policy decided about.
+- **`Last-Event-ID` is a cursor, not a header.** It is the one piece of
+  client input on this protocol, and an application that replays from it
+  is being told where to start — so an identifier a client was never
+  issued is a request for history it was not shown.
+  `last_event_id_pattern` says what your identifiers look like; a cursor
+  that does not match is **removed** rather than refused, so the client
+  gets the stream from the beginning, which is what a client with no
+  cursor gets.
+- **`min_retry` rewrites rather than refuses.** The `retry:` field tells
+  the client how long to wait before reconnecting, so `retry: 0` from a
+  misconfigured application is a fleet of browsers reconnecting as fast
+  as they can. The stream itself is fine, so the floor is applied and the
+  event goes on.
+- **Comments cross by default.** A `:` line carries no data and exists so
+  a stream survives an intermediary that would time it out; removing them
+  would make this proxy the reason a stream dies. `allow_comments: false`
+  is for a route that wants nothing but named events.
+- **Compression is stripped**, for the same reason `permessage-deflate`
+  is on a WebSocket: a compressed stream cannot be read without being
+  inflated. It costs almost nothing here — an event stream is small
+  messages flushed one at a time, so a sender has already given up
+  cross-message compression to keep latency. `compression: refuse`
+  answers the request with 400 instead, and `inspect` inflates each event
+  with `max_inflate_ratio` guarding against a bomb.
+- **An event larger than `max_inspect_bytes` cannot be validated**, so a
+  schema refuses it rather than passing it. Validation warns where a size
+  bound makes that certain.
+
+Start in `monitor_only: true` and read what your own streams actually
+send; `log_events: true` gives a line per event for a route under
+investigation, and is not something to leave on across an estate.
+
+```
+$ xproxyctl metrics | grep sse
+xproxy_sse_streams_total{route="dashboard"} 310
+xproxy_sse_events_total{route="dashboard"} 2904155
+xproxy_sse_violations_total{route="dashboard"} 2
+xproxy_sse_cursors_stripped_total{route="dashboard"} 7
+```
+
+`examples/routes/events.yaml` pairs a dashboard feed with tight bounds
+and a log-tail route with an identity policy and no event list.
 
 ### gRPC services
 
@@ -6356,8 +6868,8 @@ Roles:
 
 | Role | May |
 |------|-----|
-| `viewer` | See every screen: overview, upstreams, routes, WAF, bans, graphs, cluster, certificates, subsystems, history, the configuration file and the logs |
-| `operator` | Everything a viewer may, plus ban and unban, reload, reload certificates, reopen logs, renew certificates, reset the WAF statistics, roll back to a recorded configuration, edit and save the configuration file, restart the data plane |
+| `viewer` | See every screen: overview, alarms, listeners, upstreams, routes, WAF, policy, security, plant, sessions, bans, graphs, cluster, certificates, subsystems, MFA, history, the configuration file and the logs |
+| `operator` | Everything a viewer may, plus ban and unban, file and close a work order, reload, reload certificates, reopen logs, renew certificates, reset the WAF statistics, empty the shadow policy ledger, roll back to a recorded configuration, edit and save the configuration file, restart the data plane |
 
 `viewer` is a trusted operator without write access, not a
 low-privilege or public role. It reads the whole configuration file —
@@ -6389,6 +6901,27 @@ Screens:
 - **Overview**: version, uptime, generation, request and response counters,
   denials by reason, load level, listeners; the action buttons for
   operators.
+- **Alarms**: everything that is asking for attention, gathered from the
+  twelve places it used to live: a reload that failed, log records dropped,
+  a hardening mechanism not in force, a listener configured and not
+  listening, certificates near expiry, devices matching a published
+  advisory, actors a behaviour pack has quarantined, a bound reached by any
+  of the tables, cluster peers down, and the states somebody chose and may
+  have forgotten — maintenance mode, a drain, a listener in shadow mode.
+  Three levels and no more: something is not working or not protected,
+  something will need attention, and something is a state somebody chose. A
+  page that painted a chosen state red would be crying wolf at its own
+  operator. When nothing is wrong the page says so, in one sentence naming
+  what it checked.
+- **Listeners**: every listener this daemon serves with its protocol, the
+  address it actually bound, its enforcement mode, whether it terminates
+  TLS and which of the protocol's own guards are on — learning, anomaly
+  detection, engineering restrictions, deception, session recording, a
+  second factor, YARA, ICAP — then the refusals per protocol broken down
+  by reason, the shadow counters beside them but never added to them, and
+  what the refusals meant in ATT&CK terms. The listeners that are *not*
+  enforcing are listed first and on their own, because that is the one
+  fact about a security proxy that must not be buried in a table.
 - **Upstreams**: every endpoint with health, ejection, active requests and
   error counts, refreshed every five seconds; per pool the balancer,
   availability, circuit breaker state, concurrency gate and queue
@@ -6400,18 +6933,53 @@ Screens:
   CRS version, route assignments, the most matched rules with block and
   detect counts, the exclusion proposals with their directives and a
   SecLang download; operators reset the statistics.
+- **Policy**: what the listeners in shadow mode would have refused — kind,
+  listener, reason, rule, count, first and last sighting and one clipped
+  example — with the ledger's own bound stated when it is full, so a
+  report that is not complete says so. Nothing in that table was refused.
+  Operators empty the ledger after fixing a policy, so the next week's
+  report is about the new one.
+- **Security**: the guards that are neither the WAF nor a protocol's own —
+  virtual patches with their hits and expiry, deceptive answers per route,
+  the WebSocket guards with connections, messages and violations, the
+  graduated degradation levels and how often each applied, handshake
+  refusals, the account guard, the bot score baselines, the API inventory
+  and the packet capture window.
+- **Plant**: the OT half, which is a different estate with different
+  questions. First the [work orders](#work-orders-the-change-reference-somebody-filed):
+  what is on file, what is open now, and — for an operator — a form to file
+  one against a device and a button to close it. The form says in as many
+  words that filing a work order **permits nothing**, because the mistake
+  worth preventing is an operator filing one and believing the download is
+  now approved; the filer's name comes from the session rather than from the
+  page, so the record names whoever was logged in. Then the behaviour packs
+  in force with what each is a detection for, its severity, whether it may
+  deny and who signed it; the just-in-time grants with their state, window,
+  uses and approvals; the device inventory with role, vendor, model,
+  firmware and the protocols each device speaks, marking the ones that are
+  not in the baseline; and the published advisories matched against those
+  firmware versions.
+- **Sessions**: the sessions being served now — ssh, sftp, telnet, vnc,
+  rdp, ftp, modbus — with the client, login, target, one detail and how
+  long. Closing one is an operation on the estate and is audited, so it
+  stays `xproxyctl sessions -kill`.
 - **Bans**: the active list with expiry, source and count; add a ban with a
   duration and reason (recorded as `admin:<user>: <reason>`), unban.
 - **Graphs**: requests, denials, bytes, connections, load level, upstream
   latency, bans and cluster peers from the sampled series buffer, with a
   selectable window.
-- **Cluster**; **Certificates**: every served certificate per listener
+- **Cluster**: this node's peers, the gossip counters and the inbound
+  connections, then the fleet — the other estate view, because a cluster
+  shares decisions between proxies and a fleet collects status from nodes
+  that need not share anything, and both answer "what else is out there".
+- **Certificates**: every served certificate per listener
   with issuer, days left, source, OCSP status and Certificate
   Transparency verdict, then the ACME status with a renew button.
 - **Subsystems**: one page for the status documents of the sandbox
   (mechanisms and Landlock rules), telemetry exporters, dns listeners,
-  ICAP, cache, GeoIP, honeypots, filters, ingress and the OpenTelemetry
-  metrics exporter; unconfigured ones say so.
+  ICAP (with a link to its own page), cache, GeoIP, honeypots, filters,
+  ingress and the OpenTelemetry metrics exporter; unconfigured ones say
+  so.
 - **History**: the pending changes between the file and the active
   configuration (a dry run), and the recorded generations with a roll
   back button for operators.
@@ -6423,6 +6991,17 @@ Screens:
   *Reload data plane* applies it.
 - **Logs**: the last lines of a stream and a live follow with a substring
   filter and pause.
+
+Every read the management socket answers is reachable from the GUI under
+`/api/<name>`, not only the ones a screen was written for: the behaviour
+packs, the just-in-time grants, the device inventory and its advisories,
+the API inventory, the account guard, the bot score, the capture state,
+the decoys, the degradation levels, the drains, the fleet, the handshake
+refusals, maintenance, MASQUE, the virtual patches, the live sessions,
+the WebSocket guards and the three TLS views. `GET /v1/origin-check` is
+the one deliberate exception: it reads like a view and is in fact a probe
+that dials the origins, so it stays an action of `xproxyctl` and is not a
+page somebody can leave open and refreshing.
 
 Access: the default listener is `127.0.0.1:8443` in plain HTTP, reached
 through an SSH tunnel (`ssh -L 8443:127.0.0.1:8443 edge`). Binding to any
@@ -6774,13 +7353,18 @@ that every program download, CPU stop, setting-group write and firmware push on
 a plant listener is reported under, whatever the policy said about it:
 
 ```json
-{"time":"...","level":"WARN","msg":"security","stream":"security","action":"engineering","reason":"engineering_program_download","listener":"plc","client_ip":"10.20.1.14","proto":"s7","class":"program_download","operation":"download block DB12","device":"rack 0 slot 1","grant":"9f2c4ab1","work_order":"change 4711","technique":"T0843","technique_name":"Program Download","tactic":"lateral-movement","matrix":"ics"}
+{"time":"...","level":"WARN","msg":"security","stream":"security","action":"engineering","reason":"engineering_program_download","listener":"plc","client_ip":"10.20.1.14","proto":"s7","class":"program_download","operation":"download block DB12","device":"rack 0 slot 1","grant":"9f2c4ab1","grant_reason":"change 4711: recipe update","severity":"notice","work_order":"WO-2026-0481","work_order_by":"maintenance","technique":"T0843","technique_name":"Program Download","tactic":"lateral-movement","matrix":"ics"}
 ```
 
-`class` is one of the eight engineering classes, `operation` is the protocol's
-own words for it, and `grant` and `work_order` are the access grant it happened
-under and that grant's change reference -- absent when there was none, which is
-what `engineering_ungranted` and `engineering_no_grant` report. The same
+`class` is one of the eight engineering classes and `operation` is the
+protocol's own words for it. `grant` and `grant_reason` are the approval it
+happened under and what that approval was for -- absent when there was none,
+which is what `engineering_ungranted` and `engineering_no_grant` report.
+`severity` is `notice` when a [work order](#work-orders-the-change-reference-somebody-filed)
+was on file for the device and `warning` when none was, and `work_order` and
+`work_order_by` name it where there was one. A work order is not an approval:
+`grant` says somebody authorised this, `work_order` says somebody was expecting
+it, and an operation can carry one, both or neither. The same
 operations are in the access ledger as `kind: engineering` records,
 hash-chained beside the requests and approvals, and `xproxyctl access` counts
 them on its summary line. `xproxy_engineering_total{kind,operation}` and the
@@ -6788,6 +7372,14 @@ them on its summary line. `xproxy_engineering_total{kind,operation}` and the
 class, whether or not any of them was refused -- which is the number an
 operations centre graphs, because the interesting quarter is the one with a
 download nobody expected rather than the one with a refusal.
+
+`xproxy_engineering_outside_window_total{kind,operation}` is the subset that
+happened outside every approved window on a listener that does not require one.
+Those operations were **carried**, so they are not in `xproxy_refusals_total`
+and never were meant to be: the only engineering reason that belongs there is
+`engineering_no_grant`, the refusal. The ATT&CK technique is counted either
+way, because an operation outside every window is a detection whether or not
+anybody refused it.
 
 ### error
 

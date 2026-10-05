@@ -1,0 +1,227 @@
+# Egress policy on a forward proxy: who may send what, where, and when.
+#
+# An estate's outbound proxy is the one place where "where may this machine go"
+# can be answered at all, and an unrestricted one is the most useful thing an
+# attacker finds inside a network: an egress path that bypasses whatever the
+# firewall's rules were.
+#
+# `allow` and `deny` answer whether a destination exists for this listener.
+# `rules` answer the question after that — the one that is actually asked when
+# somebody reviews an incident:
+#
+#   the build agents reach the package mirrors and nothing else
+#   nobody POSTs to file sharing
+#   nothing executable comes back
+#   the vendor's support portal is reachable in the change window and not at
+#     three in the morning
+#
+# Two things about this file are worth reading before copying it.
+#
+# **The denials come first.** First match decides, so a broad deny written
+# underneath an allow is a deny the allow has already decided for. Every policy
+# here is written denials-first for that reason, and it is the single most common
+# way a rule list silently does nothing.
+#
+# **A rule about a method is a rule about a request.** Inside a CONNECT tunnel
+# nothing is reading there is no method and no content type: a rule naming one is
+# skipped, and what decides is the part about the destination, the identity and
+# the hour. On an estate whose egress is nearly all HTTPS that matters a great
+# deal, which is why the `intercept` section below is not optional decoration —
+# it decrypts those tunnels, and `http` reads the requests inside them so that
+# the same rules decide there. docs/protocols/forward.md ("What a tunnel does
+# not say") is the long form.
+#
+# Validate: xproxy -config examples/forward/egress.yaml -validate
+version: 1
+
+server:
+  listeners:
+    - name: egress
+      address: "10.0.0.8:3128"
+      kind: forward
+
+      forward:
+        ports: [80, 443]
+
+        # The proxy is not a way back into the estate: a tunnel to
+        # 169.254.169.254 is the cloud metadata service and a tunnel to
+        # 10.0.0.5:6379 is an internal Redis. Both are refused by default and
+        # this file leaves it that way.
+        # allow_private: false
+
+        # Nobody reaches anything without a name. The names are what the groups
+        # below are made of, and what the access log carries.
+        auth:
+          users_file: /etc/xproxy/proxy.htpasswd
+          realm: egress
+          groups:
+            agents: [build1, build2, build3]
+            staff: [alice, bob, carol]
+            # One account on its own, because the payment service's egress is
+            # not the staff's and should not become it by someone being added
+            # to a group.
+            payments: [payments-svc]
+
+        # The server name inside a tunnel has to be the destination the tunnel
+        # asked for. Without this check a client allowed to reach a CDN can
+        # handshake for anything else that CDN serves, and the destination
+        # policy decided about a name nobody used. Start at observe, read the
+        # events for a week, then set enforce. The same setting holds the Host
+        # header to the same answer inside the tunnels that are being read.
+        sni: enforce
+
+        # Named sets of destinations, so a rule is one sentence rather than a
+        # wall of domains. A category can be a file, because the list an estate
+        # actually has came from somewhere else and is long.
+        categories:
+          - name: mirrors
+            hosts:
+              - "*.debian.org"
+              - "proxy.golang.org"
+              - "registry.npmjs.org"
+              - "*.pypi.org"
+          - name: file-sharing
+            # One pattern per line, # for a comment. Read at start and on
+            # reload; a file that cannot be read fails the load rather than
+            # leaving the category quietly smaller than this policy says.
+            file: /etc/xproxy/categories/file-sharing.txt
+          - name: payment-gateway
+            hosts: ["api.gateway.example", "status.gateway.example"]
+          - name: vendor-support
+            hosts: ["support.vendor.example"]
+
+        rules:
+          # ---------------------------------------------------------------
+          # Denials first.
+          # ---------------------------------------------------------------
+
+          # The rule this whole file exists for. Reading a document somebody
+          # shared is work; uploading one is the thing an estate wants to know
+          # about, and it is the same destination either way — only the method
+          # is different.
+          - name: no-uploads-to-file-sharing
+            action: deny
+            categories: [file-sharing]
+            methods: [POST, PUT, PATCH]
+            comment: "SEC-2026-41"
+
+          # Nothing executable comes back through the proxy. Decided on the
+          # response head, which is after the destination was contacted: the
+          # body does not arrive, the request did leave.
+          - name: no-executables-back
+            action: deny
+            response_types:
+              - application/octet-stream
+              - application/x-dosexec
+              - application/x-msdownload
+              - application/vnd.microsoft.portable-executable
+            comment: "SEC-2026-41"
+
+          # A bound on what one request may carry out. On a body that declares
+          # its length this is decided before anything is sent; on a chunked one
+          # the bytes are counted and the connection is cut past the bound.
+          - name: no-large-uploads
+            action: deny
+            methods: [POST, PUT, PATCH]
+            request_bytes_over: 10485760      # 10 MiB
+            comment: "SEC-2026-41"
+
+          # The payment service has exactly one place to be, and saying so as a
+          # denial above its grant means a later broader rule cannot quietly
+          # include it.
+          - name: payments-nowhere-else
+            action: deny
+            groups: [payments]
+            not_categories: [payment-gateway]
+
+          # ---------------------------------------------------------------
+          # Grants.
+          # ---------------------------------------------------------------
+
+          - name: agents-to-mirrors
+            action: allow
+            groups: [agents]
+            categories: [mirrors]
+            # No method list, so this decides inside a tunnel as well — which
+            # is what a package fetch over HTTPS is.
+
+          - name: payments-to-the-gateway
+            action: allow
+            groups: [payments]
+            categories: [payment-gateway]
+
+          # Staff read the web. The method list means this rule does not decide
+          # inside a tunnel, so the tunnel grant below it is a separate rule
+          # rather than the same one with more words.
+          - name: staff-read-the-web
+            action: allow
+            groups: [staff]
+            methods: [GET, HEAD, OPTIONS]
+
+          - name: staff-tunnels
+            action: allow
+            groups: [staff]
+            not_categories: [file-sharing]
+
+          # The vendor's portal, inside the change window, with the change
+          # number in the comment so the event says why this was open.
+          - name: vendor-in-the-change-window
+            action: allow
+            categories: [vendor-support]
+            schedule:
+              days: [tue]
+              from: "02:00"
+              to: "04:00"
+              timezone: Europe/Stockholm
+            comment: "CR-2026-118"
+
+          # ---------------------------------------------------------------
+          # Everything else is refused, under the reason no_rule, whether or
+          # not this rule is here. It is here so that what was refused appears
+          # in the report with a name on it rather than only as a counter.
+          # ---------------------------------------------------------------
+          - name: everything-else
+            action: observe
+            comment: "read the shadow ledger weekly; promote what belongs above"
+
+        # What makes the method and content-type rules above apply to HTTPS.
+        # Interception is the one feature here that breaks a client's end-to-end
+        # guarantee, so it is a section with its own exclusions rather than a
+        # flag: the banking and health destinations below are passed through
+        # unread, and an estate that does not write exclusions is reading its
+        # people's private traffic.
+        intercept:
+          # Decrypting is half of it; reading the requests inside is what makes
+          # `methods` and `response_types` above decide in there. `auto` would
+          # do it here too, because this policy has such rules — `on` is written
+          # out so that the access log carries every request inside a tunnel
+          # from the first day, which is what a rule gets written from. `off`
+          # would relay the plaintext to YARA and to nothing else.
+          http: on
+          ca_cert_file: /etc/xproxy/mitm/ca.pem
+          ca_key_file: /etc/xproxy/mitm/ca-key.pem
+          hosts:
+            - "*.dropbox.com"
+            - "wetransfer.com"
+            - "*.debian.org"
+            - "registry.npmjs.org"
+          bypass_hosts:
+            - "*.bank.example"
+            - "*.vardguiden.se"
+            - "*.forsakringskassan.se"
+
+      tls: null
+
+# The proxy dials destinations directly; there is no upstream pool for a forward
+# listener, and the sections below are what every configuration carries.
+logging:
+  access:
+    enabled: true
+  security:
+    enabled: true
+
+upstreams:
+  - name: unused
+    endpoints: [{address: "127.0.0.1:1"}]
+
+routes: []
