@@ -457,6 +457,32 @@ func TestShadowModeStillRefusesAReplay(t *testing.T) {
 	}, "the replay under shadow mode")
 }
 
+// A shadowed rule refusal must not return before the hard timestamp check. A
+// rule and the timestamp policy can both refuse the same command, and shadowing
+// the former must not turn the latter into a replay bypass.
+func TestShadowedRuleStillChecksAReplayTimestamp(t *testing.T) {
+	st := startStation(t, &station{})
+	s, addr := iec104Server(t, `        upstream: substation
+        rules:
+          - {name: blocked-breaker, action: deny, types: [C_SC_TA_1], addresses: ["4321"]}
+        timestamps: {max_command_age: 30s}
+      policy: {mode: shadow}`, st)
+
+	c := dialCentre(t, addr)
+	c.startdt()
+	c.ask(timedCommand(1, 4321, true, time.Now().UTC().Add(-time.Hour)))
+	if f := c.expect("the negative confirmation"); f.ASDU == nil || !f.ASDU.Negative {
+		t.Fatalf("shadowed rule bypassed the replay refusal: %+v", f.ASDU)
+	}
+	if got := st.saw(wire.CScTA1); len(got) != 0 {
+		t.Fatal("a replay covered by a shadowed rule reached the station")
+	}
+	await(t, s, func(sn proxy.Snapshot) bool {
+		return sn.IEC104WouldDeny >= 1 &&
+			sn.Refusals["iec104"]["command_timestamp_old"] >= 1
+	}, "the shadowed rule and hard timestamp refusal")
+}
+
 // And shadow mode does carry a quality refusal, which is the other half of the
 // asymmetry: telemetry is exactly what an operator wants to find out about before
 // enforcing, and a shadow run that dropped readings would have changed the thing
