@@ -137,6 +137,25 @@ how a figure in a document drifts from the code without anything failing. What t
 remainder is has not changed: the formatting of views whose subsystems need a
 live peer, authority, resolver or scanner behind them.
 
+### Fixed (the IMAP injection test was betting on a goroutine order)
+
+- **`TestALineTheServerDidNotAskForIsNotCredentialMaterial` raced the response
+  reader.** A SASL exchange is open from the client's AUTHENTICATE until the
+  server's tagged answer, and the injected line has to arrive inside it; the fake
+  server answered immediately, so the window was however long it took the
+  goroutine reading the server to call `endAuth`. The assertion was really a bet
+  on the client's second line being read first. It usually was, and on a loaded
+  machine it was not -- and losing the bet reads as `the line was carried as a
+  credential`, which is a test saying credential smuggling was not refused when
+  what happened is that the test could not hold the window open.
+
+  The fake server now takes a `silent` set and does not answer the AUTHENTICATE
+  at all, which holds the window open for as long as the test needs: a server
+  that has not answered yet is exactly the state the check exists for. Verified
+  twenty runs under the race detector, and verified the other way too -- with the
+  turn check removed from the relay the test fails, so it was made deterministic
+  rather than weakened.
+
 ### Fixed (a load-sensitive assertion in the terminal interface test)
 
 - **`internal/tui` `TestRunOverAPseudoTerminal` read a frame too early.** It

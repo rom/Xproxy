@@ -58,6 +58,11 @@ type fakeServer struct {
 	caps string
 	// answers maps a command name to the tagged status it answers.
 	answers map[string]string
+	// silent names the commands the server does not answer at all. A server
+	// that has not answered yet is a state a test cannot otherwise hold still:
+	// the answer is what ends an exchange, so holding it back is how a test
+	// reaches the window before it without racing the goroutine that reads it.
+	silent map[string]bool
 	// sasl makes AUTHENTICATE a real exchange: a continuation request, one
 	// line read back, and then the tagged answer. Without it AUTHENTICATE is
 	// answered straight away, which is the initial-response case.
@@ -190,6 +195,9 @@ func (f *fakeServer) serve(c net.Conn) {
 			if _, err := br.ReadString('\n'); err != nil {
 				return
 			}
+		}
+		if f.silent[name] {
+			continue // nothing at all: no untagged line, no continuation, no tagged answer
 		}
 		if u, ok := f.untagged[name]; ok {
 			_, _ = fmt.Fprintf(c, "%s\r\n", u)
@@ -429,12 +437,24 @@ func TestAnAppendIsDecidedOnItsDeclaredSizeAndItsOctetsAreDropped(t *testing.T) 
 // boundary at the far end; this relay was not, so the next line it read was
 // forwarded without being parsed as the command the server would read it as.
 func TestALineTheServerDidNotAskForIsNotCredentialMaterial(t *testing.T) {
-	srv := startServer(t, &fakeServer{answers: map[string]string{"AUTHENTICATE": "NO"}})
+	// The server does not answer the AUTHENTICATE at all, and that is what
+	// makes this test deterministic rather than a race it usually wins.
+	//
+	// A SASL exchange is open from the client's AUTHENTICATE until the server's
+	// tagged answer, and the lines inside it are credential material: forwarded
+	// unparsed, past the command lists, the mailbox lists and the log. The
+	// window an injected line lives in is therefore the one before that answer
+	// arrives. A fake server that answers immediately -- which this test used to
+	// use -- leaves the window open for as long as it takes the goroutine
+	// reading the server to call endAuth, so the assertion was really a bet on
+	// the client's second line being read first. It usually was, and under a
+	// loaded machine it was not, and losing the bet looked exactly like the
+	// security check failing. A server that has not answered holds the window
+	// open, which is the state the check exists for.
+	srv := startServer(t, &fakeServer{silent: map[string]bool{"AUTHENTICATE": true}})
 	s, addr := relay(t, noTLS, srv.addr())
 	c := dial(t, addr)
 	c.line()
-	// Both lines in one write, which is what makes this work against a relay
-	// that reads the second before the server has answered the first.
 	c.raw("a1 AUTHENTICATE XNOTAMECH\r\na2 LOGIN victim@example.com Hunter2\r\n")
 	// The connection ends, and the smuggled command is not forwarded. Read to
 	// the end of it rather than waiting a fixed time for the counter: the
@@ -454,6 +474,12 @@ func TestALineTheServerDidNotAskForIsNotCredentialMaterial(t *testing.T) {
 		if strings.Contains(strings.ToUpper(line), "LOGIN") {
 			t.Fatalf("a command was smuggled past the policy:\n%s", strings.Join(srv.saw(), "\n"))
 		}
+	}
+	// The AUTHENTICATE itself did reach the server, so what the test held back
+	// is the answer and not the exchange: a run where nothing was forwarded
+	// would prove nothing about the line that followed.
+	if len(srv.saw()) == 0 || !strings.Contains(strings.ToUpper(srv.saw()[0]), "AUTHENTICATE") {
+		t.Errorf("the exchange never opened: %v", srv.saw())
 	}
 }
 
