@@ -187,6 +187,11 @@ func (q *quicRelay) datagram(client netip.AddrPort, b []byte) {
 		q.drop(f, "no_route")
 		return
 	}
+	if reason := q.t.admitClient(client.Addr(), upName); reason != "" {
+		s.Counters().QUICRejected.Add(1)
+		q.drop(f, reason)
+		return
+	}
 	release, _ := s.ConnLimiter().Admit(client.Addr())
 	if release == nil {
 		s.Counters().QUICRejected.Add(1)
