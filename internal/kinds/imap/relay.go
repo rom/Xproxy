@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"net/netip"
+	"strconv"
 	"strings"
 	"time"
 
@@ -42,7 +43,7 @@ func (t *server) handle(client net.Conn) {
 	defer t.gate.Leave(ip)
 
 	_, isTLS := client.(*tls.Conn)
-	up, err := t.dial(ip)
+	up, greeted, err := t.dial(ip)
 	if err != nil {
 		t.host.Counters().Refuse("imap", "upstream_failed")
 		t.host.Logs().Error.Warn("imap upstream dial failed", "listener", t.name,
@@ -53,7 +54,7 @@ func (t *server) handle(client net.Conn) {
 	t.host.Counters().IMAPConnections.Add(1)
 
 	c := newConn(t, ip, client, up, isTLS)
-	if !t.greeting(c) {
+	if !t.greeting(c, greeted) {
 		return
 	}
 	deadline := time.Now().Add(t.lifetime)
@@ -78,17 +79,25 @@ func (t *server) handle(client net.Conn) {
 // says the connection is authenticated and no identity was claimed. And the
 // capability list it advertises is narrowed, which is the only chance to
 // narrow it before the client chooses a mechanism.
-func (t *server) greeting(c *conn) bool {
-	_ = c.up.SetReadDeadline(time.Now().Add(or(t.c.IdleTimeout.D(), 30*time.Second)))
-	line, err := c.sr.ReadLine()
-	_ = c.up.SetReadDeadline(time.Time{})
-	if err != nil {
-		t.host.Counters().Refuse("imap", "upstream_failed")
-		return false
+// line is the greeting dial already read, which is how a leg this relay
+// upgraded itself still has one: RFC 3501 does not have the server greet
+// again after STARTTLS -- the client is told to re-issue CAPABILITY instead --
+// so the only greeting that connection sends arrived before the handshake.
+// Both decisions below are still made on it, because it is the same line.
+func (t *server) greeting(c *conn, line []byte) bool {
+	if line == nil {
+		_ = c.up.SetReadDeadline(time.Now().Add(or(t.c.IdleTimeout.D(), 30*time.Second)))
+		var err error
+		line, err = c.sr.ReadLine()
+		_ = c.up.SetReadDeadline(time.Time{})
+		if err != nil {
+			t.host.Counters().Refuse("imap", "upstream_failed")
+			return false
+		}
 	}
-	r, err := wire.ParseResponse(line)
-	if err != nil {
-		t.deny(c.ip, "malformed_greeting", err.Error())
+	r, perr := wire.ParseResponse(line)
+	if perr != nil {
+		t.deny(c.ip, "malformed_greeting", perr.Error())
 		return false
 	}
 	if d := t.policy.Answer(r, t.preauthNo); !d.Allow {
@@ -464,24 +473,25 @@ func (t *server) fromServer(c *conn, deadline time.Time) {
 }
 
 // dial opens the connection to a mailbox server, with TLS where the
-// listener asks for it.
-func (t *server) dial(client netip.Addr) (net.Conn, error) {
+// listener asks for it. The second result is the greeting, when the upgrade
+// below had to read it to get there; nil means the caller reads it itself.
+func (t *server) dial(client netip.Addr) (net.Conn, []byte, error) {
 	pool := t.host.Pool(t.c.Upstream)
 	if pool == nil {
-		return nil, errNoUpstream
+		return nil, nil, errNoUpstream
 	}
 	e, _ := pool.Pick(client.String(), "", nil, upstream.CanaryAny)
 	if e == nil {
-		return nil, errNoUpstream
+		return nil, nil, errNoUpstream
 	}
 	const dialTimeout = 10 * time.Second
 	d := net.Dialer{Timeout: dialTimeout}
 	c, err := d.Dial("tcp", e.Address)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if t.upTLSMode == "disable" || t.upTLSCfg == nil {
-		return c, nil
+		return c, nil, nil
 	}
 	cfg := t.upTLSCfg.Clone()
 	if cfg.ServerName == "" && !cfg.InsecureSkipVerify {
@@ -491,10 +501,12 @@ func (t *server) dial(client netip.Addr) (net.Conn, error) {
 		}
 		cfg.ServerName = host
 	}
+	var greeting []byte
 	if t.upTLSMode == "starttls" {
-		if err := startTLSUpstream(c, t.maxResp, dialTimeout); err != nil {
+		greeting, err = startTLSUpstream(c, t.maxResp, dialTimeout)
+		if err != nil {
 			_ = c.Close()
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	tc := tls.Client(c, cfg)
@@ -502,40 +514,54 @@ func (t *server) dial(client netip.Addr) (net.Conn, error) {
 	defer cancel()
 	if err := tc.HandshakeContext(ctx); err != nil {
 		_ = c.Close()
-		return nil, err
+		return nil, nil, err
 	}
-	return tc, nil
+	return tc, greeting, nil
 }
 
 // startTLSUpstream performs the upgrade towards the server on this relay's
 // own behalf: the greeting, the STARTTLS, and the OK that has to come back
 // before the handshake starts.
-func startTLSUpstream(up net.Conn, max int, timeout time.Duration) error {
+//
+// The greeting comes back rather than being discarded, because it is the only
+// one this connection sends: after STARTTLS the server carries on in the state
+// it was in and RFC 3501 has the client re-issue CAPABILITY rather than expect
+// a second greeting. It is also the line this kind refuses PREAUTH on and
+// narrows the capability list in, so losing it would lose both decisions.
+func startTLSUpstream(up net.Conn, max int, timeout time.Duration) ([]byte, error) {
 	_ = up.SetDeadline(time.Now().Add(timeout))
 	defer func() { _ = up.SetDeadline(time.Time{}) }()
 	rd := wire.NewReader(up, max)
-	if _, err := rd.ReadLine(); err != nil { // the greeting
-		return err
+	greeting, err := rd.ReadLine()
+	if err != nil {
+		return nil, err
 	}
 	if _, err := up.Write([]byte("x1 STARTTLS\r\n")); err != nil {
-		return err
+		return nil, err
 	}
 	for {
 		line, err := rd.ReadLine()
 		if err != nil {
-			return err
+			return nil, err
 		}
 		r, perr := wire.ParseResponse(line)
 		if perr != nil {
-			return perr
+			return nil, perr
 		}
 		if r.Tag != "x1" {
 			continue // untagged data before the answer, which is ordinary
 		}
 		if !r.OK() {
-			return errors.New("imap: the server refused STARTTLS: " + r.Text)
+			return nil, errors.New("imap: the server refused STARTTLS: " + r.Text)
 		}
-		return nil
+		// Anything behind the answer was sent in clear and would be read as
+		// though it had arrived inside the session: the client leg's injection
+		// check, pointed the other way. Nothing legitimate is there to lose,
+		// because the server has nothing more to say until this relay speaks.
+		if n := rd.Buffered(); n > 0 {
+			return nil, errors.New("imap: the server pipelined " + strconv.Itoa(n) + " octets behind its STARTTLS answer")
+		}
+		return greeting, nil
 	}
 }
 

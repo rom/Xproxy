@@ -137,6 +137,41 @@ how a figure in a document drifts from the code without anything failing. What t
 remainder is has not changed: the formatting of views whose subsystems need a
 live peer, authority, resolver or scanner behind them.
 
+### Fixed (IMAP: the same upstream upgrade, and two xproxyctl commands)
+
+- **An imap listener with `upstream_tls_mode: starttls` could not carry a
+  session either.** The same defect as pop3 below, in `startTLSUpstream`: the
+  server's greeting was read to reach the STARTTLS exchange and discarded, and
+  the relay then waited for a greeting RFC 3501 never sends -- after STARTTLS
+  the server carries on in the state it was in and the client re-issues
+  CAPABILITY instead of expecting a second greeting. On IMAP that line costs
+  more than the session: it is where this kind refuses a PREAUTH greeting and
+  narrows the capability list, so both decisions went with it. The greeting now
+  comes back from the upgrade, and the tests assert the narrowing and the
+  PREAUTH refusal *on an upgraded leg* rather than only on a plain one.
+
+- **Anything the server pipelines behind its STARTTLS answer is refused**, as
+  on pop3: it travelled in clear and would have been read as part of the
+  encrypted session.
+
+- **`xproxyctl access approve ID -by NAME` was refused with "one grant id".**
+  The usage line, and the hint `access ask` prints, both put the id first --
+  and Go's flag package stops parsing at the first argument that is not a flag,
+  so the flags after it were never read and the command saw three arguments
+  where it wanted one. An operator following the tool's own instructions got a
+  refusal. Both orders work now.
+
+- **`xproxyctl access -state nonsense` answered with an empty list.** A typo in
+  the filter read as "no grant matched", which reads as "nobody has access" --
+  the opposite of what an unfiltered list would have shown. It is refused now,
+  naming the states, which is the rule this project already applies to the
+  asset filters for the same reason.
+
+- **`xproxyctl ech show` could not read a record pasted out of a zone file.**
+  `ech="<base64>"` is the form an operator checking a rotation actually has to
+  hand, and the quotes were trimmed before the `ech=` prefix was stripped, which
+  leaves the opening quote in place and fails to decode.
+
 ### Fixed (POP3: the upstream upgrade never worked)
 
 - **A pop3 listener with `upstream_tls_mode: starttls` could not carry a
@@ -175,6 +210,18 @@ handshake that fails ending the connection because the `+OK` has already gone,
 and the policy asked about the address before a mailbox server is dialled and
 about the name a USER claims before it reaches a server that would check it.
 73.6 % to 84.2 %.
+
+**The three `xproxyctl` command groups that had no test at all.** `ech`, `mfa`
+and `access` were between them a fifth of the package and none of them was
+reached by a test, which is how the four defects above survived. Each is now
+driven as the thing it is rather than as a list of flags: ECH as a rotation
+(what keygen wrote, show reads back and record publishes, with the key 0600 and
+a second keygen on one id refused), MFA as a round trip (the line enrol prints
+has to be one verify accepts a code for, with the code computed in the test the
+way the user's telephone computes it), and access as four eyes from the
+operator's side (the asker may not approve their own ask, and `-by` defaults to
+SUDO_USER before the account, because root is not a name four eyes can tell
+apart). 67.5 % to 77.9 % of the package's own statements.
 
 **`cmd/xproxyctl` is in the gate.** It was outside it because every `main`
 package is, and that rule is right for a flag parse over a package gated on its
