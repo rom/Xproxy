@@ -27,7 +27,9 @@ func TestAnAssociationWithNoExchangeIsNeverFresh(t *testing.T) {
 func TestAnAuthenticationExpiresWithItsWindow(t *testing.T) {
 	var a authState
 	now := time.Date(2026, time.September, 28, 12, 0, 0, 0, time.UTC)
-	a.observe(wire.SRpNA1, now)
+	a.observe(&wire.ASDU{Type: wire.SChNA1, Common: 1}, false, now)
+	a.observe(&wire.ASDU{Type: wire.SRpNA1, Common: 1}, true, now)
+	a.observe(&wire.ASDU{Type: wire.SRpNA1, Common: 1, Cause: wire.CauseActCon}, false, now)
 
 	for _, tc := range []struct {
 		name  string
@@ -53,25 +55,30 @@ func TestAnAuthenticationExpiresWithItsWindow(t *testing.T) {
 	}
 }
 
-// Only the half of the exchange that proves the controlling station holds the key
-// counts. A challenge is the *station* asking, and a key status request is
-// housekeeping: crediting either would let a client authenticate itself by asking
-// to be challenged.
-func TestOnlyTheProvingHalfOfTheExchangeCounts(t *testing.T) {
-	for _, ty := range []wire.Type{wire.SRpNA1, wire.SAsNA1} {
-		var a authState
-		a.observe(ty, time.Now())
-		if ok, _ := a.fresh(time.Now().Add(-time.Minute)); !ok {
-			t.Errorf("%s did not count as an authentication", ty)
-		}
+// A reply counts only after a challenge from, and a positive confirmation by,
+// the station. In particular, a client cannot authenticate itself by naming the
+// reply type.
+func TestOnlyACompletedExchangeCounts(t *testing.T) {
+	now := time.Now()
+	var a authState
+	a.observe(&wire.ASDU{Type: wire.SRpNA1, Common: 1}, true, now)
+	a.observe(&wire.ASDU{Type: wire.SRpNA1, Common: 1, Cause: wire.CauseActCon}, false, now)
+	if ok, _ := a.fresh(now.Add(-time.Minute)); ok {
+		t.Fatal("an unsolicited reply counted as authentication")
 	}
-	for _, ty := range []wire.Type{wire.SChNA1, wire.SKrNA1, wire.SKsNA1, wire.SKcNA1,
-		wire.SErNA1, wire.SUsNA1, wire.MMeNB1, wire.CScNA1} {
-		var a authState
-		a.observe(ty, time.Now())
-		if ok, _ := a.fresh(time.Now().Add(-time.Minute)); ok {
-			t.Errorf("%s counted as an authentication", ty)
-		}
+	a.observe(&wire.ASDU{Type: wire.SChNA1, Common: 1}, false, now)
+	a.observe(&wire.ASDU{Type: wire.SRpNA1, Common: 1}, true, now)
+	a.observe(&wire.ASDU{Type: wire.SRpNA1, Common: 1, Cause: wire.CauseActCon, Negative: true}, false, now)
+	if ok, _ := a.fresh(now.Add(-time.Minute)); ok {
+		t.Fatal("a rejected reply counted as authentication")
+	}
+	a.observe(&wire.ASDU{Type: wire.SChNA1, Common: 1}, false, now)
+	a.observe(&wire.ASDU{Type: wire.SRpNA1, Common: 1}, true, now)
+	if !a.observe(&wire.ASDU{Type: wire.SRpNA1, Common: 1, Cause: wire.CauseActCon}, false, now) {
+		t.Fatal("a completed exchange was not observed")
+	}
+	if ok, _ := a.fresh(now.Add(-time.Minute)); !ok {
+		t.Fatal("a completed exchange did not count as authentication")
 	}
 }
 
@@ -80,9 +87,11 @@ func TestOnlyTheProvingHalfOfTheExchangeCounts(t *testing.T) {
 func TestALaterAuthenticationRefreshesTheAssociation(t *testing.T) {
 	var a authState
 	first := time.Date(2026, time.September, 28, 12, 0, 0, 0, time.UTC)
-	a.observe(wire.SRpNA1, first)
+	a.observe(&wire.ASDU{Type: wire.SAsNA1, Common: 1}, true, first)
+	a.observe(&wire.ASDU{Type: wire.SAsNA1, Common: 1, Cause: wire.CauseActCon}, false, first)
 	second := first.Add(time.Hour)
-	a.observe(wire.SAsNA1, second)
+	a.observe(&wire.ASDU{Type: wire.SAsNA1, Common: 1}, true, second)
+	a.observe(&wire.ASDU{Type: wire.SAsNA1, Common: 1, Cause: wire.CauseActCon}, false, second)
 	ok, at := a.fresh(second.Add(-time.Minute))
 	if !ok || at != second {
 		t.Errorf("fresh=%v at=%v, want true and %v", ok, at, second)
