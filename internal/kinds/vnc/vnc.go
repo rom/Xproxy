@@ -501,6 +501,11 @@ func (se *session) connect() error {
 			break
 		}
 		tried[ep] = true
+		if se.pinned != "" && !strings.EqualFold(ep.Address, se.pinned) {
+			// The grant names one desktop, and this is another.
+			lastErr = fmt.Errorf("the grant is for %s", se.pinned)
+			continue
+		}
 		conn, err := se.dial(ep)
 		pool.Begin(ep)
 		if err != nil {
