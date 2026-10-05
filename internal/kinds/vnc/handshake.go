@@ -314,9 +314,22 @@ func (se *session) clientAnonTLS() string {
 	}
 	se.client = tc
 	// Inside the tunnel, a second security negotiation.
+	//
+	// With a password configured the inner list is the password and nothing
+	// else, unless the operator also offered `none` outside the tunnel. Keeping
+	// `none` beside the password made the password skippable: a client picked it
+	// from a list this code wrote rather than one anybody configured, and
+	// finished the handshake as nobody. `none` is a security type of its own, so
+	// a listener that did not offer it is not offering it one layer in.
+	//
+	// Without a password there is nothing else type 18 can carry, so the list
+	// stays `none` -- that is what `security_types: [tls]` alone means.
 	inner := []uint8{rfb.SecNone}
 	if t.password != "" {
-		inner = []uint8{rfb.SecVNCAuth, rfb.SecNone}
+		inner = []uint8{rfb.SecVNCAuth}
+		if slices.Contains(t.offered, rfb.SecNone) {
+			inner = append(inner, rfb.SecNone)
+		}
 	}
 	if _, err := se.client.Write(rfb.SecurityList(inner)); err != nil {
 		return "write"

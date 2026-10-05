@@ -552,6 +552,13 @@ func (se *session) connect() error {
 			break
 		}
 		tried[ep] = true
+		if se.pinned != "" && !strings.EqualFold(ep.Address, se.pinned) {
+			// The grant names one machine, and this is another. Without this
+			// the balancer would choose, which is access to whichever desktop
+			// the pool felt like rather than the one somebody approved.
+			lastErr = fmt.Errorf("the grant is for %s", se.pinned)
+			continue
+		}
 		conn, err := se.dial(ep)
 		pool.Begin(ep)
 		if err != nil {

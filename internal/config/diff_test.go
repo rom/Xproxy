@@ -238,3 +238,43 @@ routes:
 		t.Fatalf("the diff text leaked a header value:\n%s", ch.Text)
 	}
 }
+
+func TestEveryCredentialFieldIsRedactedInDumpsAndDiffs(t *testing.T) {
+	c := &Config{
+		Metrics: Metrics{OTLP: &OTLP{Headers: map[string]string{"Authorization": "Bearer metrics-secret"}}},
+		Logging: Logging{
+			OTLP: &OTLPExport{Headers: map[string]string{"Authorization": "Bearer logs-secret"}},
+			SIEM: &SIEM{Headers: map[string]string{"X-Token": "siem-secret"}},
+		},
+		Upstreams: []Upstream{{
+			Name:      "api",
+			Discovery: &Discovery{Headers: map[string]string{"X-Consul-Token": "consul-secret"}},
+		}},
+		ThreatIntel: &ThreatIntel{Lists: []ThreatList{{
+			Name: "feed",
+			HTTP: &FeedHTTP{Token: "feed-secret", HeaderValue: "hv-secret"},
+		}}},
+	}
+	b, err := DumpRedacted(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(b)
+	for _, secret := range []string{
+		"metrics-secret", "logs-secret", "siem-secret",
+		"consul-secret", "feed-secret", "hv-secret",
+	} {
+		if strings.Contains(out, secret) {
+			t.Errorf("%s survived the redaction", secret)
+		}
+	}
+	// The names stay: which header a collector wants is not the secret.
+	for _, name := range []string{"Authorization", "X-Consul-Token", "X-Token"} {
+		if !strings.Contains(out, name) {
+			t.Errorf("the header name %s was lost", name)
+		}
+	}
+	if !strings.Contains(out, RedactedValue) {
+		t.Error("nothing was marked redacted")
+	}
+}

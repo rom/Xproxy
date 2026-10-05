@@ -382,7 +382,10 @@ func (x *reader) pass(n int) error {
 type ServerReader struct {
 	x   reader
 	bpp int
-	lim UpdateLimits
+	// pending is where a pixel format change is taken from, when one is
+	// installed. See SetPendingFormat.
+	pending func() ([16]byte, bool)
+	lim     UpdateLimits
 	// w and h are the framebuffer as last announced, which a resize
 	// pseudo-rectangle changes.
 	w, h uint16
@@ -413,6 +416,37 @@ func (s *ServerReader) SetPixelFormat(pf [16]byte) error {
 	}
 	s.bpp = bpp
 	return nil
+}
+
+// SetPendingFormat installs a source of pixel format changes, read at the point
+// the format is used rather than between messages.
+//
+// A client's SetPixelFormat takes effect on the server the moment the server
+// reads it, and the server is told by whoever is forwarding the message. There
+// is no point in the stream that says "the next rectangle is in the new format",
+// so the only ordering that holds is: store the format, then forward the
+// message, and read the stored value when a length is computed from it. A reader
+// that took the format between messages took it one message too late -- it was
+// already blocked on the socket when the change arrived -- and sized the first
+// rectangle of the new format with the bytes per pixel of the old one, which
+// over-read into whatever the server sent next.
+//
+// fn returns false when there is nothing new. It is called from the read
+// goroutine, so an implementation shares its state with the writer's goroutine
+// under a lock of its own.
+func (s *ServerReader) SetPendingFormat(fn func() ([16]byte, bool)) { s.pending = fn }
+
+// applyPending takes a format change that arrived while this reader was waiting
+// for bytes. It is called where a length is derived from the format.
+func (s *ServerReader) applyPending() error {
+	if s.pending == nil {
+		return nil
+	}
+	pf, ok := s.pending()
+	if !ok {
+		return nil
+	}
+	return s.SetPixelFormat(pf)
 }
 
 // ServerMessage is what one message was. Its bytes have already been
@@ -628,6 +662,9 @@ func (s *ServerReader) checkGeometry(x, y, w, h uint16) error {
 // what actually arrived, which for the length-prefixed encodings was
 // also checked before any of it was read.
 func (s *ServerReader) checkPayload(enc int32, w, h uint16) error {
+	if err := s.applyPending(); err != nil {
+		return err
+	}
 	if !picture(enc) {
 		return nil
 	}
@@ -665,6 +702,9 @@ func (s *ServerReader) grew(n int) error {
 // length from the encoding or reads a length the encoding carries; none
 // of them searches for the end.
 func (s *ServerReader) payload(enc int32, w, h uint16) error {
+	if err := s.applyPending(); err != nil {
+		return err
+	}
 	pixels := int(w) * int(h)
 	switch enc {
 	case EncRaw:

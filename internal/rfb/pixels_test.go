@@ -567,3 +567,67 @@ func TestAHextileRectangleIsStoppedWhereTheBoundIsCrossed(t *testing.T) {
 		t.Error("the whole rectangle was forwarded before the bound fired")
 	}
 }
+
+// A pixel format change that arrives while the reader is waiting for bytes
+// takes effect on the rectangle that follows it, not the one after that.
+//
+// This is the ordering the stream actually has. A client's SetPixelFormat
+// reaches the server as soon as whoever is forwarding it writes it, so the very
+// next rectangle is in the new format -- while the reader is blocked on the
+// socket and cannot be told anything. Taking the change between messages sized
+// that rectangle with the old bytes per pixel: at 32 bits announced and 8 asked
+// for, a 64x1 raw rectangle carrying 64 bytes was read as 256, and the 192 bytes
+// of over-read swallowed whatever the server sent next -- a ServerCutText the
+// policy would have dropped, or a message type the gateway refuses to frame --
+// and passed it through unread.
+//
+// The Bell is the ruler, as everywhere else here: it comes back as its own
+// message only if the rectangle's length was computed from the format in force.
+func TestAPendingPixelFormatAppliesToTheNextRectangle(t *testing.T) {
+	// 64x1 raw at 8 bits per pixel is 64 bytes; at the announced 32 it would be
+	// 256, so a reader on the old format over-reads by 192 and eats the Bell.
+	body := append(update(1, append(rect(0, 0, 64, 1, EncRaw), make([]byte, 64)...)), bell...)
+	r, out := serverReader(t, body, 1024, 768, 32, UpdateLimits{})
+
+	var eight [16]byte
+	eight[0] = 8
+	handed := false
+	r.SetPendingFormat(func() ([16]byte, bool) {
+		if handed {
+			return [16]byte{}, false
+		}
+		handed = true
+		return eight, true
+	})
+
+	m, err := r.Next()
+	if err != nil {
+		t.Fatalf("the update did not frame: %v", err)
+	}
+	if m.Type != SrvFramebufferUpdate || m.Rectangles != 1 {
+		t.Fatalf("message %d with %d rectangles", m.Type, m.Rectangles)
+	}
+	if got, want := out.Len(), len(body)-len(bell); got != want {
+		t.Errorf("forwarded %d bytes, want the %d of the update alone", got, want)
+	}
+	next, err := r.Next()
+	if err != nil {
+		t.Fatalf("the bell did not frame, so the rectangle over-read: %v", err)
+	}
+	if next.Type != SrvBell {
+		t.Errorf("the message after the rectangle was %d, want a bell", next.Type)
+	}
+}
+
+// And a format the reader cannot measure lengths in is an error rather than a
+// silently kept old one.
+func TestAPendingPixelFormatThatCannotBeMeasuredIsRefused(t *testing.T) {
+	body := append(update(1, append(rect(0, 0, 4, 2, EncRaw), make([]byte, 4*2*4)...)), bell...)
+	r, _ := serverReader(t, body, 1024, 768, 32, UpdateLimits{})
+	var odd [16]byte
+	odd[0] = 7 // not 8, 16 or 32
+	r.SetPendingFormat(func() ([16]byte, bool) { return odd, true })
+	if _, err := r.Next(); err == nil {
+		t.Error("a format with no whole number of bytes per pixel was accepted")
+	}
+}
