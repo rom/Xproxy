@@ -137,6 +137,23 @@ how a figure in a document drifts from the code without anything failing. What t
 remainder is has not changed: the formatting of views whose subsystems need a
 live peer, authority, resolver or scanner behind them.
 
+### Fixed (an RDP dynamic-channel assertion counted bytes it was racing)
+
+- **`TestDataFromTheClientOnARefusedDynamicChannelIsDropped` snapshotted a byte
+  count on the wrong side of a write.** It waited for the refusal to be *counted*
+  and then recorded how much the desktop had received -- but the refusal the
+  relay sends to the desktop is counted before it is written, so the snapshot
+  raced it. When those fourteen octets landed afterwards the count had grown, and
+  the failure read "the desktop received 14 more bytes on drdynvc": a test
+  reporting that the client's data had been forwarded when what arrived was the
+  relay's own refusal.
+
+  The client's payload is now a distinctive string and the assertion is that the
+  desktop never saw it, which is the property the test is named for and does not
+  depend on when anything else arrives. The failure output shows the smuggled
+  bytes rather than a number. Verified twenty runs under the race detector, and
+  with the drop removed from the relay the test fails and prints the payload.
+
 ### Fixed (the IMAP injection test was betting on a goroutine order)
 
 - **`TestALineTheServerDidNotAskForIsNotCredentialMaterial` raced the response
