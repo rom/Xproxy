@@ -864,3 +864,42 @@ func TestServeAndShutdownDoNotRaceOnStartup(t *testing.T) {
 		s.serve()
 	}
 }
+
+// Shadow mode carries a policy choice and still refuses the link layer.
+//
+// docs/CONFIG.md names foreign-device registration among what a shadowed
+// `bacnet` listener still refuses, and the reason is that there is no undoing
+// one: a registration forwarded so that it could be written down puts the
+// sender inside the building's whole broadcast domain for the life of the lease.
+// The same holds for a Secure-BVLL wrapper, whose contents the relay has not
+// read -- shadow mode never applies to a message the code could not read.
+func TestShadowModeStillRefusesTheLinkLayer(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		datagram []byte
+		reason   string
+	}{
+		{"foreign device registration", bvlcWrap(wire.FuncRegisterForeignDevice, []byte{0x01, 0x2C}), "bbmd_not_allowed"},
+		{"read broadcast distribution table", bvlcWrap(wire.FuncReadBDT, nil), "bbmd_not_allowed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := startDevice(t, &device{})
+			s, addr := bacnetServer(t, `        upstream: devices
+        allow_clients: [127.0.0.0/8]
+        default_action: allow
+      policy: {mode: shadow}`, d.addr())
+			cl := dialClient(t, addr)
+			cl.send(t, tc.datagram)
+			waitRefusal(t, s, tc.reason)
+			if got := d.seen(); len(got) != 0 {
+				t.Fatalf("%d messages reached the building through a shadowed hard refusal", len(got))
+			}
+			// Counted as a refusal, not as a would-be one: the listener did
+			// refuse it, and a status view that said otherwise would be
+			// reporting enforcement that did happen as enforcement that did not.
+			if n := s.Stats().WouldRefusals["bacnet"][tc.reason]; n != 0 {
+				t.Errorf("counted %d would-be refusals for a bound that held", n)
+			}
+		})
+	}
+}

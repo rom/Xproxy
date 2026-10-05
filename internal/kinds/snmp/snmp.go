@@ -357,9 +357,21 @@ type exchange struct {
 	client netip.Addr
 	// from is the address to answer on a datagram listener.
 	from net.Addr
-	// requestID is what pairs the answer with the question. It is the only
-	// thing that does, which is why an unsolicited response is recognisable.
+	// requestID is what pairs the answer with the question, together with the
+	// agent it was sent to.
 	requestID int64
+	// agent is the address the question went to, and an answer from anywhere
+	// else is not this exchange's.
+	//
+	// Without it the pairing was the identifier alone on an unconnected socket,
+	// so anything that could reach the relay's ephemeral port -- including one
+	// agent in a multi-endpoint pool, which sees that port on every poll -- could
+	// answer another agent's question by matching a value the manager chose. The
+	// manager then received forged varbinds re-enveloped in its own version and
+	// community, logged as a legitimate answer, with no unsolicited_response
+	// counted because the pairing matched. Every sibling datagram kind has this
+	// check or a connected socket; this one had neither.
+	agent netip.Addr
 	// asked is how large the request was, for the amplification ratio.
 	asked int
 	// rule is the rule that allowed it, carried so the answer's access
@@ -479,12 +491,18 @@ func (p *pending) add(e *exchange, now time.Time) bool {
 // take consumes the request an answer belongs to, and says whether there was
 // one. A response with no request is unsolicited: on UDP that is the shape
 // of a response-spoofing attack against the manager.
-func (p *pending) take(id int64, now time.Time) (*exchange, bool) {
+func (p *pending) take(id int64, from netip.Addr, now time.Time) (*exchange, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	e, held := p.byID[id]
 	if !held {
 		return nil, false
+	}
+	if e.agent.IsValid() && from.IsValid() && e.agent != from {
+		// The identifier matches a question this relay asked, but of another
+		// agent. The slot is left where it is: the agent that was asked may
+		// still answer, and releasing it here would let a stranger spend it.
+		return e, false
 	}
 	delete(p.byID, id)
 	p.publishLocked()

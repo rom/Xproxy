@@ -148,7 +148,7 @@ func (t *server) fromClient(device net.PacketConn, raw []byte, from net.Addr) {
 	}
 	if d := t.policy.Link(v.Function); !d.Allow {
 		t.refused(ip, nil, d, v.Function.String())
-		if t.enforcing() {
+		if t.enforcing() || d.Hard {
 			return
 		}
 	}
@@ -178,7 +178,7 @@ func (t *server) fromClient(device net.PacketConn, raw []byte, from net.Addr) {
 	}
 	if d := t.policy.Network(n); !d.Allow {
 		t.refused(ip, nil, d, d.Detail)
-		if t.enforcing() {
+		if t.enforcing() || d.Hard {
 			return
 		}
 	}

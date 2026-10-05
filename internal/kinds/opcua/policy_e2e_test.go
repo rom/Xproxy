@@ -631,6 +631,40 @@ func TestShadowModeRecordsAndForwards(t *testing.T) {
 	}
 }
 
+// And a Write the policy refuses does not reach the server in monitor mode,
+// because it would be a moved actuator rather than a note in a report.
+//
+// This is the other half of the mode's documented contract: it "evaluates and
+// enforces nothing, except the hard decisions: the client list, a message the
+// relay could not read, the bounds, and every service that changes anything".
+// The node and attribute allow-lists -- the normal way an OPC UA policy is
+// written -- produced soft refusals, so a Write outside them was counted as a
+// would-be refusal and sent on. read_only was hard and did hold, which is why
+// this was easy to miss.
+func TestAWriteTheMonitorModePolicyRefusesStillDoesNotReachTheServer(t *testing.T) {
+	up := startServer(t, &fakeServer{})
+	s, addr := relayFor(t, base+
+		"        nodes: [\"ns=3;i=*\"]\n"+
+		"        monitor_only: true\n", up.addr())
+	cl := session(t, addr)
+
+	// A read outside the list is carried, which is what the mode is for.
+	cl.service(wire.SvcRead, readBody(op(n(9, 1), wire.AttrValue)))
+	until(t, s, wouldRefuse("node_not_allowed"), "the would-be refusal for the read")
+	up.await(t, 2, "the forwarded read")
+
+	// The same node, written: refused, and the server never sees it.
+	before := len(up.seen())
+	cl.service(wire.SvcWrite, writeBody(wr(n(9, 1), wire.AttrValue, 1)))
+	until(t, s, refused("node_not_allowed"), "the real refusal for the write")
+	if up.sawService(wire.SvcWrite) {
+		t.Errorf("a monitor-mode listener forwarded a refused write: %v", up.seen())
+	}
+	if n := len(up.seen()); n != before {
+		t.Errorf("the server saw %d more messages after the refused write", n-before)
+	}
+}
+
 // A hard decision is enforced even in monitor mode, because a message the relay
 // could not read is not an opinion.
 func TestAHardRefusalStandsInMonitorMode(t *testing.T) {

@@ -22,7 +22,7 @@ func TestTheOutstandingCountIsPublished(t *testing.T) {
 	now := time.Now()
 	p.add(&exchange{requestID: 1}, now)
 	p.add(&exchange{requestID: 2}, now)
-	p.take(1, now)
+	p.take(1, netip.Addr{}, now)
 	if want := []int{1, 2, 1}; len(seen) != len(want) {
 		t.Fatalf("the table reported %v", seen)
 	}
@@ -34,7 +34,7 @@ func TestTheOutstandingCountIsPublished(t *testing.T) {
 	// A table nobody asked about does not panic on the way past.
 	q := newPending(2, time.Second)
 	q.add(&exchange{requestID: 1}, now)
-	q.take(1, now)
+	q.take(1, netip.Addr{}, now)
 }
 
 // The pending table. It is bounded and it expires, because the entries come
@@ -56,14 +56,14 @@ func TestTheTableRefusesRatherThanForgets(t *testing.T) {
 		t.Errorf("status: %d outstanding, %d dropped", n, dropped)
 	}
 	// The first request is still there: nothing was forgotten to make room.
-	if e, ok := p.take(1, now); !ok || e.requestID != 1 {
+	if e, ok := p.take(1, netip.Addr{}, now); !ok || e.requestID != 1 {
 		t.Errorf("the first request was forgotten: %v %v", e, ok)
 	}
 	// Once it has expired, its slot is reusable -- and an answer arriving
 	// against it is not forwarded, because the manager stopped waiting and
 	// has since reused the identifier.
 	later := now.Add(6 * time.Second)
-	if e, ok := p.take(2, later); ok || e == nil {
+	if e, ok := p.take(2, netip.Addr{}, later); ok || e == nil {
 		t.Errorf("a late answer was forwarded: %v %v", e, ok)
 	}
 	if !p.add(&exchange{requestID: 4}, later) {
@@ -71,7 +71,7 @@ func TestTheTableRefusesRatherThanForgets(t *testing.T) {
 	}
 	// An answer to a question nobody asked has no entry at all, which is
 	// what separates it from a late one.
-	if e, ok := p.take(999, later); ok || e != nil {
+	if e, ok := p.take(999, netip.Addr{}, later); ok || e != nil {
 		t.Errorf("an unsolicited answer matched something: %v %v", e, ok)
 	}
 	// And the defaults, for a listener that set neither.
@@ -455,5 +455,48 @@ func TestARequestThatNeverLeftReleasesItsSlot(t *testing.T) {
 	s.forget(parse(v2c("public", get(12, 1, 3, 6, 1, 2, 1))))
 	if n, _ := s.pend.status(); n != 0 {
 		t.Errorf("%d outstanding after forgetting the request", n)
+	}
+}
+
+// An answer carrying the right request identifier from the wrong agent is not
+// this exchange's answer.
+//
+// On a datagram protocol the identifier is the manager's own and the relay's
+// upstream socket is unconnected, so without this check anything that could
+// reach that socket -- including one agent in a multi-endpoint pool, which sees
+// the port on every poll -- could answer another agent's question by matching a
+// value it already knew. The manager would have received the forged varbinds
+// re-enveloped in its own version and community, logged as a legitimate answer,
+// with nothing counted as unsolicited because the pairing matched.
+func TestAnAnswerFromAnotherAgentDoesNotMatchTheExchange(t *testing.T) {
+	now := time.Now()
+	asked := netip.MustParseAddr("192.0.2.10")
+	stranger := netip.MustParseAddr("192.0.2.99")
+	p := newPending(8, 5*time.Second)
+	if !p.add(&exchange{requestID: 7, agent: asked}, now) {
+		t.Fatal("the question was not recorded")
+	}
+
+	// The stranger's answer does not take the slot.
+	if _, ok := p.take(7, stranger, now); ok {
+		t.Error("an answer from an address nobody asked was paired")
+	}
+	// And the slot is still there, so the agent that was asked can still
+	// answer: a stranger must not be able to spend somebody else's window.
+	if n, _ := p.status(); n != 1 {
+		t.Errorf("%d outstanding after a stranger's answer, want 1", n)
+	}
+	e, ok := p.take(7, asked, now)
+	if !ok || e == nil || e.requestID != 7 {
+		t.Fatalf("the agent that was asked could not answer: %v %v", e, ok)
+	}
+
+	// An exchange recorded without an agent -- a stream, where the connection
+	// is the binding -- still pairs on the identifier alone.
+	if !p.add(&exchange{requestID: 8}, now) {
+		t.Fatal("the stream question was not recorded")
+	}
+	if _, ok := p.take(8, netip.Addr{}, now); !ok {
+		t.Error("a stream answer did not pair")
 	}
 }

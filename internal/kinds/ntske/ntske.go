@@ -272,13 +272,12 @@ func (s *server) handle(client net.Conn) {
 		// Terminating: this listener is the key establishment server, so there
 		// is no peek and no upstream. The name it checks is the one the client
 		// verified a certificate for rather than one read out of a ClientHello.
-		name, protos, reason := s.term.exchange(client)
-		switch {
-		case reason != "":
+		// The name list is handed in, so it is applied where it can still
+		// refuse: judging it on the way back refused a client that had already
+		// been given its cookies.
+		name, protos, reason := s.term.exchange(client, s.terminatingNameAllowed)
+		if reason != "" {
 			s.deny_(ip, reason, name)
-		case !s.terminatingNameAllowed(name):
-			s.deny_(ip, "server_name_not_allowed", name)
-			reason = "server_name_not_allowed"
 		}
 		s.log(ip, start, name, protos, reason, 0, 0)
 		return
