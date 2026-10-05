@@ -13,9 +13,9 @@ import (
 
 // recorder is a Gate that remembers what it was told.
 type recorder struct {
-	shadow               bool
-	recorded, denied     []string
-	recordRule, denyRule string
+	shadow                        bool
+	recorded, denied, quarantined []string
+	recordRule, denyRule          string
 }
 
 func (r *recorder) gate() Gate {
@@ -28,6 +28,9 @@ func (r *recorder) gate() Gate {
 		Deny: func(reason, rule, detail string) {
 			r.denied = append(r.denied, reason)
 			r.denyRule = rule
+		},
+		Quarantine: func(reason, rule, detail string) {
+			r.quarantined = append(r.quarantined, reason)
 		},
 	}
 }
@@ -145,5 +148,22 @@ func TestNeitherConfiguredRefusesNothing(t *testing.T) {
 	r := &recorder{}
 	if got := Client(Deps{}, subject("203.0.113.7"), r.gate()); got != "" {
 		t.Errorf("reason %q, want none", got)
+	}
+}
+
+func TestQuarantineDoesNotUseOrdinaryDenyPath(t *testing.T) {
+	r := &recorder{}
+	got := Client(Deps{
+		Quarantined: func(netip.Addr) (string, bool) { return "deny-pack", true },
+		Policy:      policy(t, []string{"203.0.113.0/24"}),
+	}, subject("203.0.113.7"), r.gate())
+	if got != QuarantineReason {
+		t.Fatalf("reason %q, want %q", got, QuarantineReason)
+	}
+	if len(r.quarantined) != 1 || r.quarantined[0] != QuarantineReason {
+		t.Errorf("quarantine callbacks %v, want [%s]", r.quarantined, QuarantineReason)
+	}
+	if len(r.denied) != 0 {
+		t.Errorf("quarantine entered ordinary deny path: %v", r.denied)
 	}
 }
