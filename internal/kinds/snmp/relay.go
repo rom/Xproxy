@@ -290,6 +290,15 @@ func (t *server) fromManager(agent net.PacketConn, raw []byte, p *peer) {
 		out = trimmed
 		s.Counters().SNMPTruncated.Add(1)
 	}
+	// The agent is chosen before the slot is taken, so the slot records which
+	// agent the question went to: on a datagram protocol the identifier alone
+	// does not say whose answer this is.
+	addr := t.agentAddr(ip)
+	if addr == nil {
+		s.Counters().SNMPUpstreamFail.Add(1)
+		return
+	}
+	agentIP := netutil.AddrOf(addr.String())
 	upgraded, changed, err := t.applyUpgrade(out, m)
 	switch {
 	case errors.Is(err, errOriginate):
@@ -297,7 +306,7 @@ func (t *server) fromManager(agent net.PacketConn, raw []byte, p *peer) {
 		// The pending slot is taken first, because a discovery's report has to
 		// find this request waiting: it is the manager's question that the
 		// relay will ask properly once it knows the agent's engine.
-		if !t.hold(m, p, d, len(raw)) {
+		if !t.hold(m, p, d, len(raw), agentIP) {
 			return
 		}
 		t.originateUpstream(agent, m, ip, d)
@@ -310,19 +319,13 @@ func (t *server) fromManager(agent net.PacketConn, raw []byte, p *peer) {
 		out = upgraded
 		s.Counters().SNMPUpgraded.Add(1)
 	}
-	if !t.hold(m, p, d, len(raw)) {
+	if !t.hold(m, p, d, len(raw), agentIP) {
 		return
 	}
 	t.logMessage(ip, m, d, "manager")
 	t.observeManager(ip, m)
 	// One agent per message: SNMP has no fan-out, and a manager that asked
 	// once expects one answer.
-	addr := t.agentAddr(ip)
-	if addr == nil {
-		s.Counters().SNMPUpstreamFail.Add(1)
-		t.forget(m)
-		return
-	}
 	if _, err := agent.WriteTo(out, addr); err != nil {
 		s.Counters().SNMPUpstreamFail.Add(1)
 		s.Logs().Error.Warn("snmp forward to agent failed", "listener", t.cfg.Name,
@@ -443,7 +446,7 @@ func (t *server) fromAgent(agent net.PacketConn, raw []byte, from net.Addr) {
 		// manager's question -- still waiting in the table -- is now askable.
 		// The report itself goes no further: the manager asked for data, not
 		// for a statement about engine identifiers.
-		if e, ok := t.pend.take(m.PDU.RequestID, time.Now()); ok && len(e.pdu) > 0 {
+		if e, ok := t.pend.take(m.PDU.RequestID, ip, time.Now()); ok && len(e.pdu) > 0 {
 			if t.resendAfterDiscovery(agent, e) {
 				// Put the slot back: the same question is outstanding again,
 				// and the answer that comes next is the one the manager gets.
@@ -457,7 +460,7 @@ func (t *server) fromAgent(agent net.PacketConn, raw []byte, from net.Addr) {
 		s.Counters().Refuse("snmp", "unsolicited_response")
 		return
 	}
-	e, ok := t.pend.take(m.PDU.RequestID, time.Now())
+	e, ok := t.pend.take(m.PDU.RequestID, ip, time.Now())
 	if !ok {
 		// A response nobody asked for, or one that arrived after the manager
 		// stopped waiting. On a datagram protocol the first is the shape of
@@ -769,7 +772,9 @@ func (t *server) pumpOne(src, dst net.Conn, p *peer, fromManager bool, pend *pen
 				t.deny(ip, "snmp_wrong_direction", m.PDU.Type.String())
 				return "snmp_wrong_direction"
 			}
-			e, ok := pend.take(m.PDU.RequestID, time.Now())
+			// No address to match on a stream: the connection was established,
+			// so an answer arriving on it came from the agent it was asked of.
+			e, ok := pend.take(m.PDU.RequestID, netip.Addr{}, time.Now())
 			if !ok {
 				s.Counters().SNMPUnsolicited.Add(1)
 				if e == nil {

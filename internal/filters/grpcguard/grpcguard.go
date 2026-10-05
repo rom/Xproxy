@@ -35,6 +35,7 @@ package grpcguard
 
 import (
 	"bytes"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -158,11 +159,67 @@ type instance struct {
 	partial bool
 }
 
-// isGRPC reports a gRPC body by its content type. gRPC-web is not gRPC
-// on the wire this filter reads: it is translated before this point on
-// a route that accepts it, and refused on one that does not.
+// isGRPC reports a body this filter reads: gRPC, or the gRPC-web forms of it.
+//
+// gRPC-web is included because the translation to gRPC happens in the reverse
+// proxy's rewrite hook, which runs *after* the filter chain -- so a route with
+// `grpc: {web: true}` had this filter see `application/grpc-web+proto`, return
+// Continue, and the upstream nevertheless receive plain gRPC with the same
+// frames. Every bound and content rule here was skipped by one header.
 func isGRPC(ct string) bool {
-	return ct == "application/grpc" || strings.HasPrefix(ct, "application/grpc+")
+	base := ct
+	if i := strings.IndexByte(base, ';'); i >= 0 {
+		base = strings.TrimSpace(base[:i])
+	}
+	switch {
+	case base == "application/grpc", strings.HasPrefix(base, "application/grpc+"):
+		return true
+	case base == "application/grpc-web", strings.HasPrefix(base, "application/grpc-web+"):
+		return true
+	case base == "application/grpc-web-text", strings.HasPrefix(base, "application/grpc-web-text+"):
+		return true
+	}
+	return false
+}
+
+// isGRPCWebText reports the base64 form, whose frames have to be decoded before
+// they can be read as frames at all.
+func isGRPCWebText(ct string) bool {
+	base := ct
+	if i := strings.IndexByte(base, ';'); i >= 0 {
+		base = strings.TrimSpace(base[:i])
+	}
+	return base == "application/grpc-web-text" ||
+		strings.HasPrefix(base, "application/grpc-web-text+")
+}
+
+// decodeWebText decodes what was read of a grpc-web-text body.
+//
+// Clients send one padded base64 chunk per frame, so the stream is split at the
+// padding and each chunk decoded on its own -- the same shape the data plane's
+// own decoder uses. A chunk that does not decode leaves the rest alone: this is a
+// prefix of a stream, so the last chunk is usually incomplete, and the frames
+// recovered before it are still worth inspecting.
+func decodeWebText(head []byte) []byte {
+	out := make([]byte, 0, len(head))
+	for len(head) > 0 {
+		end := len(head)
+		if i := bytes.IndexByte(head, '='); i >= 0 {
+			// Consume the padding too: one chunk is "...==" or "...=".
+			end = i + 1
+			for end < len(head) && head[end] == '=' {
+				end++
+			}
+		}
+		chunk := head[:end]
+		head = head[end:]
+		dec, err := base64.StdEncoding.DecodeString(string(chunk))
+		if err != nil {
+			break
+		}
+		out = append(out, dec...)
+	}
+	return out
 }
 
 func (in *instance) Request(r *http.Request) filter.Verdict {
@@ -196,7 +253,12 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 		in.partial = true
 		in.g.partial.Add(1)
 	}
-	v := in.inspect(head, partial)
+	// The frames are inspected in the encoding the upstream will see them in.
+	read := head
+	if isGRPCWebText(r.Header.Get("Content-Type")) {
+		read = decodeWebText(head)
+	}
+	v := in.inspect(read, partial)
 	r.Body = replay(head, r.Body)
 	if v.Deny {
 		return in.deny(r, v)

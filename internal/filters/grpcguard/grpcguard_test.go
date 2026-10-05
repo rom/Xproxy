@@ -1,6 +1,7 @@
 package grpcguard
 
 import (
+	"encoding/base64"
 	"encoding/binary"
 	"io"
 	"net/http"
@@ -246,5 +247,39 @@ func TestPartialScan(t *testing.T) {
 	}
 	if !partial {
 		t.Errorf("the partial scan was not recorded: %v", res.Attrs)
+	}
+}
+
+// A gRPC-web call is inspected, because the upstream receives plain gRPC.
+//
+// The translation happens in the reverse proxy's rewrite hook, after the filter
+// chain, so a guard that only matched `application/grpc` saw `grpc-web+proto`,
+// returned Continue, and the upstream got the identical frames with none of the
+// bounds or content rules applied. One header was the whole bypass.
+func TestAGRPCWebCallIsInspected(t *testing.T) {
+	secret := "-----BEGIN RSA PRIVATE KEY-----"
+	body := frame(false, []byte(secret))
+	for _, tc := range []struct {
+		name string
+		ct   string
+		body []byte
+	}{
+		{"gRPC", "application/grpc", body},
+		{"gRPC with a subtype", "application/grpc+proto", body},
+		{"gRPC-web", "application/grpc-web+proto", body},
+		{"gRPC-web with a parameter", "application/grpc-web+proto; charset=utf-8", body},
+		{"gRPC-web-text", "application/grpc-web-text",
+			[]byte(base64.StdEncoding.EncodeToString(body))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := build(t, filter.Options{"deny_patterns": []any{"BEGIN RSA PRIVATE KEY"}, "allow_compressed": false})
+			r, _ := http.NewRequest("POST", "http://api.test/pkg.Orders/Create",
+				strings.NewReader(string(tc.body)))
+			r.Header.Set("Content-Type", tc.ct)
+			r.ContentLength = int64(len(tc.body))
+			if v := filtertest.Run(f, r, nil).Request; !v.Deny {
+				t.Errorf("a %s body carrying a private key was not refused", tc.name)
+			}
+		})
 	}
 }

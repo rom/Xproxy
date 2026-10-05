@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -146,13 +147,33 @@ show(0);
 		if i > 0 {
 			ns.WriteByte(',')
 		}
-		fmt.Fprintf(&ns, "%q", n)
+		ns.WriteString(scriptString(n))
 	}
 	ns.WriteByte(']')
 	page = replaceOnce(page, "FRAMES", frames.String())
 	page = replaceOnce(page, "NOTES", ns.String())
 	_, err := io.WriteString(w, page)
 	return err
+}
+
+// scriptString quotes a value for the inside of a <script> element.
+//
+// %q alone is not enough. It escapes quotes, backslashes and control bytes, but
+// an HTML tokenizer ends script data at the literal bytes "</script" whatever
+// the JavaScript quoting around them, so a note containing one closed the
+// element and the rest was parsed as markup. The notes come from the recording's
+// markers, and a marker carries the desktop name the far server chose -- so this
+// was a hostile desktop writing script into the page an auditor opens.
+//
+// The three bytes that can start a tag or an entity are escaped to their \u
+// form, which is valid in both JSON and JavaScript and leaves the text as it
+// reads.
+func scriptString(s string) string {
+	q := fmt.Sprintf("%q", s)
+	q = strings.ReplaceAll(q, "<", `\u003c`)
+	q = strings.ReplaceAll(q, ">", `\u003e`)
+	q = strings.ReplaceAll(q, "&", `\u0026`)
+	return q
 }
 
 // replaceOnce is a spelling of strings.Replace with a count of one that

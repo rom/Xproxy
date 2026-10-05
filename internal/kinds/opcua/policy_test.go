@@ -450,8 +450,13 @@ func TestTheNodeAndAttributeListsAreReadInOrder(t *testing.T) {
 			"namespace_not_allowed", false},
 		{"a node off the list", node(4, "Valve1/Position", wire.AttrValue, false),
 			"node_not_allowed", false},
+		// Hard, because the service writes. A read refused by the same list may
+		// be shadowed -- monitor_only is for learning what a policy would do --
+		// but a write may not: forwarding one so that it could be written down
+		// is a moved actuator, which is what the mode's documented contract
+		// says it still refuses.
 		{"a write outside the write list", node(4, "Tank1/Level", wire.AttrValue, true),
-			"node_not_allowed", false},
+			"node_not_allowed", true},
 		{"an attribute off the list", node(4, "Tank1/Level", wire.AttrDataType, false),
 			"attribute_not_allowed", false},
 		{"an attribute this build does not name", node(4, "Tank1/Level", wire.Attribute(99), false),

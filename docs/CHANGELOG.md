@@ -6,6 +6,109 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Fixed (an eighth audit round: the attack surface, and who controls the data on it)
+
+A review of every network component, parser and protocol implementation,
+following the data a peer controls to the decisions it reaches. Fifteen findings,
+and they divide into three shapes: a control that ran on one path and not the
+sibling path beside it; a policy that read what was offered rather than what was
+claimed; and a decision taken before the thing it decides about was known.
+
+Three candidates were chased and dismissed rather than fixed, which is worth
+recording because each looked like a bypass: MySQL's `CLIENT_COMPRESS` as a way
+past the statement reader (a client that asserts it when the greeting did not
+offer it can no longer be read by the server either, so it is a self-inflicted
+failure rather than a bypass); an AMQP field table whose duplicate key carries a
+non-text second value (RabbitMQ's `table_lookup` is `lists:keysearch`, so the
+first value is the one that survives on both sides); and the NTP transmit
+timestamp as a predictable nonce (it is seeded from ChaCha8, not the clock).
+
+**The HTTP edge.**
+
+- A **satisfied challenge resumed the chain at the backend.** A filter that
+  returned a challenge verdict for a client already holding a cookie good for
+  that tier sent the request straight past every filter behind it. One proof of
+  work, cached in a cookie for `challenge.ttl`, bought an hour's pass on the
+  `openapi`, `graphql`, `grpc_guard` and `upload_guard` instances further down
+  the route: the cheapest control in the chain disabling the expensive ones. The
+  chain now resumes at the filter after the one that asked.
+- A **gRPC-web call went past `grpc_guard` entirely.** The guard matched
+  `application/grpc` only, and the gRPC-web translation happens after the filter
+  chain -- so the upstream got the identical frames with no bounds and no content
+  rules applied. One content-type header was the whole bypass, and it is the one
+  a browser client sends. `grpc-web`, `grpc-web-text` and any `;` parameter on
+  the header are now inspected, the text variants base64-decoded before the walk.
+- The `header:`, `cookie:` and `jwt:` **rate-limit keys named a bucket with the
+  credential itself.** Bucket names are not private: they go to the cluster in
+  the gossip, into the shared store for `distributed: exact`, into the quota
+  report, the `rate_limited` event and `xproxyctl quota`. The key is now a
+  truncated SHA-256 of the value, which tells one bucket from another, which is
+  all a key has to do.
+
+**The databases.**
+
+- **T-SQL needs no terminator between statements, and the splitter cut only on
+  `;`.** `PRINT 'ok' DROP TABLE users` was one statement to the relay and two to
+  SQL Server: classified by its leading PRINT as a read, it passed `read_only`,
+  passed an allow-list of `select`, and was forwarded for the server to run both
+  halves -- while `max_statements` counted separators the dialect does not
+  require. Behind a non-writing lead the classifier now finds the juxtaposed
+  statement and hands it to the policy as its own, counted by the bound.
+- **MySQL requires whitespace after `--`** for it to open a comment, and the
+  lexer did not, so `SELECT 1--1; DROP TABLE t` hid its second statement from a
+  relay that read a comment where the server read arithmetic.
+- **A stripped capability came back in the client's login.** The MySQL relay
+  cleared `CLIENT_LOCAL_FILES` from the server's greeting, but the server reads
+  the client's own capability field rather than intersecting it with the greeting
+  it sent -- so a peer that set the bit anyway could be asked by the server for a
+  file from its own host. The denied bits are now cleared from the forwarded
+  login as well, and the edit is recorded as `mysql_capabilities_overridden`.
+
+**The desktop gateway.**
+
+- **`SecNone` was offered inside an anonymous-TLS tunnel** even where the
+  listener had a password, so a client that chose the VeNCrypt or TLS variant
+  skipped the password the gate exists to ask for.
+- **The grant's target was not checked against the endpoint dialled.** A
+  time-boxed grant for one desktop admitted a session to any endpoint in the
+  pool the balancer happened to pick.
+- **A pixel format took effect on the server before the reader applied it**, so
+  the reader measured one rectangle with the old bytes-per-pixel and lost framing
+  for the rest of the session. The format is now applied where a length is
+  derived from it, and a change that cannot be measured is refused.
+
+**The OT kinds.**
+
+- **`monitor_only` forwarded OPC UA writes and method calls.** A write forwarded
+  so that it could be written down is a moved actuator, which is the one thing a
+  trial of a policy may not do; those decisions are now hard, as the
+  documentation already said.
+- **Shadow mode forwarded the BACnet link layer**: BBMD registration, the
+  Secure-BACnet functions and the security messages. Joining a device to a
+  distribution list is not a trial of anything either.
+- **SNMP paired an answer with a request by identifier alone**, so any host that
+  could reach the relay's ephemeral port could answer for the agent. The agent's
+  address is now part of the match, and a mismatch leaves the exchange standing
+  rather than consuming it.
+- **NTS-KE applied the server-name list after the exchange had completed.** The
+  name is in the SNI the moment the handshake finishes, so the list is now
+  applied before the cookies are issued.
+
+**Everywhere else.**
+
+- An **AMQP field table with a repeated key** was read last-wins by the relay and
+  first-wins by the broker, so the policy judged one `alternate-exchange` and the
+  broker used another. A repeated key is now refused on the name, before the
+  value's type is known.
+- The **replay renderer interpolated recorded text into a `<script>` block**
+  with Go's `%q` only, which does not escape `<`, so a recorded session
+  containing `</script>` closed it. Stored XSS in the page an operator opens to
+  review a session.
+- **`config dump --redacted` and the diff left three credential fields in**:
+  `headers`, `token` and `header_value`. They are now redacted in the node tree
+  rather than by key name in the text, so a value that happens to look like YAML
+  cannot survive the pass.
+
 ### Tests (the policies that were only ever driven end to end)
 
 Coverage work across the components, written as the policies read rather than

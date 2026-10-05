@@ -36,6 +36,19 @@ const maxTableDepth = 8
 // errTableDepth is a table nested past the bound.
 var errTableDepth = errors.New("the field table is nested deeper than this relay reads")
 
+// errDuplicateKey is a field table naming the same key twice.
+//
+// It is refused rather than resolved. A table is read here into a map, so a
+// repeated key resolves to the last instance, while a broker parses the table
+// into an ordered list and resolves a lookup to the first -- RabbitMQ's
+// table_lookup is lists:keysearch, which returns the first match, and it is what
+// both the permission check and the dead-letter routing go through. So a client
+// could name one exchange for this relay's policy to check and another for the
+// broker to route to, in the two arguments that send data somewhere the
+// connection never mentions again: x-dead-letter-exchange and
+// alternate-exchange. Nothing legitimate repeats a key.
+var errDuplicateKey = errors.New("the field table names the same key twice")
+
 // table reads a field table's entries, keeping the ones whose value is
 // text and skipping the rest.
 //
@@ -56,6 +69,7 @@ func (d *dec) table(depth int) map[string]string {
 	d.i += int(n)
 	d.inBit = false
 	out := map[string]string{}
+	seen := map[string]bool{}
 	inner := &dec{b: body}
 	for inner.i < len(body) {
 		name := inner.shortstr()
@@ -63,6 +77,14 @@ func (d *dec) table(depth int) map[string]string {
 			d.fail(inner.err)
 			return nil
 		}
+		if seen[name] {
+			// Refused on the name, before the value's type is known: the
+			// divergence is about which instance a reader takes, and that does
+			// not depend on what the second one holds.
+			d.fail(errDuplicateKey)
+			return nil
+		}
+		seen[name] = true
 		v, text, err := inner.fieldValue(depth + 1)
 		if err != nil {
 			d.fail(err)

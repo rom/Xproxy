@@ -705,15 +705,15 @@ func (p *policy) Request(s Session, c *wire.ServiceCall) Decision {
 	}
 	r := p.match(s, svc)
 	if r != nil && r.action == "deny" {
-		return Decision{Reason: "rule_denied", Detail: svc.String(), Rule: r.name,
-			Comment: r.comment, Status: wire.StatusBadServiceUnsupported}
+		return p.hardenChange(svc, Decision{Reason: "rule_denied", Detail: svc.String(), Rule: r.name,
+			Comment: r.comment, Status: wire.StatusBadServiceUnsupported})
 	}
 	if d := p.serviceAllowed(r, svc); !d.Allow {
-		return d
+		return p.hardenChange(svc, d)
 	}
 	if r == nil && !p.allowByDef {
-		return Decision{Reason: "no_rule", Detail: svc.String(),
-			Status: wire.StatusBadServiceUnsupported}
+		return p.hardenChange(svc, Decision{Reason: "no_rule", Detail: svc.String(),
+			Status: wire.StatusBadServiceUnsupported})
 	}
 	d := allowed()
 	if r != nil {
@@ -848,10 +848,33 @@ func (p *policy) Operations(s Session, svc wire.Service, ops []Operation) Decisi
 	}
 	for _, op := range ops {
 		if d := p.operation(r, op); !d.Allow {
-			return d
+			return p.hardenChange(svc, d)
 		}
 	}
 	return allowed()
+}
+
+// hardenChange makes a refusal hard when the service it refuses would change
+// something, so that the refusal holds in monitor_only and shadow mode.
+//
+// That is the documented contract: monitor_only "evaluates and enforces nothing,
+// except the hard decisions: the client list, a message the relay could not read,
+// the bounds, and every service that changes anything -- because a Write
+// forwarded so it could be written down is a moved actuator." The node,
+// attribute, method and service allow-lists all produced soft refusals, so a
+// Write to a node outside them was counted as a would-be refusal and sent to the
+// server anyway. read_only was hard and so did hold; the allow-lists, which are
+// the normal way an OPC UA policy is written, did not.
+//
+// It is applied where the decision is made rather than where it is acted on,
+// because whether a refusal stands depends on what the service does and only the
+// policy has both in hand. The sibling kinds do the same: mms in decideTarget's
+// caller, s7 in harden.
+func (p *policy) hardenChange(svc wire.Service, d Decision) Decision {
+	if !d.Allow && (svc.Writes() || svc.Control()) {
+		d.Hard = true
+	}
+	return d
 }
 
 // opBound is the operation bound in force: the rule's when it names one, the

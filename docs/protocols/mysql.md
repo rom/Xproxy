@@ -68,11 +68,24 @@ that matters: strip it and the server cannot ask the client for a file, whatever
 the server later decides to do.
 
 Stripping a bit from the greeting is not the whole job, though, and this is the
-detail that makes the capability policy real rather than decorative:
-`COM_SET_OPTION` turns multi-statement support back **on** afterwards. So a
+detail that makes the capability policy real rather than decorative. There are
+two further places the same bit can come back.
+
+`COM_SET_OPTION` turns multi-statement support back **on** afterwards, so a
 denied capability is enforced there as well as in the greeting — otherwise a
 client that never saw `CLIENT_MULTI_STATEMENTS` offered could simply ask for it
 one command later.
+
+And the client's own handshake response carries a capability field that the
+server reads rather than compares with the greeting it sent. A peer that sets
+`CLIENT_LOCAL_FILES` there has it whether or not the edited greeting offered it —
+and this is not only a hostile peer: Go's MySQL driver sets that bit
+unconditionally and gates the feature in its own configuration. So the denied
+bits are cleared from the login the relay forwards too. Cleared rather than
+refused, for the same reason the greeting is rewritten rather than the connection
+dropped; the edit is recorded as `mysql_capabilities_overridden` at `deny` level,
+because a peer whose bits had to be cleared read an edited greeting and overrode
+it.
 
 **Whether the connection may be unencrypted**, with `require_tls`.
 

@@ -144,12 +144,27 @@ type Instances []Instance
 
 // Request runs every instance until one denies.
 func (is Instances) Request(r *http.Request) Verdict {
-	for _, in := range is {
-		if v := in.Request(r); v.Deny {
-			return v
+	v, _ := is.RequestFrom(r, 0)
+	return v
+}
+
+// RequestFrom runs the instances from i onwards until one denies, and returns
+// the index of the one that did.
+//
+// The index is what makes a satisfied challenge resumable. A filter that answers
+// "challenge" has denied, so the chain stops there -- and a caller that treats
+// an already-verified client as admitted has to carry on from the *next* filter
+// rather than past the whole chain. Jumping past it skipped everything behind the
+// challenge-issuing filter, which by default is the WAF, the scanners and any
+// later authorisation filter: an attacker who got himself flagged as abusive was
+// rewarded with an uninspected path to the upstream.
+func (is Instances) RequestFrom(r *http.Request, i int) (Verdict, int) {
+	for ; i < len(is); i++ {
+		if v := is[i].Request(r); v.Deny {
+			return v, i
 		}
 	}
-	return Continue
+	return Continue, len(is)
 }
 
 // Response runs every instance until one denies.

@@ -99,7 +99,12 @@ connection sequence and its two encryption layers, the RFB handshake
 with the vendors’ own security types, NTLM and CredSSP, the QR
 encoder, and the second factors the control plane can now change, and a
 seventh sweeping the sixth's finding classes across the gate kinds
-beside the ones they were found on. Their
+beside the ones they were found on, and an eighth over the whole attack
+surface asking of each control which data a peer governs on the way to
+it -- which found fifteen, in three shapes: a control that ran on one
+path and not its sibling, a policy that read what was offered rather
+than what was claimed, and a decision taken before the thing it decides
+about was known. Their
 findings and resolutions are in the changelog rather than here; this
 document is the phase 3 review and stays what it was.
 

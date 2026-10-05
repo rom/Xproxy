@@ -59,7 +59,88 @@ const RedactedValue = "***"
 // GUI, a dry run pasted into a ticket. The header names stay, so a
 // reviewer still sees which headers a change touches; only the values
 // go. The history keeps Dump.
-func DumpRedacted(c *Config) ([]byte, error) { return Dump(redactHeaders(c)) }
+func DumpRedacted(c *Config) ([]byte, error) {
+	b, err := Dump(redactHeaders(c))
+	if err != nil {
+		return nil, err
+	}
+	return redactSecretKeys(b)
+}
+
+// secretKeys are the configuration keys whose value is a credential rather than
+// a reference to one. They are blanked in a dump wherever they appear, at any
+// depth.
+//
+// Redacting the route header operations by copying the struct was not enough,
+// and could not be: `HeaderOps` is the only thing that copy knew about, while a
+// literal credential also sits in `metrics.otlp.headers`, `logging.otlp.headers`,
+// `logging.siem.headers`, `upstreams[].discovery.headers`, a threat-intel feed's
+// `token` and `header_value`, and the MFA push service's. Several of those have
+// no file-based alternative, so the literal is the only way to write them.
+//
+// This works on the dumped bytes and matches on the key, so a field added later
+// is covered by naming it here rather than by remembering to extend a deep copy.
+var secretKeys = map[string]bool{
+	"headers":      true,
+	"token":        true,
+	"header_value": true,
+}
+
+// redactSecretKeys blanks the value of every secretKeys key in a YAML document.
+//
+// It walks the node tree rather than re-marshalling a generic map, so key order
+// is the order Dump produced -- a diff of two redacted dumps has to be a diff of
+// what changed, not of how a map happened to iterate.
+func redactSecretKeys(b []byte) ([]byte, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(b, &doc); err != nil {
+		return nil, err
+	}
+	redactNode(&doc)
+	out, err := yaml.Marshal(&doc)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func redactNode(n *yaml.Node) {
+	if n.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			k, v := n.Content[i], n.Content[i+1]
+			if secretKeys[k.Value] {
+				blank(v)
+				continue
+			}
+			redactNode(v)
+		}
+		return
+	}
+	for _, c := range n.Content {
+		redactNode(c)
+	}
+}
+
+// blank replaces a value with RedactedValue, keeping the shape: a map of
+// headers stays a map with the same names, because which header a collector
+// expects is not the secret and a reviewer needs to see it.
+func blank(v *yaml.Node) {
+	switch v.Kind {
+	case yaml.ScalarNode:
+		if v.Value == "" {
+			return
+		}
+		v.SetString(RedactedValue)
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(v.Content); i += 2 {
+			blank(v.Content[i+1])
+		}
+	default:
+		for _, c := range v.Content {
+			blank(c)
+		}
+	}
+}
 
 // redactHeaders copies c with the header operation values replaced. Only
 // the routes slice is copied, which is the only place HeaderOps live.

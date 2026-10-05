@@ -779,3 +779,40 @@ func TestTheTunnelBoundsAHandshakePacket(t *testing.T) {
 		t.Fatalf("%v, want ErrTooLong", err)
 	}
 }
+
+// T-SQL needs no terminator between statements, so a batch hides a second
+// statement behind an allowed first one with nothing but a space. Under
+// read_only the leading PRINT is a read the policy permits, and the relay used
+// to forward the whole batch for the server to run both halves -- which is
+// read_only, allow_statements, deny_statements and max_statements all bypassed
+// by one character.
+func TestAStatementJuxtaposedBehindAnAllowedOneIsRefused(t *testing.T) {
+	s := startFake(t, &fakeServer{encryption: wire.EncryptOff})
+	_, addr := relayFor(t, base+"        read_only: true\n", s.addr())
+
+	cl := dial(t, addr, wire.EncryptOff)
+	cl.login(t, "app", "sales", "MyApp", true, false)
+	// The cover on its own is a read, and it goes.
+	cl.batch(t, "PRINT 'ok'")
+	for _, sql := range []string{
+		"PRINT 'ok' DROP TABLE users",
+		"SELECT 1 DELETE FROM payroll",
+		"SET NOCOUNT ON EXEC xp_cmdshell 'whoami'",
+		// Behind a semicolon as well, so the part that carries it is found
+		// wherever it is in the batch.
+		"SELECT 1; PRINT 'ok' TRUNCATE TABLE payroll",
+	} {
+		p := cl.batch(t, sql)
+		if n, ok := refusedWith(p); !ok || n != wire.PermissionDenied {
+			t.Fatalf("%q: answer was %v %d", sql, ok, n)
+		}
+	}
+
+	_, procs, stmts := s.saw()
+	if len(procs) != 0 {
+		t.Fatalf("procedures reached the server: %v", procs)
+	}
+	if len(stmts) != 1 || stmts[0] != "PRINT 'ok'" {
+		t.Fatalf("the server saw %v", stmts)
+	}
+}

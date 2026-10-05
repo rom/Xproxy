@@ -409,14 +409,17 @@ func (t *server) sendDiscovery(agent net.PacketConn, addr net.Addr, requestID in
 // It is shared by the ordinary forward and by the originating one. The
 // originating path needs it *before* the message is sent, because the first
 // thing sent may be a discovery whose report has to find this request waiting.
-func (t *server) hold(m *wire.Message, p *peer, d Decision, asked int) bool {
+// hold records an outstanding question. agent is the address it is being asked
+// of, and an answer from anywhere else is not this exchange's; an invalid
+// address means there is nothing to bind to, which is the case on a stream.
+func (t *server) hold(m *wire.Message, p *peer, d Decision, asked int, agent netip.Addr) bool {
 	if m.PDU == nil || m.PDU.Type.Notification() {
 		return true
 	}
 	ip := p.ip
 	e := &exchange{client: ip, from: p.from, peer: p, requestID: m.PDU.RequestID,
 		asked: asked, rule: d.Rule, version: m.Version, community: m.Community,
-		tsm: echoOf(m)}
+		tsm: echoOf(m), agent: agent}
 	if t.orig != nil && t.upgrade == wire.V3 {
 		e.pdu = m.PDU.Raw
 	}

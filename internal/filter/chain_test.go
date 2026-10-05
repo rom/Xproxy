@@ -268,3 +268,45 @@ func TestIdentityAny(t *testing.T) {
 	// Setting on a context without an identity is a no-op, not a panic.
 	SetIdentity(context.Background(), "jwt", "mallory")
 }
+
+// RequestFrom names the filter that denied, so a caller can carry on from the
+// next one rather than leaving the chain.
+//
+// This is what makes a satisfied challenge resumable. A filter that answers
+// "challenge" has denied, so the chain stops at it; the data plane treats an
+// already-verified client as admitted and has to continue from there. Leaving the
+// chain entirely skipped every filter behind the challenge-issuing one, which by
+// default is the WAF, the content scanners and any later authorisation filter --
+// so provoking a challenge was a way past all of them.
+func TestRequestFromResumesAfterTheFilterThatDenied(t *testing.T) {
+	var events []string
+	first := &recorder{name: "first", events: &events}
+	middle := &recorder{name: "middle", denyReq: true, events: &events}
+	last := &recorder{name: "last", denyReq: true, events: &events}
+	is := Instances{first.Begin(context.Background(), nil),
+		middle.Begin(context.Background(), nil), last.Begin(context.Background(), nil)}
+	r := httptest.NewRequest("GET", "/", nil)
+
+	v, at := is.RequestFrom(r, 0)
+	if !v.Deny || v.Reason != "middle" || at != 1 {
+		t.Fatalf("first pass gave %+v at %d, want middle at 1", v, at)
+	}
+	// Resuming past it reaches the filter behind it, which is the whole point:
+	// the one that would otherwise never be asked.
+	v, at = is.RequestFrom(r, at+1)
+	if !v.Deny || v.Reason != "last" || at != 2 {
+		t.Fatalf("resumed pass gave %+v at %d, want last at 2", v, at)
+	}
+	// And a chain nobody denies reports the end rather than a filter.
+	clean := Instances{first.Begin(context.Background(), nil)}
+	if v, at := clean.RequestFrom(r, 0); v.Deny || at != len(clean) {
+		t.Errorf("a clean chain gave %+v at %d", v, at)
+	}
+	// Request is still the whole chain from the start.
+	if v := is.Request(r); !v.Deny || v.Reason != "middle" {
+		t.Errorf("Request gave %+v, want the first deny", v)
+	}
+	if !strings.Contains(strings.Join(events, " "), "last:request") {
+		t.Errorf("the filter behind the denier was never asked: %v", events)
+	}
+}

@@ -89,7 +89,41 @@ const (
 	TSQL
 )
 
-func (d Dialect) hashComments() bool     { return d == MySQL }
+func (d Dialect) hashComments() bool { return d == MySQL }
+
+// dashNeedsSpace says the dialect requires whitespace after `--` for it to open
+// a comment.
+//
+// MySQL and MariaDB do: the second dash must be followed by whitespace or a
+// control character, so `a--b` is `a - (-b)` and `SELECT 1--1` is arithmetic.
+// PostgreSQL and T-SQL treat a bare `--` as a comment always. Reading `--1` as a
+// comment where the server does not is how a `;` and the statement behind it
+// became invisible to both the classifier and the statement bound.
+func (d Dialect) dashNeedsSpace() bool { return d == MySQL }
+
+// opensLineComment reports a line comment starting at i.
+func opensLineComment(d Dialect, text string, i int) bool {
+	if d.hashComments() && text[i] == '#' {
+		return true
+	}
+	if text[i] != '-' || i+1 >= len(text) || text[i+1] != '-' {
+		return false
+	}
+	if !d.dashNeedsSpace() {
+		return true
+	}
+	// End of input ends the statement, so the two dashes open a comment over
+	// nothing; anything else has to be whitespace or a control character.
+	if i+2 >= len(text) {
+		return true
+	}
+	switch c := text[i+2]; c {
+	case ' ', '\t', '\n', '\r', '\v', '\f':
+		return true
+	default:
+		return c < 0x20
+	}
+}
 func (d Dialect) nestsComments() bool    { return d == PostgreSQL || d == TSQL }
 func (d Dialect) dollarQuotes() bool     { return d == PostgreSQL }
 func (d Dialect) backticks() bool        { return d == MySQL }
@@ -218,10 +252,18 @@ func Statements(d Dialect, text string, max int) (out []Statement, ok bool) {
 		return nil, false
 	}
 	for _, p := range parts {
-		out = append(out, classify(d, p))
+		st, extra := classify(d, p)
+		out = append(out, st)
+		out = append(out, extra...)
 	}
 	if len(out) == 0 {
 		out = append(out, Statement{Kind: KindEmpty})
+	}
+	// The bound is checked again because a juxtaposed T-SQL batch holds more
+	// statements than it holds semicolons, and a bound that counted only the
+	// separators would be a bound the dialect ignores.
+	if max > 0 && len(out) > max {
+		return nil, false
 	}
 	return out, true
 }
@@ -235,8 +277,7 @@ func split(d Dialect, text string, max int) ([]string, bool) {
 	i := 0
 	for i < len(text) {
 		switch {
-		case text[i] == '-' && i+1 < len(text) && text[i+1] == '-',
-			d.hashComments() && text[i] == '#':
+		case opensLineComment(d, text, i):
 			// Line comment to the end of the line, or the end of the text.
 			j := strings.IndexByte(text[i:], '\n')
 			if j < 0 {
@@ -417,8 +458,7 @@ func strip(d Dialect, text string) string {
 	i := 0
 	for i < len(text) {
 		switch {
-		case text[i] == '-' && i+1 < len(text) && text[i+1] == '-',
-			d.hashComments() && text[i] == '#':
+		case opensLineComment(d, text, i):
 			j := strings.IndexByte(text[i:], '\n')
 			if j < 0 {
 				return b.String()
@@ -500,6 +540,15 @@ func words(d Dialect, stripped string, max int) []string {
 			i = j
 		case c == '\'' || c == '"' || (d.backticks() && c == '`'):
 			n, ok := quoted(d, stripped, i, c)
+			if !ok {
+				return out
+			}
+			i = n
+		case d.brackets() && c == '[':
+			// T-SQL quotes an identifier in brackets. A bracketed word is an
+			// identifier and can never be a keyword, so the region is skipped
+			// rather than lexed: `SELECT [drop] FROM t` names a column.
+			n, ok := quoted(d, stripped, i, ']')
 			if !ok {
 				return out
 			}
@@ -618,14 +667,102 @@ var writingKinds = map[Kind]bool{
 	KindUnknown: true,
 }
 
-// classify names one statement.
-func classify(d Dialect, text string) Statement {
-	stripped := strip(d, text)
-	w := words(d, stripped, 24)
-	if len(w) == 0 {
-		return Statement{Kind: KindEmpty}
+// tsqlJuxtaposed is the set of keywords that can begin a second T-SQL
+// statement which changes something, and which an attacker hides behind a
+// harmless-looking first one.
+//
+// T-SQL needs no statement terminator: statements in a batch may be separated
+// by whitespace alone, which is why `max_statements` on this dialect counts
+// something the server does not. `split` divides only on `;`, so
+// `PRINT 'ok' DROP TABLE users` arrived as one "statement", was classified by
+// its leading PRINT as a non-writing select, and the batch was forwarded
+// verbatim for SQL Server to run both halves. read_only, allow_statements,
+// deny_statements and max_statements were all advisory for any client that
+// could get one allowed batch through.
+//
+// Every word here is a reserved keyword in T-SQL (THROW and RAISERROR are the
+// two the documentation calls future/non-reserved, and neither is a plausible
+// unquoted identifier), so none of them can appear in a select, set or print
+// as a column, table or alias name: an unquoted `update` is a syntax error on
+// this dialect, and a quoted or bracketed one never reaches the word list. The
+// kind is taken from the dialect's own tables rather than named again here, so
+// a juxtaposed DROP is judged as the same KindDDL a leading DROP is; a word
+// those tables do not know is KindUnknown, which every policy refuses.
+var tsqlJuxtaposed = map[string]bool{
+	"INSERT": true, "UPDATE": true, "DELETE": true, "MERGE": true,
+	"TRUNCATE": true, "DROP": true, "CREATE": true, "ALTER": true,
+	"GRANT": true, "REVOKE": true, "DENY": true,
+	"BACKUP": true, "RESTORE": true, "DBCC": true, "BULK": true,
+	"EXEC": true, "EXECUTE": true, "RECONFIGURE": true,
+	"SHUTDOWN": true, "KILL": true, "WAITFOR": true,
+	"RAISERROR": true, "THROW": true,
+}
+
+// tsqlCover are the leading kinds whose own syntax cannot contain one of those
+// keywords, so a second one at top level is a second statement.
+//
+// The scan is restricted to these because they are the covers the attack needs:
+// a non-writing lead that `read_only` or an allow-list permits. From any other
+// lead the keyword may belong to the first statement -- `ALTER TABLE t DROP
+// COLUMN c`, `CREATE PROCEDURE p AS INSERT ...`, `GRANT ... WITH GRANT OPTION`,
+// `INSERT INTO t SELECT ...` -- and reporting those as extra statements would
+// refuse ordinary SQL. A lead outside the covers is already a writing kind the
+// policy judges on its own merits, so nothing is lost by not looking inside it.
+var tsqlCover = map[Kind]bool{
+	KindSelect: true, KindSet: true, KindShow: true, KindEmpty: true,
+}
+
+// The word-list bounds. classifyWords is all the leading-keyword rules need;
+// juxtaposedWords is the whole statement, bounded so that the work stays
+// proportional to the message the peer sent.
+const (
+	classifyWords   = 24
+	juxtaposedWords = 4096
+)
+
+// juxtaposed reports the statements hidden behind a T-SQL cover.
+//
+// It is deliberately narrow: anything it does not recognise is left to the
+// leading keyword as before, which is the pre-existing behaviour rather than a
+// new gap. Anything it does recognise is handed back as a statement of its own,
+// so the decision stays the policy's -- an operator who really does allow DDL
+// still gets it -- and the statement bound counts it.
+func juxtaposed(d Dialect, lead Kind, w []string) []Statement {
+	if d != TSQL || !tsqlCover[lead] {
+		return nil
 	}
-	st := Statement{Verb: Clip(w[0])}
+	var out []Statement
+	for i := 1; i < len(w); i++ {
+		if !tsqlJuxtaposed[w[i]] {
+			continue
+		}
+		if w[i] == "UPDATE" && w[i-1] == "FOR" {
+			// `SELECT ... FOR UPDATE` is a locking clause of the select. It is
+			// not T-SQL -- the dialect spells it `WITH (UPDLOCK)` -- but a
+			// client that sends it is asking for a read, not a write.
+			continue
+		}
+		kd, ok := kindOfWord(d, w[i])
+		if !ok {
+			kd = KindUnknown
+		}
+		out = append(out, Statement{Kind: kd, Verb: Clip(w[i]), Writes: writingKinds[kd]})
+	}
+	return out
+}
+
+// classify names one statement, and the statements juxtaposed behind it.
+//
+// extra is non-empty only on T-SQL, where a batch needs no separator between
+// statements; see juxtaposed. On every other dialect a statement is what the
+// semicolons said it was.
+func classify(d Dialect, text string) (st Statement, extra []Statement) {
+	stripped := strip(d, text)
+	w := words(d, stripped, classifyWords)
+	if len(w) == 0 {
+		return Statement{Kind: KindEmpty}, nil
+	}
+	st = Statement{Verb: Clip(w[0])}
 	switch w[0] {
 	case "WITH":
 		// A common table expression may end in a write. Look at top level for
@@ -670,7 +807,7 @@ func classify(d Dialect, text string) Statement {
 	default:
 		kd, ok := kindOfWord(d, w[0])
 		if !ok {
-			return Statement{Kind: KindUnknown, Verb: st.Verb, Writes: true}
+			return Statement{Kind: KindUnknown, Verb: st.Verb, Writes: true}, nil
 		}
 		st.Kind = kd
 	}
@@ -678,7 +815,14 @@ func classify(d Dialect, text string) Statement {
 		st.Copy = copyTarget(w)
 	}
 	st.Writes = writingKinds[st.Kind]
-	return st
+	if d == TSQL && tsqlCover[st.Kind] {
+		// Only this case needs to see the whole statement, and it is lexed
+		// again rather than widening the list above: the WITH and EXPLAIN
+		// scans look for any writing keyword, and a longer list would hand
+		// them a column named `comment` thirty words in.
+		extra = juxtaposed(d, st.Kind, words(d, stripped, juxtaposedWords))
+	}
+	return st, extra
 }
 
 // copyTarget says which COPY this is.

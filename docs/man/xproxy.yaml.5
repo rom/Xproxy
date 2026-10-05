@@ -386,9 +386,9 @@ T}
 T{
 \fBbacnet\fR
 T}	T{
-every rule: the service,\: the object type and instance,\: the property and the command priority;\: the link\-layer function list
+every rule: the service,\: the object type and instance,\: the property and the command priority;\: the ordinary link\-layer function list
 T}	T{
-malformed BVLC and APDU,\: the message bound,\: foreign\-device registration,\: rate limits,\: the client list,\: bans
+malformed BVLC and APDU,\: the message bound,\: foreign\-device registration,\: the BBMD and Secure\-BACnet functions and the security messages \-\- forwarding one is not a trial,\: it is joining a device to a distribution list or handing it a key exchange \-\- rate limits,\: the client list,\: bans
 T}
 T{
 \fBtcp\fR,\: \fBudp\fR,\: \fBntske\fR
@@ -20661,14 +20661,14 @@ T}
 T{
 \fBheader:\:<Name>\fR
 T}	T{
-first value of the header (256 bytes)
+first value of the header
 T}	T{
 client address
 T}
 T{
 \fBcookie:\:<name>\fR
 T}	T{
-value of the cookie (256 bytes),\: a session or device identifier
+value of the cookie,\: a session or device identifier
 T}	T{
 client address
 T}
@@ -20694,6 +20694,8 @@ T}	T{
 client address
 T}
 .TE
+.PP
+For the keys whose value is a credential or a session identifier \-\- \fBheader:<Name>\fR, \fBcookie:<name>\fR, \fBjwt:<claim>\fR \-\- the bucket is named by a truncated SHA\-256 of the value rather than the value itself. The key only has to tell one bucket from another, and bucket names are reported to the cluster, kept in a shared store, named in a quota line and printed by \fBxproxyctl\fR, so a key that carried the value would spread a session cookie or a bearer token\(aqs claim across every one of those.
 .PP
 The fallback keeps a limit from being avoided by omitting the identifier; rotating it still buys fresh buckets, so pair an identifier key with a \fBclient_ip\fR or \fBclient_net\fR policy on the same route. An \fBidentity\fR key cannot be rotated within one authenticated principal: the value is what the \fBjwt\fR, \fBoidc\fR, \fBapi_key\fR or \fBbasic\fR filter verified, so a per\-account or per\-API\-key limit holds regardless of the headers a client sends. Attach such a policy to a route that also runs the matching auth filter (or the \fBjwt\fR route setting); a request that fails authentication is refused by the filter before the limiter.
 .PP
@@ -23050,7 +23052,7 @@ list
 T}	T{
 \fB[]\fR (all)
 T}	T{
-Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBflow\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBforward_\:host_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBtcp_\:denied\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBdhcp_\:denied\fR,\: \fBdhcp6_\:denied\fR,\: \fBcoap_\:denied\fR,\: \fBopcua_\:denied\fR,\: \fBmms_\:denied\fR,\: \fBpostgres_\:denied\fR,\: \fBmysql_\:denied\fR,\: \fBtds_\:denied\fR,\: \fBredis_\:denied\fR,\: \fBbacnet_\:denied\fR,\: \fBamqp_\:denied\fR,\: \fBs7_\:denied\fR,\: \fBradius_\:denied\fR,\: \fBtacacs_\:denied\fR,\: \fBkkdcp_\:denied\fR,\: \fBimap_\:denied\fR,\: \fBimap_\:auth_\:failed\fR,\: \fBimap_\:anomaly\fR,\: \fBpop3_\:denied\fR,\: \fBpop3_\:auth_\:failed\fR,\: \fBpop3_\:anomaly\fR,\: \fBsse_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fBdns_\:denied\fR,\: \fBdns_\:threat_\:intel\fR,\: \fBdns_\:deceived\fR,\: \fBdns_\:tripwire\fR,\: \fBtelnet_\:tripwire\fR,\: \fBssh_\:tripwire\fR,\: \fBmodbus_\:tripwire\fR,\: \fBiec104_\:tripwire\fR,\: \fBs7_\:tripwire\fR,\: \fBredis_\:tripwire\fR,\: \fBmysql_\:tripwire\fR,\: \fBpostgres_\:tripwire\fR,\: \fByara\fR
+Deny categories that count: \fBacl\fR,\: \fBrate_\:limit\fR,\: \fBwaf\fR,\: \fBbody_\:size\fR,\: \fBuri_\:length\fR,\: \fBbad_\:host\fR,\: \fBno_\:route\fR,\: \fBwebsocket\fR,\: \fBconcurrency\fR,\: \fBchallenge\fR,\: \fBjwt\fR,\: \fBicap\fR,\: \fBgeo\fR,\: \fBtcp_\:no_\:route\fR,\: \fBforward_\:denied\fR,\: \fBforward_\:auth\fR,\: \fBhoneypot\fR,\: \fBdns_\:blocked\fR,\: \fBdns_\:bogus\fR,\: \fBdns_\:rpz\fR,\: \fBhoneytoken\fR,\: \fBaccount_\:abuse\fR,\: \fBapi_\:abuse\fR,\: \fBflow\fR,\: \fBthreat_\:intel\fR,\: \fBscim\fR,\: \fBsmtp_\:denied\fR,\: \fBmqtt_\:denied\fR,\: \fBssh_\:denied\fR,\: \fBftp_\:denied\fR,\: \fBsyslog_\:denied\fR,\: \fBtelnet_\:denied\fR,\: \fBvnc_\:denied\fR,\: \fBrdp_\:denied\fR,\: \fBforward_\:sni_\:mismatch\fR,\: \fBforward_\:host_\:mismatch\fR,\: \fBdns_\:tunnel\fR,\: \fBdns_\:answer_\:denied\fR,\: \fBsftp_\:icap\fR,\: \fBtcp_\:denied\fR,\: \fBudp_\:denied\fR,\: \fBmodbus_\:denied\fR,\: \fBiec104_\:denied\fR,\: \fBsnmp_\:denied\fR,\: \fBldap_\:denied\fR,\: \fBtftp_\:denied\fR,\: \fBdhcp_\:denied\fR,\: \fBdhcp6_\:denied\fR,\: \fBcoap_\:denied\fR,\: \fBopcua_\:denied\fR,\: \fBmms_\:denied\fR,\: \fBpostgres_\:denied\fR,\: \fBmysql_\:denied\fR,\: \fBmysql_\:capabilities_\:overridden\fR,\: \fBtds_\:denied\fR,\: \fBredis_\:denied\fR,\: \fBbacnet_\:denied\fR,\: \fBamqp_\:denied\fR,\: \fBs7_\:denied\fR,\: \fBradius_\:denied\fR,\: \fBtacacs_\:denied\fR,\: \fBkkdcp_\:denied\fR,\: \fBimap_\:denied\fR,\: \fBimap_\:auth_\:failed\fR,\: \fBimap_\:anomaly\fR,\: \fBpop3_\:denied\fR,\: \fBpop3_\:auth_\:failed\fR,\: \fBpop3_\:anomaly\fR,\: \fBsse_\:denied\fR,\: \fBntp_\:denied\fR,\: \fBntske_\:denied\fR,\: \fBdns_\:denied\fR,\: \fBdns_\:threat_\:intel\fR,\: \fBdns_\:deceived\fR,\: \fBdns_\:tripwire\fR,\: \fBtelnet_\:tripwire\fR,\: \fBssh_\:tripwire\fR,\: \fBmodbus_\:tripwire\fR,\: \fBiec104_\:tripwire\fR,\: \fBs7_\:tripwire\fR,\: \fBredis_\:tripwire\fR,\: \fBmysql_\:tripwire\fR,\: \fBpostgres_\:tripwire\fR,\: \fByara\fR
 T}
 T{
 \fBthreshold\fR
@@ -28506,6 +28508,8 @@ T}	T{
 Kind specific;\: unknown keys are rejected
 T}
 .TE
+.PP
+A filter that asks for a challenge (\fBaction: challenge\fR, an \fBaccount_guard\fR step, a \fBbot_score\fR verdict) stops the chain only until the challenge is satisfied. A client that already carries a cookie good for the tier the filter asked for does not get the page again \-\- and the chain then resumes \fBat the filter after the one that asked\fR, not at the start and not at the backend. It matters because a cookie is cheap once: a client that passes one proof of work would otherwise satisfy the first challenging filter and skip every filter behind it, so one solved challenge would buy a pass on the \fBopenapi\fR, \fBgraphql\fR, \fBgrpc_guard\fR and \fBupload_guard\fR instances further down the route.
 .SS "Kind \fBheader_guard\fR"
 .PP
 Requires or denies requests by header patterns (RE2 syntax).
@@ -31524,6 +31528,8 @@ Reads gRPC messages rather than passing them through. A proxy that routes gRPC b
 .PP
 No schema is used, deliberately. A schema has to be kept in step with the service, and a check that is only as current as its schema is a check that quietly stops applying the week somebody adds a field. The protobuf wire format carries the field number and the wire type, which is enough for every bound here.
 .PP
+\fBgRPC\-web counts as gRPC.\fR The filter inspects \fBapplication/grpc\fR, \fBapplication/grpc+proto\fR, \fBapplication/grpc\-web\fR, \fBgrpc\-web+proto\fR, \fBgrpc\-web\-text\fR and \fBgrpc\-web\-text+proto\fR alike, and ignores any \fB;\fR\-separated parameter on the header. It has to: a route with \fBgrpc.web: true\fR translates the request \fIafter\fR the filter chain, so the upstream receives plain gRPC either way, and a guard that matched only \fBapplication/grpc\fR would have let a gRPC\-web request through with none of these bounds applied \-\- one content\-type header as the whole bypass. The text variants are base64, so the body is decoded before it is walked and forwarded exactly as the client sent it; a chunk that will not decode ends the scan rather than being guessed at.
+.PP
 .TS
 allbox;
 lbw(1.1i) lbw(0.7i) lbw(0.8i) lbx
@@ -33506,6 +33512,8 @@ Two commands are subtler and are why a capability policy alone is not enough. \f
 .PP
 \fBThe relay rewrites the server\(aqs greeting.\fR MySQL\(aqs handshake runs the opposite way round from PostgreSQL\(aqs: the server speaks first and advertises its capabilities, and the client answers. So the relay reads the greeting, clears the bits \fBdeny_capabilities\fR names, and forwards the edited one \-\- a client that never sees \fBCLIENT_LOCAL_FILES\fR offered cannot negotiate it, so the server can never ask that client for a file, \fBand the application still works\fR. That is the same move the tftp kind makes with RFC 7440\(aqs window: rewrite rather than refuse, because a control that breaks every application on a segment is a control somebody switches off. The strip is logged as an \fBalert\fR rather than a refusal, since nothing was denied.
 .PP
+\fBAnd it rewrites the client\(aqs answer.\fR Editing the greeting only works on a cooperative driver. The server decides what a connection may do by reading the capability field of the handshake \fIresponse\fR, not by intersecting it with the greeting it sent, so a peer that sets \fBCLIENT_LOCAL_FILES\fR regardless has it \-\- and Go\(aqs own MySQL driver sets that bit unconditionally whatever the greeting said. So the relay clears the denied bits from the login it forwards too, which is what makes the server\(aqs answer match the relay\(aqs decision rather than the peer\(aqs request. A login that had to be edited is logged as \fBmysql_capabilities_overridden\fR at \fBdeny\fR level and observed by the ban list: nothing was refused, but a peer that overrode an edited greeting is a peer that built its own handshake response.
+.PP
 .RS 4
 .nf
 .ft CR
@@ -33653,7 +33661,7 @@ list
 T}	T{
 \fB[local_\:files,\: multi_\:statements,\: compress]\fR
 T}	T{
-Bits stripped from the server\(aqs greeting. \fBssl\fR \fBcannot be named\fR: stripping it would perform the downgrade this kind exists to prevent
+Bits stripped from the server\(aqs greeting \fBand cleared from the client\(aqs login\fR,\: so a peer that claims one anyway does not get it. \fBssl\fR \fBcannot be named\fR: stripping it would perform the downgrade this kind exists to prevent
 T}
 T{
 \fBread_\:only\fR
@@ -34715,6 +34723,8 @@ T}
 .PP
 \fBThe statement an application runs is not a statement.\fR Every client library that uses parameters sends \fBsp_executesql\fR with the SQL in a parameter, so a relay that classified only \fBSQLBATCH\fR would be inspecting the \fBSET\fR statements a driver emits on connect and nothing an application ever runs. The relay reads that one parameter \-\- and only that one, on the six procedures whose documented signature has a statement in it, because the rest are the caller\(aqs data and a relay that held them would put one in a log line \-\- and applies the same statement policy to it as to a batch. A dynamic\-SQL call whose statement it cannot read is refused: it is the one message on this protocol that carries arbitrary SQL.
 .PP
+\fBT\-SQL needs no terminator between statements, so a statement hides behind one.\fR \fBPRINT \(aqok\(aq DROP TABLE users\fR is one batch holding two statements, with nothing but a space between them \-\- and a reader that divided a batch on semicolons alone saw a single statement led by \fBPRINT\fR, classified it as a non\-writing read, and forwarded the whole thing for the server to run both halves. \fBread_only\fR, \fBallow_statements\fR, \fBdeny_statements\fR and \fBmax_statements\fR were all bypassed by one character. So on this dialect the classifier also looks, inside a batch whose leading statement is a read (\fBSELECT\fR, \fBSET\fR, \fBPRINT\fR, \fBGO\fR), for a keyword that can only begin a statement of its own: \fBINSERT\fR, \fBUPDATE\fR, \fBDELETE\fR, \fBMERGE\fR, the DDL words, \fBGRANT\fR/\fBREVOKE\fR/\fBDENY\fR, \fBBACKUP\fR/\fBRESTORE\fR, \fBEXEC\fR, \fBDBCC\fR, \fBKILL\fR, \fBSHUTDOWN\fR and their neighbours. Each one found is handed to the policy as a statement in its own right \-\- so an operator who really does allow DDL still gets it \-\- and \fBmax_statements\fR counts it. The scan is deliberately narrow: every word it looks for is reserved in T\-SQL, so none of them can be an unquoted column or table name, and a bracketed or quoted one (\fBSELECT [drop] FROM t\fR) is an identifier the scan never sees. Starting from a lead that is \fInot\fR a read the scan does not run at all, because \fBALTER TABLE t DROP COLUMN c\fR and \fBCREATE PROCEDURE p AS INSERT ...\fR are single statements whose own syntax holds those words.
+.PP
 One structural oddity, which needs no configuration but explains the code: \fBthe TLS handshake runs inside TDS packets and then stops.\fR For the length of the handshake TDS wraps TLS; afterwards TLS wraps TDS. The nesting inverts once, part way through a connection.
 .PP
 .RS 4
@@ -34881,7 +34891,7 @@ int
 T}	T{
 \fB1\fR
 T}	T{
-Statements per batch. T\-SQL separates statements with whitespace,\: so a batch carrying several is ordinary \-\- which is why the bound belongs here rather than in a capability flag as it does on MySQL
+Statements per batch. T\-SQL separates statements with whitespace,\: so a batch carrying several is ordinary \-\- which is why the bound belongs here rather than in a capability flag as it does on MySQL. It counts the statements the classifier found,\: not the semicolons,\: so a second statement juxtaposed behind the first counts towards it
 T}
 T{
 \fBmax_\:statement_\:bytes\fR

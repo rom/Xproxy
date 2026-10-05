@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -73,11 +74,26 @@ func newPixelPolicy(c *config.VNCListener) pixelPolicy {
 // pixel format the desktop's leg is being read in, and whether the
 // client has asked for a picture yet.
 type pixels struct {
-	// format carries a client's SetPixelFormat to the pump reading the
-	// desktop. One slot: the only format change this gateway allows is
-	// the one before the first update is asked for, so there is never a
-	// second in flight.
-	format chan [16]byte
+	// mu guards pf and pfSet, which carry a client's SetPixelFormat across to
+	// the goroutine reading the desktop.
+	//
+	// The ordering is what matters, and it is the reason this is a guarded value
+	// rather than a channel: the format is stored, then the message is
+	// forwarded, and the reader takes the stored value at the point it derives a
+	// length from it. A channel drained between messages took the change one
+	// message too late -- the reader was already blocked on the socket when it
+	// arrived, because a VNC server says nothing after ServerInit until a
+	// picture is asked for -- so the first rectangle of the new format was sized
+	// with the bytes per pixel of the old one and the over-read swallowed
+	// whatever the desktop sent next.
+	mu    sync.Mutex
+	pf    [16]byte
+	pfSet bool
+	// changed marks a format change already made. A second one is refused
+	// rather than dropped: one reader cannot be in two formats, and a silent
+	// drop leaves this gateway framing in one while the desktop answers in
+	// another.
+	changed atomic.Bool
 	// requested marks the first framebuffer update request. After it, a
 	// pixel format change has no synchronisation point in RFB -- there
 	// is no message that says "the next rectangle is in the new
@@ -86,7 +102,25 @@ type pixels struct {
 	requested atomic.Bool
 }
 
-func newPixels() *pixels { return &pixels{format: make(chan [16]byte, 1)} }
+func newPixels() *pixels { return &pixels{} }
+
+// store records a format change for the desktop's reader to take.
+func (p *pixels) store(pf [16]byte) {
+	p.mu.Lock()
+	p.pf, p.pfSet = pf, true
+	p.mu.Unlock()
+}
+
+// take is the reader's side: the format if one is waiting, and false otherwise.
+func (p *pixels) take() ([16]byte, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.pfSet {
+		return [16]byte{}, false
+	}
+	p.pfSet = false
+	return p.pf, true
+}
 
 // deadline puts the idle timeout on a leg before each message.
 func (se *session) deadline(c net.Conn) {
@@ -119,15 +153,10 @@ func (se *session) framedToClient() string {
 		se.pixelDeny("pixel_format", err)
 		return "pixel_format"
 	}
+	// The reader takes a format change where it uses one, so nothing here has
+	// to wait for the client and the desktop is never held up.
+	r.SetPendingFormat(se.px.take)
 	for {
-		select {
-		case pf := <-se.px.format:
-			if err := r.SetPixelFormat(pf); err != nil {
-				se.pixelDeny("pixel_format", err)
-				return "pixel_format"
-			}
-		default:
-		}
 		se.deadline(se.up)
 		m, err := r.Next()
 		if err != nil {
@@ -216,12 +245,19 @@ func (se *session) decideClient(m rfb.ClientMessage) (out []byte, drop, end stri
 			se.pixelDeny("pixel_format_changed", errors.New("a pixel format change after the first update request has no point in the stream where it takes effect"))
 			return nil, "", "pixel_format_changed"
 		}
-		// Handed over before the message is, so the desktop cannot
-		// answer in the new format before the reader is in it.
-		select {
-		case se.px.format <- m.PixelFormat:
-		default:
+		if se.px.changed.Swap(true) {
+			// A second change before the first update. One reader cannot be in
+			// two formats, and dropping the second quietly -- which is what a
+			// one-slot handover did -- leaves this gateway framing in one format
+			// while the desktop answers in another.
+			se.pixelDeny("pixel_format_changed", errors.New("a second pixel format change has no point in the stream where it takes effect"))
+			return nil, "", "pixel_format_changed"
 		}
+		// Stored before the message is forwarded, so the desktop cannot answer
+		// in the new format before the reader can see it. The reader takes it
+		// when it next derives a length from the format, which is necessarily
+		// after this.
+		se.px.store(m.PixelFormat)
 	case rfb.CliUpdateRequest, rfb.CliEnableContinuous:
 		se.px.requested.Store(true)
 	case rfb.CliSetDesktopSize:

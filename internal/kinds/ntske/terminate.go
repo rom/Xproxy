@@ -159,7 +159,17 @@ func (t *terminator) save() {
 }
 
 // exchange answers one connection. It returns the reason it refused, or "".
-func (t *terminator) exchange(client net.Conn) (name string, protos []string, reason string) {
+// exchange serves one key establishment, and nameOK is the listener's
+// `server_names` list.
+//
+// The name is checked here rather than by the caller because it has to be
+// checked before anything is issued. The caller used to judge it on the way
+// back, by which point the cookies were sealed, written and the connection
+// closed -- so `server_names` on a terminating listener recorded a refusal for a
+// client it had already served, and the cookies work against the `ntp` listener
+// beside it. The relaying posture never had this: there the name is checked
+// before the upstream is dialled.
+func (t *terminator) exchange(client net.Conn, nameOK func(string) bool) (name string, protos []string, reason string) {
 	c := t.host.Counters()
 	hard := time.Now().Add(termHandshake)
 	if d := t.cfg.NTSKE.HandshakeTimeout.D(); d > 0 {
@@ -188,6 +198,13 @@ func (t *terminator) exchange(client net.Conn) (name string, protos []string, re
 		// an NTS client.
 		c.NTSKENotNTS.Add(1)
 		return name, protos, "alpn_not_offered"
+	}
+	if nameOK != nil && !nameOK(name) {
+		// Before the request is read and before any cookie exists. No answer is
+		// composed: a port that said which names it serves would be a port the
+		// configuration could be enumerated through, which is the same reason
+		// every TLS fault here reports one refusal.
+		return name, protos, "server_name_not_allowed"
 	}
 	req, err := t.readRequest(conn, hard)
 	if err != nil {

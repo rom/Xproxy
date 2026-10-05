@@ -330,13 +330,23 @@ server:
 logging: {access: {enabled: false}}
 `, cert, key))
 	addr := proxytest.Addr(t, s, "ke")
-	// The exchange itself completes -- the name is checked after it, because
-	// the certificate is what makes the name worth checking -- and the refusal
-	// is recorded.
-	if _, _, err := establish(t, addr, cert, "ke.test", ke.ClientRequest()); err != nil {
-		t.Fatal(err)
+	// No cookies. The name the client verified a certificate for is known the
+	// moment the handshake finishes, so it is checked before the request is read
+	// and before anything is sealed. This test used to assert the opposite --
+	// that the exchange completed and the refusal was recorded afterwards --
+	// which made `server_names` bookkeeping: the client walked away with valid
+	// cookies, usable against the `ntp` listener beside this one, and the deny
+	// counter reported enforcement that had not happened.
+	if _, _, err := establish(t, addr, cert, "ke.test", ke.ClientRequest()); err == nil {
+		t.Error("a client naming a server outside the list was served")
 	}
 	refused(t, s, "server_name_not_allowed", 1)
+	if got := s.Stats().NTSKECookies; got != 0 {
+		t.Errorf("%d cookies were issued to a refused name", got)
+	}
+	if got := s.Stats().NTSKETerminated; got != 0 {
+		t.Errorf("%d exchanges completed for a refused name", got)
+	}
 }
 
 // The cookie keys are written at the first start, not at the first rotation. A

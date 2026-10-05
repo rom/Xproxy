@@ -574,3 +574,60 @@ func TestClipCutsOnARuneBoundary(t *testing.T) {
 		t.Fatalf("Clip produced a replacement character: %q", got)
 	}
 }
+
+// The client's claim is edited as well as the server's offer. A client cannot
+// negotiate a capability it was not offered, but a peer is not a client, and the
+// server reads the handshake response's capability field rather than comparing
+// it with the greeting it sent.
+func TestClearLoginCaps(t *testing.T) {
+	caps := CapProtocol41 | CapSecureConnection | CapPluginAuth |
+		CapLocalFiles | CapMultiStatements
+	build := func() []byte {
+		b := binary.LittleEndian.AppendUint32(nil, caps)
+		b = binary.LittleEndian.AppendUint32(b, 1<<24)
+		b = append(b, 0x2d)
+		b = append(b, bytes.Repeat([]byte{0}, 23)...)
+		b = append(b, "app"...)
+		b = append(b, 0, 0)
+		b = append(b, "mysql_native_password"...)
+		b = append(b, 0)
+		return b
+	}
+
+	login := build()
+	cleared, err := ClearLoginCaps(login, CapLocalFiles|CapMultiStatements|CapCompress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Only the bits that were set are reported, so a log line says what changed.
+	if cleared != CapLocalFiles|CapMultiStatements {
+		t.Fatalf("cleared %v", CapList(cleared))
+	}
+	l, err := ParseLogin(login)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l.Caps&(CapLocalFiles|CapMultiStatements) != 0 {
+		t.Fatalf("the bits are still set: %v", CapList(l.Caps))
+	}
+	// Everything else is untouched, or the server would not accept the login.
+	if l.Caps != caps&^(CapLocalFiles|CapMultiStatements) {
+		t.Fatalf("caps = %v", CapList(l.Caps))
+	}
+	if l.User != "app" || l.Plugin != "mysql_native_password" {
+		t.Fatalf("the rest of the login changed: %+v", l)
+	}
+
+	// Nothing to clear leaves the packet alone.
+	again := build()
+	if cleared, err = ClearLoginCaps(again, CapCompress); err != nil || cleared != 0 {
+		t.Fatalf("%v %v", CapList(cleared), err)
+	}
+	if !bytes.Equal(again, build()) {
+		t.Fatal("the packet was edited with nothing to clear")
+	}
+	// A packet too short to hold the field is refused rather than indexed into.
+	if _, err = ClearLoginCaps([]byte{1, 2, 3}, CapLocalFiles); err == nil {
+		t.Fatal("a short login was accepted")
+	}
+}

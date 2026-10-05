@@ -191,6 +191,15 @@ func (in *instance) Request(r *http.Request) filter.Verdict {
 		return filter.Verdict{Deny: true, Status: http.StatusForbidden, Reason: "api_abuse",
 			Detail: in.verdict, Attrs: []any{"api_abuse", in.verdict, "endpoint", template}}
 	case ActionChallenge:
+		if in.info.ChallengeVerified {
+			// Already verified, so there is nothing to ask for. Returning a
+			// challenge verdict to a client that holds one makes the handler
+			// resume the chain on every request from it, which is work with no
+			// decision in it -- and it is how a satisfied challenge used to be
+			// a way past the rest of the chain. botscore has always guarded
+			// this; these two did not.
+			return filter.Continue
+		}
 		f.Challenged.Add(1)
 		return filter.Verdict{Deny: true, Status: http.StatusForbidden, Reason: "api_abuse",
 			Detail: in.verdict, Challenge: true, Attrs: []any{"api_abuse", in.verdict, "endpoint", template}}

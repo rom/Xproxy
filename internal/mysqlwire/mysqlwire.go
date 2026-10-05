@@ -835,6 +835,38 @@ func StripCaps(greeting []byte, deny uint32) (cleared uint32, err error) {
 	return cleared, nil
 }
 
+// ClearLoginCaps clears capability bits from a client's handshake response, in
+// place, and says which it cleared.
+//
+// StripCaps edits what the server offered; this edits what the client claimed,
+// and both are needed. The server reads the client's capability field rather
+// than comparing it with its own greeting, so CLIENT_LOCAL_FILES and
+// CLIENT_MULTI_STATEMENTS are live for any client that sets the bit whether or
+// not the greeting it was handed still offered it. A stripped greeting is a
+// suggestion to a cooperative driver; this is the part that holds against one
+// that is not.
+//
+// Rewriting rather than refusing, for the same reason StripCaps rewrites: Go's
+// own MySQL driver sets CLIENT_LOCAL_FILES unconditionally and gates the feature
+// on its own configuration instead, so refusing the connection would break
+// ordinary applications that never ask for a file. With the bit cleared the
+// server answers such a request with "not supported" and nothing else changes.
+//
+// The capability field is the first four octets of the 4.1 handshake response,
+// low and high halves together, and it is in the same place in the short form a
+// client sends before upgrading to TLS.
+func ClearLoginCaps(login []byte, deny uint32) (cleared uint32, err error) {
+	if len(login) < 4 {
+		return 0, ErrTruncated
+	}
+	caps := binary.LittleEndian.Uint32(login[:4])
+	if cleared = caps & deny; cleared == 0 {
+		return 0, nil
+	}
+	binary.LittleEndian.PutUint32(login[:4], caps&^deny)
+	return cleared, nil
+}
+
 // CapList names the bits set in a mask, for a log line.
 func CapList(mask uint32) []string {
 	var out []string

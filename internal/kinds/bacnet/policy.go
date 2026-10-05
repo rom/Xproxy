@@ -285,7 +285,13 @@ func (p *policy) Link(fn wire.Function) Decision {
 		// on a network it is not on, and Read-Broadcast-Distribution-Table
 		// hands over the estate's BACnet routing. Both from one
 		// unauthenticated datagram.
-		return denyWith("bbmd_not_allowed", fn.String())
+		//
+		// Hard, so it holds in shadow mode: docs/CONFIG.md names
+		// foreign-device registration in what a shadowed `bacnet` listener
+		// still refuses, and a registration forwarded so that it could be
+		// written down is an attacker inside the broadcast domain for as long
+		// as the lease lasts. There is no undoing it from here afterwards.
+		return hardDeny("bbmd_not_allowed", fn.String())
 	case fn == wire.FuncForwardedNPDU && !p.forwarded:
 		return denyWith("forwarded_not_allowed", fn.String())
 	case fn.Broadcast() && fn != wire.FuncForwardedNPDU && !p.broadcast:
@@ -293,8 +299,11 @@ func (p *policy) Link(fn wire.Function) Decision {
 	case fn == wire.FuncSecureBVLL && !p.security:
 		// A relay cannot read inside a secure wrapper, which is the point
 		// of it. Forwarding one would be forwarding a message this
-		// listener did not decide about.
-		return denyWith("security_not_allowed", fn.String())
+		// listener did not decide about -- which is why this is hard rather
+		// than a policy choice: shadow mode records what it would have
+		// refused and carries the rest, and it never applies to a message the
+		// code could not read.
+		return hardDeny("security_not_allowed", fn.String())
 	}
 	return Decision{Allow: true}
 }
@@ -329,7 +338,9 @@ func (p *policy) Network(n wire.NPDU) Decision {
 		// the air or puts somebody else's address in front of one.
 		return denyWith("routing_message_not_allowed", n.MessageType.String())
 	case n.MessageType.Security() && !p.security:
-		return denyWith("security_message_not_allowed", n.MessageType.String())
+		// Hard for the same reason as the link layer's secure wrapper: this is
+		// a message whose contents the relay has not read.
+		return hardDeny("security_message_not_allowed", n.MessageType.String())
 	case !n.MessageType.Known():
 		return denyWith("network_message_unknown", n.MessageType.String())
 	}

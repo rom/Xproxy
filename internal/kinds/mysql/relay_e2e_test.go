@@ -225,6 +225,15 @@ type client struct {
 // the *relay's* edited one, which is how a test sees what was stripped.
 func dial(t *testing.T, addr, user, db string, want uint32) *client {
 	t.Helper()
+	return dialClaiming(t, addr, user, db, want, 0)
+}
+
+// dialClaiming is dial for a client that is not cooperative: claim is set in the
+// handshake response whether or not the greeting offered it. A real client
+// cannot negotiate a capability it was not offered, but a peer is not a client,
+// and the server reads the field rather than intersecting it.
+func dialClaiming(t *testing.T, addr, user, db string, want, claim uint32) *client {
+	t.Helper()
 	c, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatal(err)
@@ -249,6 +258,7 @@ func dial(t *testing.T, addr, user, db string, want uint32) *client {
 	// loginPayload writes no attributes blob and no TLS handshake follows, so
 	// the test client must not claim either capability.
 	cl.caps &^= wire.CapConnectAttrs | wire.CapSSL
+	cl.caps |= claim
 	if _, err = c.Write(wire.Frame(p.Seq+1, loginPayload(cl.caps, user, db, g.Plugin))); err != nil {
 		t.Fatal(err)
 	}
@@ -628,5 +638,40 @@ func TestARuleLetsOneAccountStreamTheBinlog(t *testing.T) {
 	}
 	if !streamed {
 		t.Fatal("the replica's binlog_dump never reached the server")
+	}
+}
+
+// Stripping the greeting is a suggestion to a cooperative driver. The server
+// decides what the connection may do by reading the client's capability field,
+// not by intersecting it with the greeting it sent, so a peer that sets the bit
+// anyway had CLIENT_LOCAL_FILES and CLIENT_MULTI_STATEMENTS back -- and with
+// local_files the server can ask that peer's own host for a file. The relay
+// clears the bits from the login it forwards, so what the server is told is what
+// the relay decided.
+func TestACapabilityTheClientClaimsAnywayIsClearedFromTheLogin(t *testing.T) {
+	fake := startFake(t, &fakeServer{})
+	_, addr := relayFor(t, base, fake.addr())
+
+	claim := wire.CapLocalFiles | wire.CapMultiStatements
+	cl := dialClaiming(t, addr, "app", "sales", ^uint32(0), claim)
+	// The connection still works: clearing a bit is not refusing a login, and a
+	// driver that sets local_files unconditionally is an ordinary driver.
+	if e := cl.ready(t); e != "" {
+		t.Fatalf("login: %s", e)
+	}
+	if got := fake.negotiated() & claim; got != 0 {
+		t.Fatalf("the server was told the client has %v",
+			wire.CapList(got))
+	}
+	// And the rest of the login survived the edit, or the server would not have
+	// accepted it at all.
+	if fake.negotiated()&wire.CapProtocol41 == 0 {
+		t.Fatal("protocol_41 was lost")
+	}
+	if e := cl.send(t, wire.ComQuery, "SELECT 1"); e != "" {
+		t.Fatalf("select: %s", e)
+	}
+	if got := fake.sawStmts(); len(got) != 1 || got[0] != "SELECT 1" {
+		t.Fatalf("the server saw %q", got)
 	}
 }

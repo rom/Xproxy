@@ -252,3 +252,55 @@ func TestTheCatalogueAndTheClassificationsAgree(t *testing.T) {
 		}
 	}
 }
+
+// A field table naming the same key twice is unreadable, which makes the method
+// a hard refusal rather than a decision made on one of the two values.
+//
+// This relay reads a table into a map, so a repeat resolves to the last
+// instance; a broker parses it into an ordered list and resolves a lookup to the
+// first -- RabbitMQ's table_lookup is lists:keysearch, and both the write
+// permission check and the dead-lettering go through it. Taking different
+// instances is the whole bug: a client names one exchange for the policy to
+// check and another for the broker to route to, in the two arguments that send
+// data somewhere the connection never mentions again.
+func TestARepeatedTableKeyIsRefused(t *testing.T) {
+	// queue.declare, whose arguments carry the dead-letter exchange twice: a
+	// forbidden name first, and an empty value second so the `!= ""` guard that
+	// reads it would skip the check altogether.
+	args := join(short(0), shortstr("work"), bits(false, true, false, false, false),
+		table(entryS("x-dead-letter-exchange", "secret.payroll"),
+			entryS("x-dead-letter-exchange", "")))
+	m := &Method{Class: ClassQueue, ID: 10, Args: args}
+	if _, known := m.Targets(); known {
+		t.Error("a table with a repeated key was read as if it said one thing")
+	}
+
+	// And the same table with one entry still reads, so the refusal is about the
+	// repeat rather than about the argument.
+	ok := join(short(0), shortstr("work"), bits(false, true, false, false, false),
+		table(entryS("x-dead-letter-exchange", "secret.payroll")))
+	got, known := (&Method{Class: ClassQueue, ID: 10, Args: ok}).Targets()
+	if !known {
+		t.Fatal("a table with one instance of the key did not read")
+	}
+	var named bool
+	for _, tg := range got {
+		if tg.Kind == KindExchange && tg.Name == "secret.payroll" {
+			named = true
+		}
+	}
+	if !named {
+		t.Errorf("the dead letter exchange was not named as a target: %+v", got)
+	}
+}
+
+// The same on exchange.declare's alternate-exchange, which is the other
+// argument that routes without naming.
+func TestARepeatedAlternateExchangeIsRefused(t *testing.T) {
+	args := join(short(0), shortstr("myex"), shortstr("topic"),
+		bits(false, true, false, false, false),
+		table(entryS("alternate-exchange", "secret.ae"), entryS("alternate-exchange", "")))
+	if _, known := (&Method{Class: ClassExchange, ID: 10, Args: args}).Targets(); known {
+		t.Error("a repeated alternate-exchange was read as if it said one thing")
+	}
+}
