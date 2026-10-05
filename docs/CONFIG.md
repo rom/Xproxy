@@ -112,7 +112,7 @@ did not authenticate — a trial instead of a door.
 | `redis` | every command rule, `read_only`, the key and database lists; `monitor_only` | `require_tls` and `require_auth` (admitting somebody who did not authenticate is not a trial), the commands that are a way out of the data path -- `config set`, `flushall`, `keys`, `eval` -- malformed messages, the message and element bounds, bans |
 | `amqp` | every rule: the exchange, queue and routing-key policies, the mechanism and vhost lists; `monitor_only` | `require_tls`, a mechanism of `ANONYMOUS`, malformed frames, the frame and method bounds, the broker's own refusal, bans |
 | `s7` | every rule: the function, the data block and the address range; `read_only`; `monitor_only`; the S7comm-plus function policy (but not `s7comm_plus.mode: refuse`, which is not a policy a trial should carry) | malformed frames, the frame bound, a rack and slot with no route, the connection bound, bans |
-| `bacnet` | every rule: the service, the object type and instance, the property and the command priority; the link-layer function list | malformed BVLC and APDU, the message bound, foreign-device registration, rate limits, the client list, bans |
+| `bacnet` | every rule: the service, the object type and instance, the property and the command priority; the ordinary link-layer function list | malformed BVLC and APDU, the message bound, foreign-device registration, the BBMD and Secure-BACnet functions and the security messages -- forwarding one is not a trial, it is joining a device to a distribution list or handing it a key exchange -- rate limits, the client list, bans |
 | `tcp`, `udp`, `ntske` | the `authorization` section and the imported address lists, which is what those kinds have that a shadow run can answer | everything else: their own refusals are either "no destination exists for this" or a bound, and neither is a policy |
 | every kind that asks the `authorization` section | the section's own decision, under either switch -- this one or `authorization: {shadow: true}` -- with the rule that decided in the ledger entry | nothing extra: a policy refusal is exactly what a shadow run is for |
 
@@ -8888,11 +8888,19 @@ Keys:
 | `country` | client country (needs `geoip`) | client address |
 | `ja4` | TLS client fingerprint | client address (plaintext listeners) |
 | `device` | device identifier from the challenge cookie (`challenge.device`), so a client rotating addresses keeps one bucket once it has passed a challenge | client address (no cookie yet) |
-| `header:<Name>` | first value of the header (256 bytes) | client address |
-| `cookie:<name>` | value of the cookie (256 bytes), a session or device identifier | client address |
+| `header:<Name>` | first value of the header | client address |
+| `cookie:<name>` | value of the cookie, a session or device identifier | client address |
 | `jwt:<claim>` | a string, number or boolean claim of the bearer token in `Authorization`, read without verification (the value only names a bucket; the `jwt` route setting still rejects a forged token) | client address |
 | `identity` | the identity a preceding auth filter verified this request against, preferring `oidc`, `jwt`, `api_key` then `basic`; unlike `jwt:<claim>` it cannot be spoofed, because the filter proved it. Evaluated after the filter chain, so the limiter sees the authenticated principal | client address (unauthenticated) |
 | `identity:<kind>` | the verified identity of one kind: `jwt` (the `sub` claim), `oidc` (the session subject), `saml` (the session name identifier), `api_key` (the key id), `basic` (the user) or `ldap` (the user) | client address |
+
+For the keys whose value is a credential or a session identifier --
+`header:<Name>`, `cookie:<name>`, `jwt:<claim>` -- the bucket is named by
+a truncated SHA-256 of the value rather than the value itself. The key
+only has to tell one bucket from another, and bucket names are reported
+to the cluster, kept in a shared store, named in a quota line and
+printed by `xproxyctl`, so a key that carried the value would spread a
+session cookie or a bearer token's claim across every one of those.
 
 The fallback keeps a limit from being avoided by omitting the
 identifier; rotating it still buys fresh buckets, so pair an identifier
@@ -11807,6 +11815,17 @@ the binary; [EXTENDING.md](EXTENDING.md) describes how to add one.
 | `stage` | `before_auth`, `after_auth`, `after_waf`, `after_scan` | `after_auth` | Position relative to the built-in JWT, WAF and ICAP filters |
 | `options` | mapping | | Kind specific; unknown keys are rejected |
 
+A filter that asks for a challenge (`action: challenge`, an
+`account_guard` step, a `bot_score` verdict) stops the chain only until
+the challenge is satisfied. A client that already carries a cookie good
+for the tier the filter asked for does not get the page again -- and the
+chain then resumes **at the filter after the one that asked**, not at the
+start and not at the backend. It matters because a cookie is cheap once:
+a client that passes one proof of work would otherwise satisfy the first
+challenging filter and skip every filter behind it, so one solved
+challenge would buy a pass on the `openapi`, `graphql`, `grpc_guard` and
+`upload_guard` instances further down the route.
+
 ### Kind `header_guard`
 
 Requires or denies requests by header patterns (RE2 syntax).
@@ -13000,6 +13019,18 @@ check that quietly stops applying the week somebody adds a field. The
 protobuf wire format carries the field number and the wire type, which
 is enough for every bound here.
 
+**gRPC-web counts as gRPC.** The filter inspects `application/grpc`,
+`application/grpc+proto`, `application/grpc-web`, `grpc-web+proto`,
+`grpc-web-text` and `grpc-web-text+proto` alike, and ignores any
+`;`-separated parameter on the header. It has to: a route with
+`grpc.web: true` translates the request *after* the filter chain, so the
+upstream receives plain gRPC either way, and a guard that matched only
+`application/grpc` would have let a gRPC-web request through with none
+of these bounds applied -- one content-type header as the whole bypass.
+The text variants are base64, so the body is decoded before it is
+walked and forwarded exactly as the client sent it; a chunk that will
+not decode ends the scan rather than being guessed at.
+
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `max_message_bytes` | int | `4194304` | One message, not the whole stream; 1024..268435456. It is what grpc-go defaults its receive limit to, so it is the number the backend already lives with |
@@ -13806,6 +13837,18 @@ window: rewrite rather than refuse, because a control that breaks every
 application on a segment is a control somebody switches off. The strip is
 logged as an `alert` rather than a refusal, since nothing was denied.
 
+**And it rewrites the client's answer.** Editing the greeting only works on a
+cooperative driver. The server decides what a connection may do by reading the
+capability field of the handshake *response*, not by intersecting it with the
+greeting it sent, so a peer that sets `CLIENT_LOCAL_FILES` regardless has it --
+and Go's own MySQL driver sets that bit unconditionally whatever the greeting
+said. So the relay clears the denied bits from the login it forwards too, which
+is what makes the server's answer match the relay's decision rather than the
+peer's request. A login that had to be edited is logged as
+`mysql_capabilities_overridden` at `deny` level and observed by the ban list:
+nothing was refused, but a peer that overrode an edited greeting is a peer that
+built its own handshake response.
+
 ```yaml
 - name: app
   address: "10.0.0.20:3306"
@@ -13835,7 +13878,7 @@ logged as an `alert` rather than a refusal, since nothing was denied.
 | `allow_weak_auth` | bool | `false` | Permit `mysql_clear_password` (the password itself) and `mysql_old_password` (the pre-4.1 scramble, removed from the server in 5.7). `mysql_native_password` is deliberately **not** in that set: its challenge-response discloses no reusable secret, and treating it as weak would make this setting one operators turn off wholesale. `mysql_clear_password` on an unencrypted connection is refused even when this is true |
 | `allow_commands` | list | the driver set | Protocol commands. Empty allows `query`, `stmt_prepare`, `stmt_execute`, `stmt_send_long_data`, `stmt_close`, `stmt_reset`, `stmt_fetch`, `init_db`, `ping`, `quit`, `statistics`, `reset_connection`, `set_option` and `change_user` — and nothing administrative |
 | `deny_commands` | list | `[]` | The deny list, which no rule can override |
-| `deny_capabilities` | list | `[local_files, multi_statements, compress]` | Bits stripped from the server's greeting. `ssl` **cannot be named**: stripping it would perform the downgrade this kind exists to prevent |
+| `deny_capabilities` | list | `[local_files, multi_statements, compress]` | Bits stripped from the server's greeting **and cleared from the client's login**, so a peer that claims one anyway does not get it. `ssl` **cannot be named**: stripping it would perform the downgrade this kind exists to prevent |
 | `read_only` | bool | `false` | Refuse every statement that can change data, `call` and `do` included |
 | `allow_statements`, `deny_statements` | list of kinds | any nameable | As the postgres kind names them |
 | `allow_load` | list | `[]` | Which `LOAD DATA` forms may cross: `file` (a path on the server, needing the FILE privilege) or `local` (a path on the **client**). Empty allows neither |
@@ -14297,6 +14340,26 @@ statement policy to it as to a batch. A dynamic-SQL call whose statement it
 cannot read is refused: it is the one message on this protocol that carries
 arbitrary SQL.
 
+**T-SQL needs no terminator between statements, so a statement hides behind
+one.** `PRINT 'ok' DROP TABLE users` is one batch holding two statements, with
+nothing but a space between them -- and a reader that divided a batch on
+semicolons alone saw a single statement led by `PRINT`, classified it as a
+non-writing read, and forwarded the whole thing for the server to run both
+halves. `read_only`, `allow_statements`, `deny_statements` and `max_statements`
+were all bypassed by one character. So on this dialect the classifier also
+looks, inside a batch whose leading statement is a read (`SELECT`, `SET`,
+`PRINT`, `GO`), for a keyword that can only begin a statement of its own:
+`INSERT`, `UPDATE`, `DELETE`, `MERGE`, the DDL words, `GRANT`/`REVOKE`/`DENY`,
+`BACKUP`/`RESTORE`, `EXEC`, `DBCC`, `KILL`, `SHUTDOWN` and their neighbours. Each
+one found is handed to the policy as a statement in its own right -- so an
+operator who really does allow DDL still gets it -- and `max_statements` counts
+it. The scan is deliberately narrow: every word it looks for is reserved in
+T-SQL, so none of them can be an unquoted column or table name, and a bracketed
+or quoted one (`SELECT [drop] FROM t`) is an identifier the scan never sees.
+Starting from a lead that is *not* a read the scan does not run at all, because
+`ALTER TABLE t DROP COLUMN c` and `CREATE PROCEDURE p AS INSERT ...` are single
+statements whose own syntax holds those words.
+
 One structural oddity, which needs no configuration but explains the code: **the
 TLS handshake runs inside TDS packets and then stops.** For the length of the
 handshake TDS wraps TLS; afterwards TLS wraps TDS. The nesting inverts once,
@@ -14332,7 +14395,7 @@ part way through a connection.
 | `allow_procedures`, `deny_procedures` | list | the driver set | RPC procedures, lower-cased. Empty allows `sp_executesql`, the prepare and cursor families, `sp_reset_connection` and the driver metadata calls — so every `xp_`, every `sp_oa`, `sp_configure`, `sp_addlinkedserver` and `sp_send_dbmail` are refused until named. A name matches whether the client called the procedure by name or by the numeric identifier the protocol also allows, because they are the same call |
 | `read_only` | bool | `false` | Refuse every statement that can change data. `EXEC` is one of them: T-SQL has no prepared-statement syntax, so `EXEC` runs a stored procedure, which can do anything the login can |
 | `allow_statements`, `deny_statements` | list of kinds | any nameable | As the postgres kind names them. They apply to a `SQLBATCH` and to the statement inside an `sp_executesql` alike |
-| `max_statements` | int | `1` | Statements per batch. T-SQL separates statements with whitespace, so a batch carrying several is ordinary -- which is why the bound belongs here rather than in a capability flag as it does on MySQL |
+| `max_statements` | int | `1` | Statements per batch. T-SQL separates statements with whitespace, so a batch carrying several is ordinary -- which is why the bound belongs here rather than in a capability flag as it does on MySQL. It counts the statements the classifier found, not the semicolons, so a second statement juxtaposed behind the first counts towards it |
 | `max_statement_bytes` | int | `65536` | One statement |
 | `max_message_bytes` | int | `4194304` | One reassembled message. The protocol has no bound: only the EOM status bit ends a message, so a sender may chain 64 KiB packets for ever |
 | `max_sessions`, `max_sessions_per_client` | int | unbounded | Concurrent connections |

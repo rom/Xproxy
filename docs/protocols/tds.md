@@ -84,6 +84,16 @@ applied to a `SQLBATCH` and to **the SQL inside an `sp_executesql` call**, read
 with T-SQL's own lexical rules: bracketed identifiers, nested `/* */` comments,
 `N''` literals. `read_only` refuses every writing shape in one line.
 
+**And in both statements, when a batch holds two with nothing between them.**
+T-SQL needs no terminator, so `PRINT 'ok' DROP TABLE users` is one batch and two
+statements separated by a space — which means a reader that divided on semicolons
+alone would classify the batch by its leading `PRINT`, call it a read, and
+forward it for the server to run both halves. So behind a leading read the
+classifier also looks for a keyword that can only begin a statement of its own,
+and hands each one to the policy separately; `max_statements` counts them. The
+words it looks for are all reserved in T-SQL, so none can be an unquoted
+identifier, and a bracketed one (`SELECT [drop] FROM t`) never reaches the scan.
+
 **The bounds**: statements, statement size, message size, sessions overall and
 per client, and the idle and total session duration.
 
