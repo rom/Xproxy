@@ -137,6 +137,30 @@ how a figure in a document drifts from the code without anything failing. What t
 remainder is has not changed: the formatting of views whose subsystems need a
 live peer, authority, resolver or scanner behind them.
 
+### Fixed (an NTS-KE refusal counter read before it was written)
+
+The coverage run failed `TestTerminatingRefusesTermsItCannotMeet` with
+`refusals: map[no_terms:1]` after two clients had each been refused. The two
+counters on that path are written on either side of the answer: `NTSKENoTerms`
+before the error record goes out, and the reason string after the connection is
+done with -- so a client that has read its refusal has seen the first and not
+necessarily the second. Read once, the assertion was racing the thing it
+measured, and it printed a map that was about to hold the count it had just
+called missing.
+
+Four assertions in `terminate_test.go` already polled for exactly this reason,
+with a comment saying so. That loop is now a `refused` helper, and the seven
+places that still read a refusal count once -- the no-terms test and six in
+`ntske_test.go`: the application protocol, the server name on both sides, the
+plaintext scan, the client list, the handshake bound and the connection bound --
+go through it. Where the old assertion said a count was exactly one it still
+does, after the wait rather than instead of it.
+
+The relay is unchanged: writing the answer before counting the refusal is the
+right order, because the client should not wait on this process's bookkeeping.
+Verified by making the terms always negotiable, which leaves the counter at zero
+and fails the wait rather than passing it.
+
 ### Fixed (eight assertions that could only ever pass)
 
 A sweep of all 878 test files for assertions that cannot fail turned up one
