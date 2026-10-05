@@ -1003,7 +1003,8 @@ func (t *server) admitClient(ip netip.Addr) string {
 			h.Counters().WouldRefuse("modbus", reason)
 			h.Shadow().Record("modbus", t.cfg.Name, reason, rule, detail)
 		},
-		Deny: func(reason, _, detail string) { t.deny(ip, reason, detail) },
+		Deny:       func(reason, _, detail string) { t.deny(ip, reason, detail) },
+		Quarantine: func(reason, _, detail string) { t.quarantine(ip, reason, detail) },
 	})
 }
 
@@ -1057,6 +1058,21 @@ func (t *server) deny(ip netip.Addr, what, detail string) {
 	if bl := t.host.Bans(); bl != nil && ip.IsValid() {
 		bl.Observe(ip, "modbus_denied")
 	}
+}
+
+// quarantine reports the bounded refusal without turning it into evidence for
+// the independent automatic-ban ladder.
+func (t *server) quarantine(ip netip.Addr, what, detail string) {
+	t.host.Counters().ModbusRefused.Add(1)
+	t.host.Counters().Refuse("modbus", what)
+	if !t.m.Alerts() {
+		return
+	}
+	attrs := []any{"listener", t.cfg.Name, "client_ip", ip.String(), "proto", "modbus"}
+	if detail != "" {
+		attrs = append(attrs, "detail", detail)
+	}
+	t.host.Logs().SecurityEvent(context.Background(), "deny", "modbus_"+what, attrs...)
 }
 
 // alert records something worth telling an operator about that is not a refusal:

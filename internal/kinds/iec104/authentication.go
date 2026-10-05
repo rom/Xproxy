@@ -37,16 +37,15 @@ import (
 //     failure this file mostly exists to prevent, and it is why `security` is a
 //     rule class of its own rather than folded into `system`.
 //
-//   - **Whether it happened is visible.** A counter per listener, so an operator
-//     can see that a substation which is supposed to be using secure
+//   - **Whether it happened is visible.** Completed exchanges are counted per
+//     listener, so an operator can see that a substation which is using secure
 //     authentication is, and an estate can find the associations that are not.
 //
 //   - **It can be required.** `require_authentication` refuses a command on an
-//     association where no reply or aggressive-mode request has been seen inside
-//     a window. A relay cannot tell a good HMAC from a bad one; it can tell the
-//     difference between an exchange and no exchange at all, and on this protocol
-//     that is the difference between a controlling station running the standard's
-//     authentication and one that has it switched off.
+//     association where the station has not positively confirmed a challenged
+//     reply or aggressive-mode request inside a window. A relay cannot tell a
+//     good HMAC from a bad one; it can tell a completed exchange from an
+//     unsolicited authentication-shaped frame.
 
 // authPolicy is the secure-authentication posture.
 type authPolicy struct {
@@ -85,6 +84,12 @@ func compileAuthentication(c *config.IEC104Authentication) (*authPolicy, error) 
 // against.
 type authState struct {
 	mu sync.Mutex
+	// challenged is the common address for which the station has issued a
+	// challenge. awaiting is the reply/request for which the station still owes
+	// a positive confirmation. Keeping both prevents an unsolicited client ASDU
+	// from being mistaken for evidence of an exchange.
+	challenged map[uint16]bool
+	awaiting   map[authExchange]bool
 	// at is when authentication was last seen on this association, and seen
 	// whether it ever was. Separate, because the zero time is a valid instant
 	// and "never" has to be distinguishable from "long ago".
@@ -92,14 +97,48 @@ type authState struct {
 	seen bool
 }
 
-// observe records one secure-authentication ASDU.
-func (a *authState) observe(t wire.Type, now time.Time) {
-	if !t.Authenticates() {
-		return
+type authExchange struct {
+	typeID wire.Type
+	common uint16
+}
+
+// observe records the progress of one secure-authentication exchange. It
+// returns true only when the station positively confirms a reply or an
+// aggressive-mode request.
+func (a *authState) observe(asdu *wire.ASDU, fromClient bool, now time.Time) bool {
+	if asdu == nil || !asdu.Type.Secure() {
+		return false
 	}
 	a.mu.Lock()
-	a.at, a.seen = now, true
-	a.mu.Unlock()
+	defer a.mu.Unlock()
+	if a.challenged == nil {
+		a.challenged = make(map[uint16]bool)
+		a.awaiting = make(map[authExchange]bool)
+	}
+	key := authExchange{typeID: asdu.Type, common: asdu.Common}
+	switch {
+	case !fromClient && asdu.Type == wire.SChNA1:
+		a.challenged[asdu.Common] = true
+	case fromClient && asdu.Type == wire.SRpNA1 && a.challenged[asdu.Common]:
+		delete(a.challenged, asdu.Common)
+		a.awaiting[key] = true
+	case fromClient && asdu.Type == wire.SAsNA1:
+		a.awaiting[key] = true
+	case !fromClient && asdu.Type.Authenticates() && asdu.Cause == wire.CauseActCon:
+		if !a.awaiting[key] {
+			return false
+		}
+		delete(a.awaiting, key)
+		if asdu.Negative {
+			return false
+		}
+		a.at, a.seen = now, true
+		return true
+	case !fromClient && asdu.Type == wire.SErNA1:
+		clear(a.challenged)
+		clear(a.awaiting)
+	}
+	return false
 }
 
 // fresh says whether an authentication has been seen inside the window.
@@ -138,13 +177,12 @@ func (se *session) decideAuthentication(frame *wire.Frame, fromClient bool, now 
 	// counter that only moved once the requirement was in force would be no help
 	// at all in making that decision.
 	//
-	// The exchange itself is never held to the rule either: a reply cannot be
-	// required to have been preceded by a reply.
+	// The exchange itself is never held to the rule either: it establishes the
+	// state that a subsequent command requires.
 	if a.Type.Secure() {
-		if a.Type.Authenticates() {
+		if se.authed.observe(a, fromClient, now) {
 			t.host.Counters().IEC104Authentications.Add(1)
 		}
-		se.authed.observe(a.Type, now)
 		return "", true
 	}
 	if !t.auth.on() {

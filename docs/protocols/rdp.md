@@ -158,7 +158,10 @@ is the one the client's login *asserts*, and the desktop proves it afterwards. S
 policy narrows what the desktop would have allowed and never widens it: a deny rule is
 exact, because refusing a claimed name refuses at least everyone who could have
 proved it, while an allow rule keyed on the name is a filter on a claim that
-still has to be proven. It is not an authenticated grant. A rule that has to
+still has to be proven. When the gateway substitutes `upstream_user` and its
+password, the desktop cannot prove the client's claimed name; that name is
+therefore withheld from the policy unless MFA verified it. It is not an
+authenticated grant. A rule that has to
 hold whatever a client asserts belongs in `targets` and `networks`, which nobody
 can choose for themselves.
 

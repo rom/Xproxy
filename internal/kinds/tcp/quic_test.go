@@ -136,6 +136,46 @@ upstreams:
 	}
 }
 
+// TestQUICPassthroughAuthorization verifies that the UDP side of a TCP
+// listener applies the same authorization policy as its stream side.
+func TestQUICPassthroughAuthorization(t *testing.T) {
+	dir := t.TempDir()
+	ca := testutil.WriteCA(t, dir)
+	cert, key := ca.Issue(t, dir, "q.test")
+	origin := quicEcho(t, cert, key)
+	s := proxytest.Start(t, fmt.Sprintf(`
+version: 1
+server:
+  listeners:
+    - name: l4
+      address: "127.0.0.1:0"
+      kind: tcp
+      tcp:
+        quic: true
+        routes:
+          - {sni: [q.test], upstream: q}
+logging:
+  access: {enabled: false}
+upstreams:
+  - name: q
+    endpoints: [{address: %s}]
+authorization:
+  rules:
+    - {name: private-only, allow: true, networks: ["10.0.0.0/8"]}
+`, origin))
+	pool := x509.NewCertPool()
+	pool.AddCert(ca.Cert)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if conn, err := quic.DialAddr(ctx, s.Addrs()["l4"], &tls.Config{ServerName: "q.test", RootCAs: pool, NextProtos: []string{"echo"}, MinVersion: tls.VersionTLS13}, &quic.Config{HandshakeIdleTimeout: time.Second}); err == nil {
+		_ = conn.CloseWithError(0, "unexpected authorization bypass")
+		t.Fatal("QUIC client outside the allowed network reached the endpoint")
+	}
+	if sn := s.Stats(); sn.Refusals["tcp"]["authorization"] == 0 || sn.QUICRejected == 0 {
+		t.Fatalf("authorization rejection counters: %+v", sn)
+	}
+}
+
 // TestQUICPassthroughConnectionLimit verifies that UDP flows use the same
 // process-wide and per-client admission control as accepted TCP connections.
 func TestQUICPassthroughConnectionLimit(t *testing.T) {

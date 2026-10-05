@@ -17,6 +17,11 @@ import (
 // credential carries a name, and a grant names a person.
 func grantGateway(t *testing.T, tg *target, extra string) (*proxy.Server, string) {
 	t.Helper()
+	return grantGatewayForEndpoints(t, "[{address: "+tg.addr()+"}]", extra)
+}
+
+func grantGatewayForEndpoints(t *testing.T, endpoints, extra string) (*proxy.Server, string) {
+	t.Helper()
 	ledger := filepath.Join(t.TempDir(), "access.log")
 	yaml := fmt.Sprintf(`
 version: 1
@@ -32,12 +37,47 @@ server:
 logging: {access: {enabled: false}}
 upstreams:
   - name: screens
-    endpoints: [{address: %s}]
+    endpoints: %s
 access:
   ledger: %s
-`, extra, tg.addr(), ledger)
+`, extra, endpoints, ledger)
 	s := proxytest.Start(t, yaml)
 	return s, proxytest.Addr(t, s, "desktops")
+}
+
+// An endpoint grant is authority for that desktop only. The pool may offer a
+// different desktop first, but the gateway must skip it rather than turning a
+// valid grant into access to whichever endpoint the balancer selects.
+func TestEndpointGrantPinsTheDesktop(t *testing.T) {
+	dir := t.TempDir()
+	pw := filepath.Join(dir, "gate.pw")
+	write(t, pw, "gate-secret")
+	other := startTarget(t, &target{desktop: "hmi-other"})
+	authorized := startTarget(t, &target{desktop: "hmi-authorized"})
+	endpoints := fmt.Sprintf("[{address: %s}, {address: %s}]", other.addr(), authorized.addr())
+	s, addr := grantGatewayForEndpoints(t, endpoints,
+		"        security_types: [mslogon2]\n        password_file: "+pw)
+	grantFor(t, s, "LAB\\alice", authorized.addr(), time.Hour)
+
+	cl := dial(t, addr)
+	cl.version(rfb.V38)
+	cl.offered()
+	cl.write([]byte{rfb.SecMSLogon2})
+	cl.msLogon("LAB\\alice", "gate-secret")
+	if ok, why := cl.result(); !ok {
+		t.Fatalf("refused: %s", why)
+	}
+	cl.write(rfb.ClientInit{Shared: true}.Encode())
+	si, err := rfb.ReadServerInit(cl.c)
+	if err != nil {
+		t.Fatalf("server init: %v", err)
+	}
+	if si.Name != "hmi-authorized" {
+		t.Errorf("desktop %q, want hmi-authorized", si.Name)
+	}
+	if got := other.seen(); len(got) != 0 {
+		t.Errorf("the ungranted desktop was reached: %q", got)
+	}
 }
 
 func grantFor(t *testing.T, s *proxy.Server, subject, target string, window time.Duration) *access.Grant {
