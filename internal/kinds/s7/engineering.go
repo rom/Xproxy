@@ -54,6 +54,28 @@ func engineeringOf(pdu *wire.PDU) (engineering.Operation, bool) {
 	return engineering.Operation{Class: class, Detail: describe(pdu)}, true
 }
 
+// plusEngineeringOf classifies the administrative functions that remain
+// visible outside S7comm-plus's encrypted payload. The function is necessarily
+// less specific than classic S7comm: Invoke may contain a download or a mode
+// change, but what the relay can prove from the wire is that a method ran.
+func plusEngineeringOf(pdu *wire.PlusPDU) (engineering.Operation, bool) {
+	if pdu == nil || !pdu.HasFunction {
+		return engineering.Operation{}, false
+	}
+	var class engineering.Class
+	switch pdu.Function {
+	case wire.PlusBeginSequence, wire.PlusEndSequence:
+		class = engineering.ClassProgramDownload
+	case wire.PlusCreateObject, wire.PlusDeleteObject:
+		class = engineering.ClassConfiguration
+	case wire.PlusInvoke:
+		class = engineering.ClassMethodCall
+	default:
+		return engineering.Operation{}, false
+	}
+	return engineering.Operation{Class: class, Detail: plusDetail(pdu)}, true
+}
+
 // decideEngineering reports one engineering operation and says whether to carry
 // it: "" to go on, or the reason to refuse it.
 func (t *server) decideEngineering(se *session, pdu *wire.PDU) string {
@@ -64,6 +86,24 @@ func (t *server) decideEngineering(se *session, pdu *wire.PDU) string {
 	if !ok {
 		return ""
 	}
+	return t.decideEngineeringOperation(se, op)
+}
+
+// decidePlusEngineering applies the same work-order guard to the separately
+// parsed S7comm-plus path. Without this call an allowed administrative function
+// would bypass both grant enforcement and the engineering audit trail.
+func (t *server) decidePlusEngineering(se *session, pdu *wire.PlusPDU) string {
+	if !t.engineering.On() {
+		return ""
+	}
+	op, ok := plusEngineeringOf(pdu)
+	if !ok {
+		return ""
+	}
+	return t.decideEngineeringOperation(se, op)
+}
+
+func (t *server) decideEngineeringOperation(se *session, op engineering.Operation) string {
 	s := se.sess()
 	if s.Addressed {
 		op.Point = wire.ResourceName(s.Resource)

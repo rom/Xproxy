@@ -568,6 +568,16 @@ func (t *server) decidePlus(se *session, c *wire.COTP) (forward, fatal bool) {
 	if !d.Allow {
 		return t.plusRefusal(se, pdu, d)
 	}
+	// S7comm-plus is parsed separately from classic S7comm, but its visible
+	// administrative functions are subject to the same engineering work-order
+	// guard. The guard has already recorded a refusal, so only apply the plus
+	// wire behaviour here rather than passing through plusRefusal a second time.
+	if reason := t.decidePlusEngineering(se, pdu); reason != "" {
+		if t.policy.respond == "close" {
+			return false, true
+		}
+		return false, false
+	}
 	if t.sc.LogRequests {
 		t.logPlus(se, pdu)
 	}

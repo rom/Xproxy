@@ -3,6 +3,7 @@ package s7
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -88,6 +89,29 @@ func TestAStopNeedsAnApprovedWorkOrder(t *testing.T) {
 	cl.allowed(stopJob(3))
 	if !p.got("stop") {
 		t.Error("an approved stop did not reach the controller")
+	}
+}
+
+func TestS7CommPlusAdminNeedsAnApprovedWorkOrder(t *testing.T) {
+	p := startPLC(t, &fakePLC{})
+	ledger := filepath.Join(t.TempDir(), "access.jsonl")
+	config := fmt.Sprintf(engYAML, ledger, p.addr())
+	config = strings.Replace(config, "        engineering:\n", "        s7comm_plus:\n          mode: policy\n          classes: [admin]\n        engineering:\n", 1)
+	s := proxytest.Start(t, config)
+	addr := proxytest.Addr(t, s, "plc")
+
+	cl := dial(t, addr)
+	cl.connect(wire.ResourcePG, 0, 2)
+	cl.write(plusFrame(wire.PlusRequest, wire.PlusInvoke))
+	if p.got("plus invoke") {
+		t.Fatal("an S7comm-plus invoke with no approved work order reached the controller")
+	}
+	awaitEng(t, s, func(sn proxy.Snapshot) bool {
+		return sn.Refusals["s7"]["engineering_no_grant"] >= 1 &&
+			sn.EngineeringOps["s7/method_call"] >= 1
+	}, "the S7comm-plus refusal and engineering event")
+	if got := s.Access().Stats().Engineering; got == 0 {
+		t.Error("the refused S7comm-plus operation was not written to the trail")
 	}
 }
 
