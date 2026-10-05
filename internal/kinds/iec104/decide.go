@@ -87,7 +87,9 @@ func (se *session) decide(frame *wire.Frame, fromClient bool) (string, bool) {
 	// the traffic disagree, and which way.
 	se.observeLearn(a, fromClient, d.Allow, time.Now())
 	if !d.Allow {
-		return se.policyRefused(frame, d)
+		if reason, ok := se.policyRefused(frame, d); !ok {
+			return reason, false
+		}
 	}
 	// Then the IEC 60870-5-7 authentication, if this listener requires it. It
 	// comes before the element checks because a command nobody authenticated is
