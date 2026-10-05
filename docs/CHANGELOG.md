@@ -211,6 +211,23 @@ and the policy asked about the address before a mailbox server is dialled and
 about the name a USER claims before it reaches a server that would check it.
 73.6 % to 84.2 %.
 
+**The MMS answer side, which was the half nothing read.** The request readers
+had the tests, because requests are what a relay decides about -- so the
+answers, where the reports come from, were at 0 % function by function:
+`readInvokeOnly`, `readError`, `readNames`, `readDefineList` and
+`associationInformation` were never called. A response is now asserted to be
+read for its invoke identifier and nothing else (the body is values and this
+package keeps none), a device's own refusal as a class and a code, because
+"the relay refused" and "the IED refused" are two findings about two pieces of
+equipment. The association reads the same thing twice over, and both ways are
+now covered: the initiate PDU rides inside an EXTERNAL whose single-ASN1-type
+and octet-aligned arms carry it identically, and a title or qualifier arrives
+explicitly tagged by the standard and implicitly tagged by some equipment.
+Then the fail-closed rule, one case per field: a title, a qualifier or a result
+that does not parse is an error and not an absent field, because an association
+reported with no title is one a title rule cannot refuse. 69.7 % to 82.7 % of
+the package's own statements.
+
 **The three `xproxyctl` command groups that had no test at all.** `ech`, `mfa`
 and `access` were between them a fifth of the package and none of them was
 reached by a test, which is how the four defects above survived. Each is now
