@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -619,7 +620,23 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		st.identity = idSet
 		instances = cr.filters.Begin(r.Context(), info)
 		defer func() { st.extra = append(st.extra, instances.End()...) }()
-		if v := instances.Request(r); v.Deny {
+		// The chain is run to the end, resuming past a challenge the client has
+		// already satisfied rather than jumping over what is left of it.
+		//
+		// A filter that answers "challenge" has denied, so the chain stops at it.
+		// Treating a verified client as admitted by leaving the chain entirely
+		// skipped every filter behind that one -- and the default stage puts a
+		// custom filter *before* the WAF, the scanners and any later
+		// authorisation filter. So a client who held an ordinary proof-of-work
+		// cookie and could provoke a challenge-action filter (api_abuse and flow
+		// both answer "challenge" however verified the client is) reached the
+		// upstream with no inspection and no authorisation at all. Being flagged
+		// as abusive was the way in.
+		for i := 0; ; {
+			v, at := instances.RequestFrom(r, i)
+			if !v.Deny {
+				break
+			}
 			if v.Challenge {
 				if ch := s.challenger.Load(); ch != nil && !ch.Exempt(st.clientIP) {
 					// A CAPTCHA verdict needs the CAPTCHA tier when one is
@@ -629,7 +646,8 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						required = challenge.TierCaptcha
 					}
 					if st.chalTier >= required {
-						goto admitted
+						i = at + 1
+						continue
 					}
 					s.stats.Challenged.Add(1)
 					st.denied = "challenge:" + v.Reason
@@ -643,7 +661,6 @@ func (h *listenerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-admitted:
 
 	if cr.cors != nil {
 		cr.cors.apply(rw.Header(), r)
@@ -1778,15 +1795,15 @@ func (s *engine) rateKey(rl *config.RateLimit, r *http.Request, st *reqState) st
 		if v == "" {
 			return ip
 		}
-		return "h:" + trim(v, 256)
+		return "h:" + fingerprint(v)
 	case strings.HasPrefix(rl.Key, "cookie:"):
 		if c, err := r.Cookie(rl.Key[len("cookie:"):]); err == nil && c.Value != "" {
-			return "ck:" + trim(c.Value, 256)
+			return "ck:" + fingerprint(c.Value)
 		}
 		return ip
 	case strings.HasPrefix(rl.Key, "jwt:"):
 		if v := bearerClaim(r.Header.Get("Authorization"), rl.Key[len("jwt:"):]); v != "" {
-			return "jwt:" + trim(v, 256)
+			return "jwt:" + fingerprint(v)
 		}
 		return ip
 	}
@@ -1899,4 +1916,23 @@ func coarseKey(ip netip.Addr) string {
 		return ""
 	}
 	return "net:" + p.String()
+}
+
+// fingerprint is how a rate-limit bucket is named after a value that must not be
+// stored.
+//
+// A limit keyed on a header, a cookie or a JWT claim buckets by the value, and
+// those values are session cookies, bearer tokens and claims -- other people's
+// credentials. The key used to be the value itself, truncated, and
+// `/v1/quotas?top=N` publishes the busiest keys: `xproxyctl quotas` printed them,
+// the GUI passes that endpoint through to any logged-in role, and the cluster
+// gossips them to every peer. A read-only operator could lift a live session
+// cookie from it and replay it against the application this proxy fronts.
+//
+// A truncated SHA-256 buckets identically -- the same value always gives the same
+// key -- while being nothing to steal. It is the treatment the logging redaction
+// already offers for claims: keep, hash or drop.
+func fingerprint(v string) string {
+	sum := sha256.Sum256([]byte(v))
+	return hex.EncodeToString(sum[:12])
 }

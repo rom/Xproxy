@@ -98,11 +98,15 @@ func TestRateKeyEveryShape(t *testing.T) {
 		{config.RateLimit{Key: "identity"}, "id:alice@test"},
 		{config.RateLimit{Key: "identity:api_key"}, "id:api_key:k-1"},
 		{config.RateLimit{Key: "device"}, "dev:dev-7"},
-		{config.RateLimit{Key: "header:X-Tenant"}, "h:acme"},
-		{config.RateLimit{Key: "cookie:sid"}, "ck:s-1"},
-		{config.RateLimit{Key: "jwt:sub"}, "jwt:u-1"},
-		{config.RateLimit{Key: "jwt:n"}, "jwt:42"},
-		{config.RateLimit{Key: "jwt:b"}, "jwt:true"},
+		// The four keyed on something a client sent are fingerprinted rather
+		// than carried: a bucket named after a session cookie or a bearer token
+		// is a credential the quota report publishes. Their shape is asserted
+		// below instead of a literal.
+		{config.RateLimit{Key: "header:X-Tenant"}, "h:" + fingerprint("acme")},
+		{config.RateLimit{Key: "cookie:sid"}, "ck:" + fingerprint("s-1")},
+		{config.RateLimit{Key: "jwt:sub"}, "jwt:" + fingerprint("u-1")},
+		{config.RateLimit{Key: "jwt:n"}, "jwt:" + fingerprint("42")},
+		{config.RateLimit{Key: "jwt:b"}, "jwt:" + fingerprint("true")},
 		{config.RateLimit{Key: ""}, ip},
 		{config.RateLimit{Key: "nonsense"}, ip},
 	}
@@ -845,5 +849,33 @@ func TestFilterNamesAreStable(t *testing.T) {
 	}
 	if got := cf.denied.Load(); got != 5 {
 		t.Errorf("%d denials were counted, want 5", got)
+	}
+}
+
+// A bucket keyed on something the client sent is named by a fingerprint of the
+// value, not the value.
+//
+// The value is a session cookie, a bearer token or a claim -- somebody else's
+// credential -- and `/v1/quotas?top=N` publishes the busiest keys: xproxyctl
+// prints them, the GUI passes the endpoint through to any logged-in role, and the
+// cluster gossips them to its peers. Keying on the raw value put live session
+// cookies in front of a read-only operator. What a limit needs is only that the
+// same value always lands in the same bucket.
+func TestACredentialKeyedBucketDoesNotCarryTheCredential(t *testing.T) {
+	secret := "s-9f3c2b-live-session"
+	key := fingerprint(secret)
+	if strings.Contains(key, secret) {
+		t.Fatalf("the fingerprint carries the value: %q", key)
+	}
+	if key == "" {
+		t.Fatal("the fingerprint is empty, so every value would share one bucket")
+	}
+	// Stable, which is the whole requirement: a limit counts repeats.
+	if again := fingerprint(secret); again != key {
+		t.Errorf("the same value gave two buckets: %q and %q", key, again)
+	}
+	// And distinct, so two clients are not counted as one.
+	if other := fingerprint(secret + "x"); other == key {
+		t.Error("two values share a bucket")
 	}
 }
