@@ -197,9 +197,15 @@ func TestRunOverAPseudoTerminal(t *testing.T) {
 	}
 	// The unban prompt: it asks, and only "y" confirms.
 	press("unban", "u")
-	if !strings.Contains(out.last(), "unban 203.0.113.9") {
-		t.Errorf("the unban prompt did not name the selected ban: %q", out.last())
-	}
+	// Waiting for the frame that shows the prompt, rather than reading
+	// whichever frame has arrived: `press` returns on the first frame after a
+	// key, and a frame already in flight from the action before it satisfies
+	// that -- so a snapshot taken here can be one frame behind the key that
+	// was just sent. The later half of this test already waits on content for
+	// the same reason.
+	until(t, "the unban prompt naming the selected ban", func() bool {
+		return strings.Contains(out.last(), "unban 203.0.113.9")
+	})
 	press("a refusal", "n")
 	press("return", "\r")
 	// The submit runs before the frame, so a frame that has arrived is
@@ -218,9 +224,7 @@ func TestRunOverAPseudoTerminal(t *testing.T) {
 	// gets into this prompt in real use and is the one thing a single
 	// read has to be able to hold.
 	press("the ban prompt", "b")
-	if !strings.Contains(out.last(), "ban <address") {
-		t.Errorf("the ban prompt is not showing: %q", out.last())
-	}
+	until(t, "the ban prompt", func() bool { return strings.Contains(out.last(), "ban <address") })
 	if _, err := master.WriteString("203.0.113.99 1hX\x7f reason\r"); err != nil {
 		t.Fatal(err)
 	}
@@ -238,9 +242,7 @@ func TestRunOverAPseudoTerminal(t *testing.T) {
 	// Escape cancels a prompt.
 	press("the ban prompt again", "b")
 	press("escape", "\x1b")
-	if !strings.Contains(out.last(), "cancelled") {
-		t.Errorf("escape did not cancel the prompt: %q", out.last())
-	}
+	until(t, "the cancelled prompt", func() bool { return strings.Contains(out.last(), "cancelled") })
 
 	// q quits, restoring the screen.
 	if _, err := master.WriteString("q"); err != nil {

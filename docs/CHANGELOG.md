@@ -137,6 +137,17 @@ how a figure in a document drifts from the code without anything failing. What t
 remainder is has not changed: the formatting of views whose subsystems need a
 live peer, authority, resolver or scanner behind them.
 
+### Fixed (a load-sensitive assertion in the terminal interface test)
+
+- **`internal/tui` `TestRunOverAPseudoTerminal` read a frame too early.** It
+  failed in a coverage run, which is the same suite under instrumentation and so
+  slower: `press` returns on the first frame that arrives after a key, and a
+  frame still in flight from the action before it satisfies that, so three
+  assertions were reading a snapshot one frame behind the key they were about.
+  They now wait for the frame that shows what they assert, which is what the
+  second half of the same test already did. No product change: the keys were
+  acted on, the test looked too soon.
+
 ### Fixed (IMAP: the same upstream upgrade, and two xproxyctl commands)
 
 - **An imap listener with `upstream_tls_mode: starttls` could not carry a
