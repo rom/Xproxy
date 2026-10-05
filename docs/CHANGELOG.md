@@ -260,12 +260,12 @@ figure in `docs/TESTS.md` that nothing checked. It read 82 % and measured 67 %.
 Makefile instruments the package alongside `internal/...`, and the number is in
 the table with the others where it cannot drift.
 
-The table is regenerated from the gate that passes on all of this: 85.6 % of
-111237 statements, nothing below the 60 % floor. The total is 0.4 points below
-the last one because xproxyctl's 2764 statements enter the denominator at 68 %,
-which is the point of putting it in -- and it is now the lowest gated package
-rather than a figure in a document, so the next person to work on those views has
-a floor under them.
+The table is regenerated from the gate that passes on all of this: 86.0 % of
+111255 statements, nothing below the 60 % floor. Putting xproxyctl in cost 0.4
+points when its 2764 statements entered the denominator at 68 %, and testing the
+three command groups has given them back: it reads 78 % now, and the lowest gated
+package is `internal/proxytest` at 71 % -- fifty-one statements of test harness.
+The lowest one that is not a harness is `internal/kinds/rdp` at 74 %.
 
 ### Added (the event stream: a policy for text/event-stream)
 
