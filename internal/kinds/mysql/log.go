@@ -90,6 +90,24 @@ func (t *server) deny(ip netip.Addr, reason, detail string) {
 	}
 }
 
+// overriddenCaps records that the client claimed a capability the greeting no
+// longer offered, and that the relay cleared it from the login too.
+//
+// A separate line from strippedCaps, and a louder one, because the two mean
+// different things: stripping is the relay editing an offer, while this is a
+// client overriding the edit. No driver does that by accident -- it means
+// something on the segment built its own handshake response -- so it reads as a
+// deny-level event even though the connection is allowed to continue with the
+// capability off.
+func (t *server) overriddenCaps(se *session, cleared uint32) {
+	t.host.Logs().SecurityEvent(context.Background(), "deny", "mysql_capabilities_overridden",
+		"listener", t.name, "client_ip", se.ip.String(), "proto", "mysql",
+		"capabilities", strings.Join(wire.CapList(cleared), ","))
+	if bl := t.host.Bans(); bl != nil && se.ip.IsValid() {
+		bl.Observe(se.ip, "mysql_capabilities_overridden")
+	}
+}
+
 // strippedCaps records that the relay narrowed the server's greeting.
 //
 // alert rather than deny: nothing was refused, the connection went through, and

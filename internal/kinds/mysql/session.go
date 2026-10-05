@@ -30,9 +30,11 @@ type session struct {
 	cliReader, srvReader *wire.Reader
 
 	secure bool
-	// serverCaps and clientCaps are what each side offered and asked for, and
-	// stripped is what the relay cleared from the greeting.
-	serverCaps, clientCaps, stripped uint32
+	// serverCaps and clientCaps are what each side offered and asked for,
+	// stripped is what the relay cleared from the greeting, and claimed is what
+	// the client asked for anyway after the strip -- cleared from the login the
+	// relay forwarded, so clientCaps no longer holds it.
+	serverCaps, clientCaps, stripped, claimed uint32
 
 	// authed says the authentication exchange is over, so the client's packets
 	// are commands rather than credential material.

@@ -245,6 +245,10 @@ func (t *server) handshake(se *session, hs time.Duration) error {
 			t.deny(se.ip, "tls_required", "the listener has no certificate")
 			return errRefused
 		}
+		if err := t.clearClaimedCaps(se, &first, l); err != nil {
+			t.deny(se.ip, "unreadable_login", err.Error())
+			return errRefused
+		}
 		// The short form goes upstream too, because the server has to know the
 		// client is upgrading -- and then both legs are encrypted
 		// independently.
@@ -262,6 +266,10 @@ func (t *server) handshake(se *session, hs time.Duration) error {
 			t.deny(se.ip, "unreadable_login", err.Error())
 			return errRefused
 		}
+	}
+	if err := t.clearClaimedCaps(se, &first, l); err != nil {
+		t.deny(se.ip, "unreadable_login", err.Error())
+		return errRefused
 	}
 	se.clientCaps = l.Caps
 	se.user, se.database = l.User, l.Database
@@ -308,6 +316,42 @@ func (t *server) handshake(se *session, hs time.Duration) error {
 	if err := se.writeUp(wire.Frame(first.Seq, first.Payload)); err != nil {
 		return err
 	}
+	return nil
+}
+
+// clearClaimedCaps takes the denied capabilities out of the client's handshake
+// response before it is forwarded.
+//
+// Stripping the server's greeting is only half of it. The server decides what
+// this connection may do by reading the client's capability field, not by
+// intersecting it with the greeting it sent, so a client that sets
+// CLIENT_LOCAL_FILES or CLIENT_MULTI_STATEMENTS has them whatever the greeting
+// said -- and a client is whatever the peer wrote, not a cooperative driver. The
+// bits are cleared here so that the server is told what the relay decided rather
+// than what the peer asked for.
+//
+// Cleared rather than refused, for the reason StripCaps gives: Go's MySQL driver
+// sets CLIENT_LOCAL_FILES unconditionally and gates the feature in its own
+// configuration, so refusing would break ordinary applications. The event is
+// recorded at deny level all the same, because a client whose bits had to be
+// cleared read an edited greeting and overrode it.
+//
+// The packet is replaced with a copy: the payload belongs to the reader's buffer
+// and the relay must not write through it.
+func (t *server) clearClaimedCaps(se *session, p *wire.Packet, l *wire.Login) error {
+	deny := t.policy.DenyCaps()
+	if l.Caps&deny == 0 {
+		return nil
+	}
+	payload := append([]byte(nil), p.Payload...)
+	cleared, err := wire.ClearLoginCaps(payload, deny)
+	if err != nil {
+		return err
+	}
+	p.Payload = payload
+	l.Caps &^= cleared
+	se.claimed |= cleared
+	t.overriddenCaps(se, cleared)
 	return nil
 }
 
