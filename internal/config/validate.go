@@ -2891,6 +2891,14 @@ var denyReasons = map[string]bool{
 	// rather than about which bound it crossed.
 	"sse_denied":  true,
 	"pop3_denied": true, "pop3_auth_failed": true, "pop3_anomaly": true,
+	// mysql_capabilities_overridden is separate from mysql_denied because the
+	// connection was not refused: the relay cleared the capability the client
+	// claimed after the greeting had stopped offering it, and carried on. What
+	// makes it worth banning on is that no driver does that by accident -- it
+	// means something on the segment wrote its own handshake response -- so it
+	// is a finding about the peer rather than about the policy, and an estate
+	// may want to ban on it while leaving ordinary policy refusals alone.
+	"mysql_capabilities_overridden": true,
 }
 
 // securityTxtFieldRE bounds an extra field name to the token RFC 9116
