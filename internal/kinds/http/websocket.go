@@ -230,6 +230,12 @@ type wsConn struct {
 // while a frame is incomplete. It is the frame bound plus a header.
 func (c *wsConn) maxPending() int64 { return c.g.cfg.MaxFrameBytes + 16 }
 
+// maxHeld bounds the complete frame bytes retained while an enforcing guard
+// waits for a fragmented message to finish. MaxMessageBytes only counts
+// payload, so leave room for one maximum-sized frame of wire overhead while
+// independently bounding empty fragments and interleaved control frames.
+func (c *wsConn) maxHeld() int64 { return c.g.cfg.MaxMessageBytes + c.maxPending() }
+
 func (s *engine) newWSConn(inner net.Conn, g *wsGuard, st *reqState) net.Conn {
 	g.connections.Add(1)
 	return &wsConn{Conn: inner, g: g, st: st, s: s,
@@ -280,6 +286,12 @@ func (c *wsConn) readEnforced(p []byte) (int, error) {
 				return 0, c.fail(violation)
 			}
 			if consumed > 0 {
+				if int64(len(c.readHold))+int64(consumed) > c.maxHeld() {
+					c.readBuf = nil
+					c.readHold = nil
+					c.mu.Unlock()
+					return 0, c.fail(&wsViolation{"message_size", "fragmented message wire data over max_message_bytes", wsCloseTooBig})
+				}
 				c.readHold = append(c.readHold, c.readBuf[:consumed]...)
 				c.readBuf = c.readBuf[consumed:]
 				if !c.fromCli.fragging {
