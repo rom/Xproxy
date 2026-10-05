@@ -308,6 +308,39 @@ func TestWebSocketGuardCloses(t *testing.T) {
 	}
 }
 
+// TestWebSocketGuardBoundsFragmentWireData ensures that frame overhead cannot
+// grow the enforcement hold buffer forever without increasing message payload.
+func TestWebSocketGuardBoundsFragmentWireData(t *testing.T) {
+	origin := wsEcho(t, nil)
+	s := wsProxy(t, origin.URL,
+		"    websocket_guard: {max_frame_bytes: 256, max_message_bytes: 512, deny_patterns: [\"blocked\"]}")
+	c, br, code := wsDial(t, s.Addrs()["main"], "/chat", "")
+	if code != http.StatusSwitchingProtocols {
+		t.Fatalf("upgrade status %d", code)
+	}
+	defer func() { _ = c.Close() }()
+
+	first := wsFrame(wsOpText, nil, true)
+	first[0] &^= 0x80
+	frames := first
+	for len(frames) <= 800 {
+		continuation := wsFrame(wsOpContinuation, nil, true)
+		continuation[0] &^= 0x80
+		frames = append(frames, continuation...)
+	}
+	if _, err := c.Write(frames); err != nil {
+		t.Fatal(err)
+	}
+	_ = c.SetReadDeadline(time.Now().Add(3 * time.Second))
+	op, payload, err := wsRead(br)
+	if err != nil {
+		t.Fatalf("reading close after excessive fragmented wire data: %v", err)
+	}
+	if op != wsOpClose || len(payload) < 2 || binary.BigEndian.Uint16(payload[:2]) != wsCloseTooBig {
+		t.Fatalf("response = opcode %d payload %v, want close %d", op, payload, wsCloseTooBig)
+	}
+}
+
 // TestWebSocketGuardDoesNotForwardDeniedMessage verifies enforcement at the
 // protected side of the proxy. Checking only that the client sees a close can
 // miss a rejected Read returning bytes that io.Copy has already delivered.
