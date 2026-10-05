@@ -2,6 +2,7 @@ package pop3
 
 import (
 	"bufio"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"strings"
@@ -60,9 +61,14 @@ type fakeServer struct {
 	// sasl answers AUTH with a challenge and then an +OK, which is the
 	// exchange whose lines are credential material.
 	sasl bool
+	// tlsCert and tlsKey make the server answer STLS and upgrade. Without
+	// them STLS is refused, which is the other half of that decision.
+	tlsCert, tlsKey string
+	tlsCfg          *tls.Config
 
-	mu   sync.Mutex
-	seen []string
+	mu       sync.Mutex
+	seen     []string
+	upgraded bool
 }
 
 func startServer(t *testing.T, f *fakeServer) *fakeServer {
@@ -81,6 +87,13 @@ func startServer(t *testing.T, f *fakeServer) *fakeServer {
 	if f.message == nil {
 		f.message = []string{"Subject: hello", "", "hi", ".hidden leading dot"}
 	}
+	if f.tlsCert != "" {
+		pair, err := tls.LoadX509KeyPair(f.tlsCert, f.tlsKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.tlsCfg = &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12}
+	}
 	t.Cleanup(func() { _ = ln.Close() })
 	go func() {
 		for {
@@ -95,6 +108,13 @@ func startServer(t *testing.T, f *fakeServer) *fakeServer {
 }
 
 func (f *fakeServer) addr() string { return f.ln.Addr().String() }
+
+// wasUpgraded reports whether this server's connection ended up inside TLS.
+func (f *fakeServer) wasUpgraded() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.upgraded
+}
 
 func (f *fakeServer) saw() []string {
 	f.mu.Lock()
@@ -139,6 +159,23 @@ func (f *fakeServer) serve(c net.Conn) {
 				continue
 			}
 			_, _ = fmt.Fprintf(c, "+OK AUTH\r\n")
+		case "STLS":
+			// A server with no certificate refuses, which is what a relay
+			// configured to upgrade has to treat as a failure rather than as
+			// permission to carry on in clear.
+			if f.tlsCfg == nil {
+				_, _ = fmt.Fprintf(c, "-ERR no STLS here\r\n")
+				continue
+			}
+			_, _ = fmt.Fprintf(c, "+OK begin TLS\r\n")
+			tc := tls.Server(c, f.tlsCfg)
+			if err := tc.Handshake(); err != nil {
+				return
+			}
+			c, br = tc, bufio.NewReader(tc)
+			f.mu.Lock()
+			f.upgraded = true
+			f.mu.Unlock()
 		case "CAPA":
 			_, _ = fmt.Fprintf(c, "+OK capability list follows\r\n")
 			for _, l := range f.capa {

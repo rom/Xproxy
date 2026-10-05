@@ -406,8 +406,8 @@ Six tests exist for the split itself:
 | `internal/radius`, `internal/kinds/radius` (RADIUS) | `TestTheLengthFieldDecidesWhereAPacketEnds`, `TestAnImpossibleAttributeLengthIsRefusedRatherThanSkipped` (an attribute whose length is 0 or 1 cannot be skipped, because skipping it is an infinite loop), `TestAVendorAttributeIsOnlyUnwrappedWhenItsOwnLengthAgrees`, `TestAnExtendedAttributeKeepsItsExtendedType`, `TestTheMessageAuthenticatorVerifies`, `TestTheResponseAuthenticatorVerifies`, `TestARealmIsSplitTheWayAServerSplitsIt` (whichever of `@`, `\` and `/` comes first, which is not the same as whichever is looked for first), `TestTheAuthenticationMethodIsReadTheWayAServerWouldChooseIt`, `TestAPasswordLengthTheObfuscationCannotHaveProducedIsRejected`, `TestAPrivilegeGrantIsFoundInTheFormsEquipmentUses`, `TestATextAttributeWithAControlCharacterIsRefused`, `TestCodeAndAttributeNamesRoundTrip`, `TestDirectionIsAPropertyOfTheCode`, `TestSummaryNamesWhatAPacketIsWithoutTheCredential`; the EAP half: `TestEAPIsReassembledAcrossItsAttributes`, `TestTheEAPLengthFieldDecidesWhereThePacketEnds`, `TestASuccessCarriesNoType`, `TestANakSaysWhichMethodsTheClientWill`, `TestAnIdentityWithAControlCharacterIsRefused`, `TestAnExpandedTypeIsReadOrRefused`, `TestTheWeakMethodsAreTheOnesNamed`, `TestAReassemblyLargerThanAPacketIsRefused`; `FuzzParse` (every attribute's recorded offset and value lie inside the packet it came from); `internal/kinds/radius` `TestARequestReachesTheServerAndItsAnswerComesBack`, `TestAPacketWithNoDigestIsRefusedAndOneWithABadDigestIsToo`, `TestAReplyThatGrantsTooMuchPrivilegeIsRefused`, `TestAPrivilegeGrantIsBoundedWhateverSeparatesThePairs`, `TestAnObserveRuleDoesNotShadowTheDenyRuleBelowIt`, `TestADowngradeToEAPMD5IsRefusedWhicheverWayItIsAsked` (the packet's own type and the Nak list it offers instead), `TestTwoClientsUsingOneIdentifierEachGetTheirOwnAnswer`, `TestShadowModeCarriesWhatItWouldRefuseAndStillVerifies`, `TestADynamicAuthorizationRequestIsNotCarried`, `TestAnAccountingRequestIsVerifiedAgainstItsComputedAuthenticator`; the policy and the pending table on their own: `TestTheDefaultsAreTheOnesThatMatter`, `TestCompileRefusesEveryNameItCannotRead`, `TestANameListAlsoReadsNumbers`, `TestTheClientListsAreAnsweredFirstAndDenyWins`, `TestADeniedCodeCannotBeAllowedByACodeList`, `TestTheAttributeListsReadTheTypesARequestCarried`, `TestPlaintextPasswordsAreRefusedByShape`, `TestTheCredentialListIsListenerWideUnlessARuleNarrowsIt`, `TestTheEAPPolicyReadsTheOffersAsWellAsTheMethod`, `TestARuleNarrowsWhatItsOwnTrafficMayBeTalkedDownTo`, `TestTheNameListsOnlyApplyToTheCodesThatCarryAName`, `TestRequireRealmRefusesABareName`, `TestNeedMACIsAnsweredByAddressAlone`, `TestTheRulesDecideInOrderAndTheDefaultDecidesTheRest`, `TestAScheduledRuleRefusesOutsideItsWindow`, `TestAnObserveRuleIsRecordedAndDecidesNothing`, `TestARuleCoversOnlyWhatEverySelectorMatches`, `TestTheReplyLegBoundsWhatIsGranted`, `TestTheAnomalyEventNamesTheMethodAndTheRealm`, `TestTheOfferListIsRenderedByName`, `TestWithoutASecretTheIdentifierIsTheClientsAndACollisionIsRefused`, `TestWithASecretTheRelayAllocatesItsOwnIdentifier`, `TestAnAnswerFromTheWrongServerIsNotThisExchangesAnswer`, `TestALateAnswerIsClaimedAndReportedAsLate`, `TestAnExpiredExchangeDoesNotHoldItsIdentifier`, `TestATranslatingListenerRunsOutOfIdentifiersBeforeItsBound`, `TestDropGivesTheIdentifierBack` | The protocol whose integrity check is optional and whose reply authenticator is an MD5 digest -- CVE-2024-3596 is a collision on exactly that digest, and RFC 3579's keyed Message-Authenticator is the mitigation, which is why `require_message_authenticator` is a setting with a test either side of it. The last test is the one that found a real defect: Accounting-Request and the RFC 5176 dynamic codes carry a *computed* authenticator rather than a nonce, so verifying them against the packet's own sixteen bytes accepted anything; the relay now computes what those codes must carry |
 | `internal/tacacs`, `internal/kinds/tacacs` (TACACS+) | `TestAHeaderIsRefusedBeforeAnythingIsAllocatedForIt`, `TestTheObfuscationIsItsOwnInverseAndIsKeyedBySequence`, `TestDeobfuscatedNeverWritesOnTheBufferItWasGiven`, `TestAnAuthenticationStartIsReadAndItsPasswordIsNotKept`, `TestABodyWhoseFieldsDoNotAddUpIsRefused` (the declared lengths have to total the body exactly, not fit inside it), `TestAReplyAndAContinueRoundTrip`, `TestAnAuthorizationRequestReadsTheCommandItIsAbout`, `TestAnArgumentIsSplitOnItsFirstSeparator`, `TestAnEmptyArgumentIsRefused`, `TestAnArgumentCountPastTheBodyIsRefused`, `TestAnAuthorizationResponseReadsWhatTheServerGranted`, `TestAnAccountingRecordIsReadAndNamed`, `TestAnUnauthenticatedMethodIsNamedAsOne`, `TestTheNamesARuleIsWrittenWithRoundTrip`, `FuzzHeader`, `FuzzBodies`; `internal/kinds/tacacs` `TestACommandIsAllowedOrRefusedByItsWholeLine`, `TestANameTypedAtTheServersPromptIsStillDecidedAbout`, `TestARulesDenyListAddsToTheListenersRatherThanReplacingIt`, `TestADenyCoversTheCommandAndWhatIsAppendedToIt`, `TestAnObserveRuleIsRecordedAndDecidesNothing` (the command and its arguments arrive as separate arguments and the policy is written as one line), `TestARefusalIsAnAnswerAnEngineerCanRead`, `TestAPrivilegeGrantAboveTheBoundIsRefusedOnTheReply`, `TestAFollowReplyIsNotCarriedEvenInShadowMode`, `TestABodyInTheClearIsRefused`, `TestAnUnauthenticatedAuthorizationIsRefused`, `TestAccountingIsCarriedAndCounted`, `TestTwoSessionsOnOneConnectionAreKeptApart`, `TestASequenceNumberThatRepeatsIsRefused`, `TestAListenerWithNoKeyReadsHeadersOnly`; the policy on its own: `TestTheDefaultsRefuseTheFourThingsNobodyShouldSend`, `TestCompileRefusesEveryNameItCannotRead`, `TestThePatternGrammarRefusesEverythingItDoesNotMean`, `TestAnAllowListReadsExactlyAndADenyListReadsWhatFollows`, `TestARuleNarrowsTheCommandListsInBothDirections`, `TestARequestWithNoCommandMeetsNoCommandPolicy`, `TestTheHeaderDecidesWhatTwelveOctetsAllow`, `TestTheAuthenticationSettingsAreReadOnlyOnAnAuthenticationStart`, `TestAnUnauthenticatedAuthorizationIsRefusedUnlessItIsAllowed`, `TestTheBoundsAndTheIdentityListsEachRefuseOnce`, `TestTheRulesDecideInOrderAndCarryTheirOwnBound`, `TestARuleCoversOnlyWhatEverySelectorMatches`, `TestObserveRulesAreRecordedAndDecideNothingHere`, `TestTheAnswerLegRefusesAFollowAndBoundsAGrant`, `TestTheClientListsAreAnsweredBeforeAnythingIsRead`, `TestTheEngineeringClassificationNamesTheCommandsThatChangeADevice`, `TestATimeoutIsToldApartFromEveryOtherError` | This is the protocol device administration runs on, so the per-command tests are the point: what a policy can say here is which configuration commands a named engineer may run on a named device, and the server's answer is what the device enforces. The obfuscation RFC 8907 itself calls "not cryptographically sound" is implemented as what it is -- a keyed MD5 pad, self-inverse, which the test proves by deobfuscating its own output -- and `FOLLOW`, which hands the client another server's address and key, is refused rather than relayed |
 | `internal/kerberos`, `internal/kinds/kkdcp` (Kerberos over HTTP, MS-KKDCP) | `TestAnASRequestIsReadDownToWhatAPolicyDecidesOn`, `TestATagAndAMsgTypeThatDisagreeAreRefused`, `TestARequestMustCarryARealmAndAnEncryptionType`, `TestOnlyWeakIsStrongerThanMentioningAWeakType`, `TestS4UIsRecognisedInBothOfItsForms`, `TestAReplySaysWhichEncryptionTypeTheKDCActuallyUsed`, `TestAKRBErrorIsReadForItsCodeAndText`, `TestAnAPRequestIsReadAsFarAsItsTicket`, `TestAMessageTypeAProxyDoesNotCarryIsRefused`, `TestALifetimeIsReadFromTillAndFrom`, `TestPreauthIsOnlyTheTypesThatProveACredential`; the DER reader: `TestTheDERReaderRefusesWhatIsNotDER`, `TestANonMinimalIntegerIsRefused`, `TestAStringWithAControlCharacterIsRefused`, `TestADeepNestingIsRefusedRatherThanFollowed`; the envelope: `TestTheEnvelopeRoundTrips`, `TestTheInnerLengthPrefixMustSayExactlyWhatIsThere`, `TestAnEnvelopeWithoutAKerbMessageIsRefused`, `TestAnUnknownEnvelopeFieldIsSkipped`, `TestTheLocatorHintIsCarriedAndNotActedOn`, `TestALongEnvelopeIsLengthedCorrectly`, `FuzzParse`, `FuzzProxyMessage`; `internal/kinds/kkdcp` `TestAnASRequestReachesTheKDCAndItsReplyComesBack`, `TestARealmThisProxyDoesNotServeIsRefused`, `TestTheTwoRealmsHaveToAgree`, `TestARequestOfferingNothingButRC4IsRefusedAndAMixedOneIsNot`, `TestAnUnknownEncryptionTypeDoesNotMakeAnRC4OnlyRequestLookMixed`, `TestOnePadataItemDoesNotTurnTheExemptAccountCheckOff`, `TestProtocolTransitionIsRefusedWhicheverPadataAsksForIt`, `TestARequestThatNamesAFieldTwiceIsRefused`, `TestTheRefusalDoesNotNameTheControlThatFired`, `TestAnObserveRuleDoesNotShadowTheDenyRuleBelowIt`, `TestAnASReplyToARequestWithNoPreauthenticationIsRefused`, `TestDelegationIsRefusedUnlessBothHalvesAreAllowed`, `TestEnumeratingServiceTicketsTripsTheBound`, `TestAPreauthenticationFailureBurstStopsTheClient`, `TestTheHTTPSurfaceIsOnePathAndOneMethod`, `TestAListenerWithNoRealmsIsRefusedAtLoad`; the policy and the counting window on their own: `TestAListenerWithNoRealmListIsRefused`, `TestTheDefaultsRefuseTheThreeWaysAKDCIsAbused`, `TestCompileRefusesEveryNameItCannotRead`, `TestTheRealmIsDecidedFirstAndEveryRefusalIsHard`, `TestTheDelegationAndAnonymitySettingsEachRefuseOnce`, `TestTheOptionsAreRefusedByPairAndByName`, `TestAServiceIsNamedWholeOrByItsClass`, `TestTheEncryptionTypesAreDecidedOnTheRequest`, `TestTheTicketLifetimeIsBoundedByTheRuleThatDecides`, `TestTheRulesDecideInOrderAndCarryTheirOwnServiceDenyList`, `TestARuleCoversOnlyWhatEverySelectorMatches`, `TestObserveRulesAreRecordedAndDecideNothingHere`, `TestTheReplyLegRefusesTheCrackableAnswers`, `TestTheOfferedTypesAreRenderedByName`, `TestDistinctValuesAreCountedPerClientInsideTheWindow`, `TestANameFallsOutOfTheWindow`, `TestOccurrencesAreCountedAndFallOutOfTheWindow`, `TestAClientPastTheBoundStopsBeingCounted`, `TestAFullTableDoesNotEvictAnActiveClient`, `TestTheSweepDropsTheClientsNothingWasHeardFrom`, `TestAnAbsentWindowAnswersNothing`; the DER reader on its own: `TestAKerberosStringIsReadUnderEveryTagTheInstalledBaseUses` (GeneralString is what the standard says and what nobody sends, so the four other string tags are read too, and nothing else is), `TestAnExplicitTagHasToBeConstructed`, `TestAKerberosTimeIsTheOneFormTheStandardDefines`, `TestTheOptionsBitsAreReadOnlyFromAWholeNumberOfOctets`, `TestAnIntegerIsReadInOneSpelling` (a non-minimal encoding is a different message with the same value, which is how two readers disagree), `TestTheNamesARuleIsWrittenWithRoundTripHere` | Three attacks are what this kind exists for, and each has a test that fails if the check is removed: Kerberoasting is a TGS-REQ that asks for RC4 and nothing else, AS-REP roasting is visible on the *reply* rather than the request -- an AS-REP to a request that carried no pre-authentication is the roastable material -- and a password spray is bounded per client address. The DER tests are the other half: the envelope arrives over HTTPS from whoever can reach the port, and inside it is a length-prefixed message the proxy parses before the KDC ever sees it |
-| `internal/imap`, `internal/kinds/imap` (IMAP) | `TestACommandLineIsReadAsATagANameAndItsArguments`, `TestATagAClientMayNotSendIsRefused`, `TestALiteralIsReadFromTheCommandLineBeforeItsOctetsArrive`, `TestAQuotedStringKeepsOnlyTheTwoEscapesTheGrammarHas`, `TestAParenthesisedListIsKeptWhole`, `TestTheStateTableIsWhatTheRFCSays`, `TestUIDIsTheCommandItQualifies`, `TestTheMailboxArgumentIsFoundWhereEachCommandPutsIt`, `TestAControlCharacterIsRefusedInBothDirections`, `TestALineTooLongIsRefusedAndTheNextCommandStillReads`, `TestABareNewlineAndABareCRAreRefused`, `TestALiteralIsReadOrSkippedExactly`, `TestAResponseIsReadForItsStatusCodeAndItem`, `TestPreauthAndTheOtherStatusHelpersNameWhatTheyAre`, `TestACapabilityListIsNarrowedWithoutReordering`, `TestAModifiedUTF7MailboxNameIsDecoded`, `TestASequenceSetIsCountedWithoutBeingExpanded`, `TestWhatACommandIsForPolicyPurposes`, `TestTheStateNamesAreTheOnesWritten`, `FuzzParseCommand`, `FuzzParseResponse`, `FuzzDecodeMailbox`, `FuzzParseSeqSet`; `internal/kinds/imap` `TestACommandReachesTheServerAndItsAnswerComesBack`, `TestAFetchThatNamesMoreOfTheMailboxThanAllowedIsRefused`, `TestAnAppendIsDecidedOnItsDeclaredSizeAndItsOctetsAreDropped`, `TestALineTheServerDidNotAskForIsNotCredentialMaterial`, `TestASASLExchangeIsCarriedAStepAtATime`, `TestAnArgumentSentAsALiteralIsRefused`, `TestASynchronisingLiteralIsNotReadAfterARefusal`, `TestAChainedLiteralIsBoundedByTheRuleThatDecided`, `TestAnAnomalyRefusalDropsTheOctetsTheClientCommitted`, `TestTheInboxFoldCoversTheHierarchyBelowIt`, `TestTheCapabilityListIsNarrowedBeforeTheClientSeesIt`, `TestALoginInTheClearIsRefusedEvenInShadowMode`, `TestACommandInTheWrongStateIsRefusedBeforeTheServerSeesIt`, `TestAMailboxPolicyComparesTheDecodedName`, `TestAPreauthGreetingIsNotCarried`, `TestAReadOnlyListenerRefusesTheWritesIncludingTheUIDForms`, `TestIdleAcceptsOnlyDone`, `TestTheCommandListAndTheUnknownCommand`, `TestAFailedLoginIsCountedAndReported`, `TestARuleCarriesItsOwnBoundsAndLists`, `TestAClientOffTheListIsRefusedBeforeTheServerIsDialled`, `TestTheAnomalyModelsSeeTheCommandsAndTheVolume`, `TestDenyResponseDropSaysNothing`, `TestALogoutEndsTheSession`; the policy on its own: `TestTheDefaultsAreTheOnesThatMatter`, `TestCompileRefusesWhatCannotBeAPolicy`, `TestACommandIsRefusedBeforeAnyListIsConsulted`, `TestTheCredentialsTransportIsDecidedBeforeItTravels`, `TestTheClaimedIdentityIsMeasuredAgainstTheUserList`, `TestTheMailboxPatternsReadTheTwoWildcardsApart`, `TestTheMailboxListsApplyToEveryNameACommandRefersTo`, `TestTheCommandListsAndTheReadOnlySwitch`, `TestTheVolumeBoundsAreDecidedBeforeTheOctetsArrive`, `TestARuleNarrowsThePolicyForTheTrafficItNames`, `TestARulesClientListAndScheduleSelectIt`, `TestDefaultDenyRefusesWhatNoRuleAllows`, `TestTheClientListsDecideBeforeTheGreeting`, `TestAPreauthGreetingIsADecisionOfItsOwn` | The request this kind exists to stop is well-formed, so the tests are about *size* rather than shape. `TestAFetchThatNamesMoreOfTheMailboxThanAllowedIsRefused` is the central one: a sequence set is counted without being expanded (`TestASequenceSetIsCountedWithoutBeingExpanded` proves `1:20000` costs twenty thousand nothing in memory), an open-ended `1:*` is refused on its own, and the refusal arrives before the mail server has read anything. `TestAnAppendIsDecidedOnItsDeclaredSizeAndItsOctetsAreDropped` is the other half and fails in two directions if the check moves: the bound has to be applied to `{N}` rather than to what arrived, because LITERAL+ does not wait, *and* the announced octets have to be consumed, because the client is going to send them whatever it is told and a connection left mid-literal desynchronises. `TestAMailboxPolicyComparesTheDecodedName` is the test that would pass for the wrong reason without `TestAModifiedUTF7MailboxNameIsDecoded` beside it: the policy names `Shared/台北` and the client sends `Shared/&U,BTFw-`. Three refusals are about what the *server* said — a narrowed capability list, with `LOGINDISABLED` added and `COMPRESS=DEFLATE` removed, and a `PREAUTH` greeting not carried — and `TestALoginInTheClearIsRefusedEvenInShadowMode` is the one deliberate exception to shadow mode in this kind, because a password that has travelled cannot be un-sent. The state table is tested against RFC 9051 §3 directly, `TestUIDIsTheCommandItQualifies` keeps `UID FETCH` from being a way to spell a command the policy refuses, and the four fuzz targets cover the command parser, the response parser, the modified-UTF-7 decoder and the sequence-set reader — every byte the client controls before a decision is made |
-| `internal/pop3`, `internal/kinds/pop3` (POP3) | `TestACommandIsReadAsAKeywordAndItsArguments`, `TestWhetherAReplyIsMultiLineDependsOnTheCommandAndItsArgument`, `TestTheTerminatorAndTheStuffedDotAreTheSameAmbiguityAsSMTPs`, `TestTheStateTableIsWhatTheRFCsSay`, `TestAReplyIsReadForItsStatusAndCode`, `TestTheReaderBoundsALineAndRefusesTheAmbiguousEndings`, `TestTheNumbersACommandCarriesAreRead`, `TestTheIdentityIsReadAndTheCredentialIsNot`, `TestWritesAndCollectsNameWhatTheyAre`, `TestTheCapabilityListIsReadLineByLine`, `TestTheGreetingTimestampIsFoundOrAbsent`, `FuzzParseCommand`, `FuzzParseReply`, `FuzzUnstuff`; `internal/kinds/pop3` `TestACommandReachesTheServerAndItsAnswerComesBack`, `TestWhetherAReplyIsOneLineOrManyIsDerivedNotGuessed`, `TestTheByteBoundStopsTheTransferRatherThanTheNextCommand`, `TestTheMessageBoundIsAnsweredBeforeTheCommand`, `TestAPasswordInTheClearIsRefusedEvenInShadowMode`, `TestTheCapabilityListIsNarrowedBeforeTheClientSeesIt`, `TestAReadOnlyListenerRefusesDeleAndRset`, `TestACommandInTheWrongStateIsRefusedBeforeTheServerSeesIt`, `TestTheCommandListAndTheUnknownCommand`, `TestAFailedLoginIsCountedAndReported`, `TestTheGreetingIsCarriedUnchangedSoAPOPCanWork`, `TestARuleCarriesItsOwnBoundAndItsOwnLists`, `TestASASLExchangeIsCarriedWithoutBeingRead`, `TestAuthWithNoMechanismIsRefused`, `TestAClientOffTheListIsRefusedBeforeTheServerIsDialled`, `TestDenyResponseDropSaysNothing`, `TestTheAnomalyModelsSeeTheCommandsAndTheVolume`; the policy on its own: `TestTheDefaultsRequireTheTransportAndBoundNothingElse`, `TestCompileRefusesWhatCannotBeAPolicy`, `TestACommandIsRefusedBeforeAnyListIsConsulted`, `TestTheCredentialsTransportIsDecidedBeforeItTravels`, `TestTheClaimedIdentityIsMeasuredAgainstTheUserList`, `TestTheCommandListsAndTheReadOnlySwitch`, `TestTheCopyingBoundIsAnsweredBeforeTheNextCommand`, `TestARuleNarrowsThePolicyForTheTrafficItNames`, `TestARulesScheduleSelectsIt`, `TestDefaultDenyRefusesWhatNoRuleAllows`, `TestTheClientListsDecideBeforeTheGreeting`, `TestTheRelaysSmallHelpers` | POP3 is a small protocol with two traps, and each has a test that fails if the care is removed. `TestWhetherAReplyIsMultiLineDependsOnTheCommandAndItsArgument` and its relay counterpart `TestWhetherAReplyIsOneLineOrManyIsDerivedNotGuessed` are the first: `LIST` is many lines and `LIST 3` is one, `UIDL` the same, and a relay that guesses reads the next reply as part of this one — after which a client is shown somebody else's mail or none of its own. `TestTheTerminatorAndTheStuffedDotAreTheSameAmbiguityAsSMTPs` is the second, and names what it is: RFC 1939 §3's dot-stuffing is SMTP's ambiguity in a different protocol, so the round-trip is proved in both directions and the relay forwards the server's line verbatim rather than stuffing an already-stuffed one. Then the bound, which on this protocol is a running total: `TestTheByteBoundStopsTheTransferRatherThanTheNextCommand` holds the connection open through a refusal of `max_messages` and ends it inside a `RETR` that crosses `max_retr_bytes`, because a truncated message presented as whole would be worse than no message. `TestTheGreetingIsCarriedUnchangedSoAPOPCanWork` is the test for a decision that looks like an omission: the relay does not mint a greeting, because the APOP digest is computed over the timestamp in the server's own, and a greeting of this relay's would make every digest unverifiable. The three fuzz targets are the command parser, the reply parser and the unstuffer |
+| `internal/imap`, `internal/kinds/imap` (IMAP) | `TestACommandLineIsReadAsATagANameAndItsArguments`, `TestATagAClientMayNotSendIsRefused`, `TestALiteralIsReadFromTheCommandLineBeforeItsOctetsArrive`, `TestAQuotedStringKeepsOnlyTheTwoEscapesTheGrammarHas`, `TestAParenthesisedListIsKeptWhole`, `TestTheStateTableIsWhatTheRFCSays`, `TestUIDIsTheCommandItQualifies`, `TestTheMailboxArgumentIsFoundWhereEachCommandPutsIt`, `TestAControlCharacterIsRefusedInBothDirections`, `TestALineTooLongIsRefusedAndTheNextCommandStillReads`, `TestABareNewlineAndABareCRAreRefused`, `TestALiteralIsReadOrSkippedExactly`, `TestAResponseIsReadForItsStatusCodeAndItem`, `TestPreauthAndTheOtherStatusHelpersNameWhatTheyAre`, `TestACapabilityListIsNarrowedWithoutReordering`, `TestAModifiedUTF7MailboxNameIsDecoded`, `TestASequenceSetIsCountedWithoutBeingExpanded`, `TestWhatACommandIsForPolicyPurposes`, `TestTheStateNamesAreTheOnesWritten`, `FuzzParseCommand`, `FuzzParseResponse`, `FuzzDecodeMailbox`, `FuzzParseSeqSet`; `internal/kinds/imap` `TestACommandReachesTheServerAndItsAnswerComesBack`, `TestAFetchThatNamesMoreOfTheMailboxThanAllowedIsRefused`, `TestAnAppendIsDecidedOnItsDeclaredSizeAndItsOctetsAreDropped`, `TestALineTheServerDidNotAskForIsNotCredentialMaterial`, `TestASASLExchangeIsCarriedAStepAtATime`, `TestAnArgumentSentAsALiteralIsRefused`, `TestASynchronisingLiteralIsNotReadAfterARefusal`, `TestAChainedLiteralIsBoundedByTheRuleThatDecided`, `TestAnAnomalyRefusalDropsTheOctetsTheClientCommitted`, `TestTheInboxFoldCoversTheHierarchyBelowIt`, `TestTheCapabilityListIsNarrowedBeforeTheClientSeesIt`, `TestALoginInTheClearIsRefusedEvenInShadowMode`, `TestACommandInTheWrongStateIsRefusedBeforeTheServerSeesIt`, `TestAMailboxPolicyComparesTheDecodedName`, `TestAPreauthGreetingIsNotCarried`, `TestAReadOnlyListenerRefusesTheWritesIncludingTheUIDForms`, `TestIdleAcceptsOnlyDone`, `TestTheCommandListAndTheUnknownCommand`, `TestAFailedLoginIsCountedAndReported`, `TestARuleCarriesItsOwnBoundsAndLists`, `TestAClientOffTheListIsRefusedBeforeTheServerIsDialled`, `TestTheAnomalyModelsSeeTheCommandsAndTheVolume`, `TestDenyResponseDropSaysNothing`, `TestALogoutEndsTheSession`; the policy on its own: `TestTheDefaultsAreTheOnesThatMatter`, `TestCompileRefusesWhatCannotBeAPolicy`, `TestACommandIsRefusedBeforeAnyListIsConsulted`, `TestTheCredentialsTransportIsDecidedBeforeItTravels`, `TestTheClaimedIdentityIsMeasuredAgainstTheUserList`, `TestTheMailboxPatternsReadTheTwoWildcardsApart`, `TestTheMailboxListsApplyToEveryNameACommandRefersTo`, `TestTheCommandListsAndTheReadOnlySwitch`, `TestTheVolumeBoundsAreDecidedBeforeTheOctetsArrive`, `TestARuleNarrowsThePolicyForTheTrafficItNames`, `TestARulesClientListAndScheduleSelectIt`, `TestDefaultDenyRefusesWhatNoRuleAllows`, `TestTheClientListsDecideBeforeTheGreeting`, `TestAPreauthGreetingIsADecisionOfItsOwn`; the upgrade towards the server, which this relay performs on its own behalf: `TestTheUpstreamLegIsUpgradedByTheRelayItself`, `TestAnUpstreamThatRefusesTheUpgradeIsNotTalkedToInPlaintext`, `TestAPreauthGreetingIsStillRefusedAcrossTheUpgrade`, `TestTheUpgradeReadsPastUntaggedDataBeforeTheAnswer` | The request this kind exists to stop is well-formed, so the tests are about *size* rather than shape. `TestAFetchThatNamesMoreOfTheMailboxThanAllowedIsRefused` is the central one: a sequence set is counted without being expanded (`TestASequenceSetIsCountedWithoutBeingExpanded` proves `1:20000` costs twenty thousand nothing in memory), an open-ended `1:*` is refused on its own, and the refusal arrives before the mail server has read anything. `TestAnAppendIsDecidedOnItsDeclaredSizeAndItsOctetsAreDropped` is the other half and fails in two directions if the check moves: the bound has to be applied to `{N}` rather than to what arrived, because LITERAL+ does not wait, *and* the announced octets have to be consumed, because the client is going to send them whatever it is told and a connection left mid-literal desynchronises. `TestAMailboxPolicyComparesTheDecodedName` is the test that would pass for the wrong reason without `TestAModifiedUTF7MailboxNameIsDecoded` beside it: the policy names `Shared/台北` and the client sends `Shared/&U,BTFw-`. Three refusals are about what the *server* said — a narrowed capability list, with `LOGINDISABLED` added and `COMPRESS=DEFLATE` removed, and a `PREAUTH` greeting not carried — and `TestALoginInTheClearIsRefusedEvenInShadowMode` is the one deliberate exception to shadow mode in this kind, because a password that has travelled cannot be un-sent. The state table is tested against RFC 9051 §3 directly, `TestUIDIsTheCommandItQualifies` keeps `UID FETCH` from being a way to spell a command the policy refuses, and the four fuzz targets cover the command parser, the response parser, the modified-UTF-7 decoder and the sequence-set reader — every byte the client controls before a decision is made. The upstream upgrade had no test and did not work, the same defect pop3 had: `startTLSUpstream` read the server's greeting to reach the STARTTLS exchange and discarded it, and the relay then waited for a greeting RFC 3501 never sends -- after STARTTLS the server carries on in the state it was in and the client re-issues CAPABILITY instead. Every session on a listener with `upstream_tls_mode: starttls` hung until the idle timeout. On IMAP that line is also where this kind refuses PREAUTH and narrows the capability list, so losing it lost both decisions; the test asserts the narrowing and the PREAUTH refusal on an upgraded leg for exactly that reason. The greeting now comes back from the upgrade, and anything the server pipelined behind its answer is refused the way the client leg's injection is |
+| `internal/pop3`, `internal/kinds/pop3` (POP3) | `TestACommandIsReadAsAKeywordAndItsArguments`, `TestWhetherAReplyIsMultiLineDependsOnTheCommandAndItsArgument`, `TestTheTerminatorAndTheStuffedDotAreTheSameAmbiguityAsSMTPs`, `TestTheStateTableIsWhatTheRFCsSay`, `TestAReplyIsReadForItsStatusAndCode`, `TestTheReaderBoundsALineAndRefusesTheAmbiguousEndings`, `TestTheNumbersACommandCarriesAreRead`, `TestTheIdentityIsReadAndTheCredentialIsNot`, `TestWritesAndCollectsNameWhatTheyAre`, `TestTheCapabilityListIsReadLineByLine`, `TestTheGreetingTimestampIsFoundOrAbsent`, `FuzzParseCommand`, `FuzzParseReply`, `FuzzUnstuff`; `internal/kinds/pop3` `TestACommandReachesTheServerAndItsAnswerComesBack`, `TestWhetherAReplyIsOneLineOrManyIsDerivedNotGuessed`, `TestTheByteBoundStopsTheTransferRatherThanTheNextCommand`, `TestTheMessageBoundIsAnsweredBeforeTheCommand`, `TestAPasswordInTheClearIsRefusedEvenInShadowMode`, `TestTheCapabilityListIsNarrowedBeforeTheClientSeesIt`, `TestAReadOnlyListenerRefusesDeleAndRset`, `TestACommandInTheWrongStateIsRefusedBeforeTheServerSeesIt`, `TestTheCommandListAndTheUnknownCommand`, `TestAFailedLoginIsCountedAndReported`, `TestTheGreetingIsCarriedUnchangedSoAPOPCanWork`, `TestARuleCarriesItsOwnBoundAndItsOwnLists`, `TestASASLExchangeIsCarriedWithoutBeingRead`, `TestAuthWithNoMechanismIsRefused`, `TestAClientOffTheListIsRefusedBeforeTheServerIsDialled`, `TestDenyResponseDropSaysNothing`, `TestTheAnomalyModelsSeeTheCommandsAndTheVolume`; the policy on its own: `TestTheDefaultsRequireTheTransportAndBoundNothingElse`, `TestCompileRefusesWhatCannotBeAPolicy`, `TestACommandIsRefusedBeforeAnyListIsConsulted`, `TestTheCredentialsTransportIsDecidedBeforeItTravels`, `TestTheClaimedIdentityIsMeasuredAgainstTheUserList`, `TestTheCommandListsAndTheReadOnlySwitch`, `TestTheCopyingBoundIsAnsweredBeforeTheNextCommand`, `TestARuleNarrowsThePolicyForTheTrafficItNames`, `TestARulesScheduleSelectsIt`, `TestDefaultDenyRefusesWhatNoRuleAllows`, `TestTheClientListsDecideBeforeTheGreeting`, `TestTheRelaysSmallHelpers`; the transport, which on this protocol is two upgrades: `TestTheUpgradeIsAnsweredHereAndTheSessionCarriesOnInsideIt`, `TestACommandPipelinedBehindTheUpgradeIsNotCarried` (CVE-2011-0411 in POP3's spelling), `TestAnUpgradeThatDoesNotHandshakeEndsTheConnection`, `TestTheUpgradeIsRefusedWhereTheListenerDoesNotOfferIt`, `TestTheUpstreamLegIsUpgradedByTheRelayItself` (the test that found the defect below), `TestAnUpstreamThatRefusesTheUpgradeIsNotTalkedToInPlaintext`, `TestThePolicyIsAskedAboutTheAddressBeforeAServerIsDialled`, `TestThePolicyIsAskedAboutTheNameTheClientClaims` | POP3 is a small protocol with two traps, and each has a test that fails if the care is removed. `TestWhetherAReplyIsMultiLineDependsOnTheCommandAndItsArgument` and its relay counterpart `TestWhetherAReplyIsOneLineOrManyIsDerivedNotGuessed` are the first: `LIST` is many lines and `LIST 3` is one, `UIDL` the same, and a relay that guesses reads the next reply as part of this one — after which a client is shown somebody else's mail or none of its own. `TestTheTerminatorAndTheStuffedDotAreTheSameAmbiguityAsSMTPs` is the second, and names what it is: RFC 1939 §3's dot-stuffing is SMTP's ambiguity in a different protocol, so the round-trip is proved in both directions and the relay forwards the server's line verbatim rather than stuffing an already-stuffed one. Then the bound, which on this protocol is a running total: `TestTheByteBoundStopsTheTransferRatherThanTheNextCommand` holds the connection open through a refusal of `max_messages` and ends it inside a `RETR` that crosses `max_retr_bytes`, because a truncated message presented as whole would be worse than no message. `TestTheGreetingIsCarriedUnchangedSoAPOPCanWork` is the test for a decision that looks like an omission: the relay does not mint a greeting, because the APOP digest is computed over the timestamp in the server's own, and a greeting of this relay's would make every digest unverifiable. The three fuzz targets are the command parser, the reply parser and the unstuffer. The upstream upgrade was the one path with no test at all, and it did not work: `stlsUpstream` read the server's greeting to get to the STLS exchange and threw it away, and the relay then waited for a greeting RFC 2595 never sends -- the server stays in AUTHORIZATION and does not greet again -- so every session on a listener with `upstream_tls_mode: starttls` hung until the idle timeout and was counted as `upstream_failed`. On POP3 the same line is also the APOP challenge, so losing it would have cost the listener that mechanism even if the session had survived. The greeting now comes back from the upgrade, and anything the server pipelined behind its `+OK` is refused the way the client leg's injection is -- it travelled in clear and would otherwise be read as part of the encrypted session |
 | `internal/coap`, `internal/kinds/coap` (CoAP, and CoAP over DTLS) | `TestARequestIsReadAsItWasSent`, `TestTheOptionExtensionsRoundTrip`, `TestAMalformedMessageIsRefused`, `TestEveryTruncationIsEitherRefusedOrWholeInItself`, `TestAnOptionNumberPastTheRegistryIsRefused`, `TestTooManyOptionsIsRefused`, `TestTheCodesSayWhatTheyAre`, `TestTheOptionClassesAreTheNumbersOwnBits` (critical, unsafe to forward and no-cache-key are bits of the option number itself, so they are read off a number nobody registered), `TestAnUnknownOptionIsSortedByItsOwnBits`, `TestNoCacheKeyImpliesSafeToForward`, `TestAnOptionValueOutsideItsRangeIsRefused`, `TestAnOptionValuePastTheBoundIsRefused`, `TestARepeatedOptionIsRefusedExceptWhereItIsThePoint`, `TestAPathThatWouldLieIsRefused`, `TestABlockOptionSaysWhereTheTransferIs`, `TestTheTransferSizeTakesTheLarger`, `TestObserveIsReadInBothDirections`, `TestProxyingIsSeenByEitherOption`, `TestANumericOptionLeavesOutItsLeadingZeros`, `TestTheDiscoveryPathIsRecognised`, `TestARelaysOwnAnswerIsAddressedToTheRequest`, `TestEditingACopyLeavesTheOriginalAlone`, `TestEncodeRefusesWhatItMustNotWrite`, `TestTheOptionsGoOutInOrderAndThePathKeepsIts`, `TestTheTypesReadBack`; `FuzzParse`, `FuzzBlock`; the relay: `TestARequestARulePermitsIsRelayed`, `TestAPathNoRuleCoversIsRefusedAndAnswered`, `TestARefusalCanBeDroppedInstead`, `TestANonConfirmableRefusalIsNonConfirmable`, `TestProxyingIsRefusedByEitherOption`, `TestAnUnknownOptionGetsTheCodeTheStandardGives`, `TestAPathThatWouldLieIsRefused`, `TestAMethodOutsideTheListIsRefused`, `TestTheContentFormatIsChecked`, `TestAnAnswerFromSomewhereElseIsDropped`, `TestAnUnsolicitedAnswerIsDropped`, `TestAnAmplifiedAnswerIsRefused`, `TestADeclaredTransferPastTheBoundIsRefused`, `TestABlockPastTheBoundIsRefused`, `TestObserveIsCarriedAndBounded`, `TestTooManyObserversIsRefused`, `TestAnObservedRegistrationOutlivesTheRequestTimeout`, `TestDiscoveryCanBeRefused`, `TestATokenlessRequestCanBeRefused`, `TestAnOversizeMessageIsRefusedUnread`, `TestARepeatedOptionIsRefusedAndAPathIsNot`, `TestSignallingOverDatagramIsRefused`, `TestARequestFromTheDeviceSideIsRefused`, `TestAResponseFromTheClientSideIsRefused`, `TestAClientOutsideTheListIsRefused`, `TestAResetTravels`, `TestByteCountReads`, `TestAFullPendingTableRefusesTheRequest`, `TestTheRateLimitHolds`, `TestARuleOnPathsSelectsAndDecides`, `TestARulesWindowHolds`, `TestTheListenersOwnSwitchesDecideWhenNoRuleDoes`, `TestShadowModeCarriesAPolicyRefusalAndNotABound`, `TestShadowModeStillRefusesAPathThatWouldLie`, `TestTheModelsSeeTheMethodAndThePath`, `TestNoBlockIsNoDetector`; the DTLS half: `TestAPreSharedKeyIdentityIsWhatTheRuleNames`, `TestAnUnknownIdentityGetsNoSession`, `TestTheWrongKeyUnderAKnownIdentity`, `TestAPinnedPublicKeyIsAnIdentity`, `TestASessionWithNoNameIsRefusedWhereTheEstateSaidSo`, `TestAListenerWithNoTablesIsUnchanged`, `TestAListenerWithKeysAndNoCertificate`, `TestARequestInsideDTLSIsRelayedAndAnsweredInTheSession`, `TestARefusalInsideDTLSComesBackInsideTheSession`, `TestSecureOnlyIsSatisfiedInsideASession`, `TestCleartextAtADTLSListenerIsNotRelayed`, `TestAClientCertificateIsRequiredWhenAsked`, `TestAHandshakeThatStopsMidFlightIsGivenUpOn`, `TestASessionOutlivesTheHandshakeBound`, `TestAnIdleSessionIsClosed`; the policy on its own: `TestThePathPatternsMeanWhatTheySay`, `TestADeniedPathBeatsEveryAllowList`, `TestTheMethodListIsCheckedAtCompileTime`, `TestAnUnknownContentFormatCanBeRefused`, `TestTheAnswerBoundsAreTwoDecisions`, `TestTheTransferBoundRefusesTheIntent`, `TestARequestFromTheAnswerSideIsRefusedHard`, `TestARuleRefusesWhatItIsAbout`, `TestARulesNarrowingAppliesWithinTheRule`, `TestAnObserveRuleDecidesNothing` | A request is four octets and a token, so the policy has almost nothing to read: what a CoAP relay decides on is the option set, and an option number carries its own handling rules in its low bits -- which is why an option nobody registered is still answered by the standard's own rule rather than ignored. Three traps are the protocol's own. A datagram answer is a gift to an amplifier, so the answer is bounded and anything that did not come from the server the request went to is dropped unread. Block2 declares the size of a transfer before it sends it, so the bound belongs on the declaration and not on the octets that arrive. And Observe turns one request into a subscription that outlives it, so the registration is counted and expired on its own clock. The DTLS variant is where a CoAP client gets a name at all: the pre-shared-key identity or a pinned raw public key is the only identity in the protocol, so the rules name those, and a cleartext datagram at a secured listener is not relayed |
 | `internal/dhcp6`, `internal/kinds/dhcp6` (DHCPv6, RFC 8415) | `TestAMessageIsReadFromItsOctets`, `TestAMessageWithNoOptions`, `TestAMalformedMessageIsRefused`, `TestATruncatedOptionValueIsRefused`, `TestAMessageOverTheBoundIsRefused`, `TestAMessageRoundTrips`, `TestTheRelayChainIsFollowedToTheClientsOwnMessage`, `TestAMalformedRelayMessageIsRefused`, `TestARelayMessageShorterThanItsHeaderIsRefused`, `TestAChainAtTheBoundIsRead`, `TestWrappingAndUnwrapping`, `TestWrappingCountsTheHops`, `TestEncodingFollowsTheEditedInside`, `TestEncodingRefusesWhatCannotBeSent`, `TestSetAndRemove`, `TestACloneIsDeep`, `TestARepeatedOptionIsReported`, `TestAnAddressFieldIsAlwaysSixteenOctets`, `TestIdentityAssociationsAreRead`, `TestAMalformedIdentityAssociationIsRefused`, `TestTheTypedOptionReaders`, `TestDomainNamesAreReadAndRefused`, `TestADUIDIsReadAndNamed`, `TestAMalformedDUIDIsRefused`, `TestTheOptionTableNamesWhatMatters`, `TestTheMessageTypesSaySoWhoSendsThem`; `FuzzParse`; the relay: `TestTheRelayWrapsAndUnwraps`, `TestARelayedMessageIsWrappedAgain`, `TestADeepChainIsRefused`, `TestTheHopBoundHoldsAtItsBoundary`, `TestAReplyFromSomewhereElseIsDropped`, `TestAnUnsolicitedReplyIsDropped`, `TestTheDangerousOptionsAreStripped`, `TestAClientsOwnRelayOptionsAreStripped`, `TestAResolverTheEstateOwnsIsCarried`, `TestABootURLNobodyListedIsRemoved`, `TestADelegationOutsideTheEstateIsRefused`, `TestADelegationTheEstateMakesIsCarried`, `TestAClientAskingForTheWrongPrefixIsRefused`, `TestAPrefixHintOfAnythingIsAllowed`, `TestTheLifetimeIsBounded`, `TestAWithdrawalIsNotTurnedIntoALease`, `TestReconfigureIsRefused`, `TestAMessageTypeIsRefused`, `TestARepeatedOptionIsRefusedAndAssociationsAreNot`, `TestADeniedAskIsRemovedFromTheRequest`, `TestAServersMessageOnTheSegmentIsRefused`, `TestAClientOutsideTheListIsRefused`, `TestNoServerToRelayToIsCounted`, `TestAnOversizeMessageIsRefusedUnread`, `TestAFullPendingTableRefusesTheRequest`, `TestTheRateLimitIsKeyedOnTheIdentifier`, `TestARuleMatchesOnTheIdentifier`, `TestAClientsRelayOptionCanRefuseTheMessage`, `TestShadowModeRecordsAndCarries`, `TestShadowModeStillRefusesAHardRefusal`; the policy on its own: `TestTheLeaseBoundLeavesAWithdrawalAlone`, `TestNoLeaseBoundRewritesNothing`, `TestAWithdrawalSurvivesABoundOnItsNeighbour`, `TestThePrefixBoundHoldsBothEnds`, `TestADelegationMustBeInsideTheEstatesPrefixAndNotAroundIt`, `TestTheAnyPrefixIsAHintAndNotADelegation`, `TestAnUnboundedDelegationCarriesAnything`, `TestDelegationSwitchedOffRefusesBothSides`, `TestATemporaryAssociationIsCarriedUnlessItIsSwitchedOff`, `TestTheAskListIsFiltered`, `TestAnAllowListRemovesWhatItDoesNotName`, `TestRefusingTheReplyIsAChoice`, `TestARuleNarrowsTheAnswerPolicy`, `TestARuleMatchesTheIdentifiersRendering`, `TestABracketedAddressInAPatternIsLiteral`, `TestAClientsMessageFromTheServerSideIsRefusedHard`, `TestARulesWindowHolds`, `TestAnObserveRuleDecidesNothing` | A relay edits the message it carries, which makes every bound two-sided. A client's own message arrives wrapped in however many Relay-forward headers the segment has, so the thing a policy is about is at the bottom of a chain whose depth is itself a bound. Three of these tests record semantics that read backwards until they are written down. A lifetime of zero is a *withdrawal*, not a short lease, so a lease bound that rewrites it turns a server taking an address back into a server granting one -- and a bound on one association must not reach its neighbour. A prefix delegation has to be inside the estate's prefix and not around it, because a shorter prefix containing ours is a delegation of the estate. And the any-prefix ask (`::/0`) is a hint about what the client wants, not a delegation of everything. Reconfigure is refused outright: it is the one message that tells a client to come back and ask again, which is a server-side instruction with no place on a relay |
 | `internal/mms`, `internal/kinds/mms` (IEC 61850 MMS) | `TestATPKTFrameIsReadWithItsOwnOctetsKept`, `TestAFrameLongerThanTheBoundIsRefusedBeforeItIsRead`, `TestAFrameShorterThanItsOwnHeaderIsRefused`, `TestSomethingThatIsNotISOOnTCPIsSaidToBeThat`, `TestACOTPHeaderLongerThanItsFrameIsRefused`, `TestAConnectionRequestsSelectorsAreRead`, `TestASelectorLongerThanTheBoundIsRefused`, `TestTheGiveTokensAndDataTransferPairIsTraversed`, `TestASessionUnitThisReaderDoesNotKnowIsRefused`, `TestASessionUnitLongerThanItsPayloadIsRefused`, `TestTheContextListSaysWhichIdentifierIsMMS`, `TestAValueOnAnUndefinedContextIsNotMMS`, `TestMoreContextsThanTheBoundAllowsIsRefused`; the BER reader: `TestAnIndefiniteLengthIsRefusedRatherThanScannedFor`, `TestALengthPastTheBufferIsRefusedRatherThanSliced`, `TestNestingPastTheDepthBoundIsRefused`, `TestAHighTagNumberIsReadBecauseMMSNeedsOne`, `TestATagThatDidNotNeedTheLongFormIsRefused`, `TestATagNumberThatNeverEndsIsRefused`, `TestATagNumberPastTheBoundIsRefused`, `TestAnIntegerWiderThanSixtyFourBitsIsRefused`, `TestANegativeCountIsRefusedWhereACountBelongs`, `TestAnObjectIdentifierIsDecoded`, `TestAnUnterminatedObjectIdentifierArcIsRefused`, `TestAnObjectIdentifierArcWiderThanSixtyFourBitsIsRefused`, `TestTheReaderReportsItsBoundAndWhatIsLeft`; the association and the services: `TestAnAssociateRequestNamesTheCallingApplication`, `TestAClearTextPasswordIsSeenAndNotKept`, `TestAnAssociateResponseSaysWhetherItAccepted`, `TestAnInvokeIdentifierPastUnsignedThirtyTwoIsRefused`, `TestAFilePathTakesOnlyItsStringComponents`, `TestAReadNamesTheObjectsItAddressed`, `TestAReadThroughAListNamesTheListRatherThanTheObjects`, `TestAWriteToAControlAttributeIsAnOperate`, `TestASelectIsNotAnOperate`, `TestASettingGroupWriteIsReportedAsProtection`, `TestAReportControlWriteIsReportedAsObservability`, `TestAGetNameListNamesItsScope`, `TestADownloadNamesItsDomain`, `TestAFileNameIsJoinedIntoAPath`, `TestANameThatIsNotInTheSubstationFormIsSaidToBeUnparsed`, `TestAVMDSpecificNameHasNoDomain`, `TestAnOverlongIdentifierIsEmptyRatherThanTruncated`, `TestMoreNamesThanTheBoundHoldsIsReported`, `TestEveryServiceRoundTripsThroughItsName`, `TestAnUnnamedServiceSaysWhichNumberItWas`, `TestTheTransportAndSessionNamesCoverWhatArrives`, `TestEveryPDUAndClassHasAName`, `TestTheAuthenticationFormsAreNamed`, `TestTheFunctionalConstraintsSayWhatAWriteReaches`, `TestANamesKeyIsTheFormARuleIsWrittenIn`; `FuzzBER`, `FuzzParseCOTP`, `FuzzParseSession`, `FuzzParseCP`, `FuzzParseAssociate`, `FuzzParsePDU`, `FuzzParseItem`; the relay: `TestAReadOnAnAllowedObjectIsCarried`, `TestAnOperateIsRefusedWhereControlIsNotAllowed`, `TestAllowOperateIsSeparateFromTheControlConstraint`, `TestASettingGroupWriteIsRefusedByDefault`, `TestReadOnlyRefusesADeleteThatIsNotAWrite`, `TestADownloadIsRefusedUntilDomainServicesAreAllowed`, `TestADownloadIsCarriedOnceAllowed`, `TestAnAPTitleTheListDoesNotNameIsRefused`, `TestAnAPTitlePatternMatchesAnEstatesNumbering`, `TestAnAEQualifierOutsideTheRangeIsRefused`, `TestACleartextPasswordIsCountedEvenWhenCarried`, `TestACleartextPasswordIsRefusedWhenAsked`, `TestTheRefusalDoesNotEchoThePassword`, `TestAShadowListenerStillRefusesACleartextPassword`, `TestMonitorOnlyForwardsASoftRefusalAndNotAHardOne`, `TestARuleNarrowsWhatOneIdentityMayDo`, `TestAFileOutsideTheListIsRefused`, `TestAFileServiceWithNoReadablePathIsRefused`, `TestARequestPastTheNameBoundIsRefusedWhole`, `TestARequestPastTheReadersOwnBoundIsRefused`, `TestAServiceTheRelayCannotNameIsRefused`, `TestAValueOnAnUndefinedContextIsRefused`, `TestTheIEDsOwnRefusalIsRecordedAndNotCountedAsOurs`, `TestATransportPDUOutsideClassZeroEndsTheConnection`, `TestAFrameThatIsNotISOOnTCPIsRefused`, `TestTheDenyResponseIsConfigurable`, `TestAnUnparsedNameIsNotGivenAConstraint`, `TestAnOperateWithNoSelectionIsRefused`, `TestASelectThenAnOperateIsCarried`, `TestASelectTheIEDRefusedGrantsNoSelection`, `TestASelectionIsForOneObject`, `TestASelectionExpires`, `TestWithoutTheKnobAnOperateNeedsNoSelection`, `TestNoRuleOpensADenyList`, `TestAResponseFromTheClientIsRefused`, `TestAnObserveRuleDoesNotNarrowWhatIsCarried`, `TestAnObserveRuleThatSelectsStillDecidesNothing`, `TestARuleIsOnlyInForceInsideItsWindow`, `TestTheNamesInTheseTestsParseAsTheProtocolSaysTheyShould`, `TestTheModelsSeeTheServiceAndTheFunctionalConstraint`, `TestNoBlockIsNoDetector`, `TestTheIndustroyerMMSPackRefusesTheOperate`; the learning run: `TestALearningRunProposesWhatWasSeen`, `TestALearningRunDoesNotEnforceUnlessAsked`, `TestALearningRunEnforcesWhenAsked`, `TestTheReportLeadsWithThePasswordFinding`, `TestTheReportSaysWhenNoPasswordCrossed`, `TestTheReportSaysWhatOperatedThePlant`, `TestTheReportSaysWhenAnOperateHadNoSelect`, `TestTheReportSaysWhatTouchedAProtectionSetting`, `TestAnIdentityTheIEDAlwaysRefusedGetsNoRule`, `TestAnIdentityThatOnlyAssociatedGetsNoRule`, `TestATruncatedObjectListProposesTheConstraint`, `TestAFilePathIsRecordedAndProposed`, `TestAnIdentityWithNoAPTitleIsLabelled`, `TestTheReportIsOrderedByIdentityAndNotByArrival`; the policy on its own: `TestTheDefaultClassesAndConstraintsAreWhatAnHMIDoes`, `TestTheDomainServiceKnobAndTheDefaultClassListAgree`, `TestReadOnlyRefusesEveryServiceThatChangesADevice`, `TestTheAssociationIsDecidedOnWhoItSaysItIs`, `TestTheObjectListsAreReadInOrderAndADenyIsNotOverridable`, `TestAnUnparsedNameIsNotGivenTheConstraintARuleAllows`, `TestAWriteToANameWithNoConstraintIsRefusedWhereConstraintsAreNarrowed`, `TestOperateIsItsOwnDecisionAboveTheWriteConstraint`, `TestTheInterlockIsKeptWhereTheConfigurationCannotReachIt`, `TestTheNameBoundsAreTheRequestsOwn`, `TestTheFileListsDecideAPath`, `TestTheDomainListsDecideADeviceWideService`, `TestARuleSelectsOnTheRequestItWasWrittenFor`, `TestAnObserveRuleIsReportedAndDecidesNothing`, `TestThePatternsAreGlobsOverTheWholeName`, `TestTheConfigurationNamesCompileToWhatTheyName` | Five layers of someone else's standard sit between the socket and the request: TPKT, COTP, the OSI session layer's token dance, ACSE over BER, and only then MMS. Each is a reader with its own bound, and the BER one is where a policy stops reading and starts refusing -- an indefinite length is refused rather than scanned for its terminator, a tag that did not need the long form is a second spelling of the same tag and therefore refused. What makes the policy itself unusual is that the dangerous operation is spelled as an ordinary write: a write's *functional constraint* says what it reaches, so `CO` is the operate that moves a breaker, `SP` a protection setting and `RP` a report control, and three tests hold that classification down because getting it wrong turns the one refusal that matters into a carried write. Select-before-operate is state the relay has to keep itself -- an operate with no live selection for *that* object is refused, the selection expires, and the IED's own refusal of a select grants nothing. The cleartext password in the Associate is seen, counted and never echoed back in the refusal |
@@ -447,6 +447,8 @@ Six tests exist for the split itself:
 | `internal/upstream` `TestDiscoveryHTTPList`, `TestDiscoveryHTTPConsul`, `TestDiscoveryHTTPFailureKeepsSet` | HTTP registry discovery: the `list` format with an auth header, a filled-in default port, a per-entry weight and canary flag, a bad address dropped and a duplicate collapsed; the `consul` format taking only passing instances, the node-address fallback and the passing weight; a failed poll (500) keeping the previous endpoint set and counting the error |
 | `TestRoutingByRegexAndHeaders` | Header exact match, cookie presence, an anchored path pattern with `strip_prefix`, a failing pattern falling back to the prefix route, cleaned paths |
 | `TestProxyProtocolInbound`, `TestProxyProtocolUntrustedPeer` | An `http` listener with `proxy_protocol` behind a trusted peer: v2 and v1 headers set the client address seen by the upstream and by `deny_cidrs`, `LOCAL` keeps the balancer, a trusted peer without a header is dropped without reaching the upstream and counted; from an untrusted peer the header is not parsed and a plain request works |
+| `internal/daemon` `TestTheAdviceIsSaidAtEveryStartAndNotOnlyByValidate`, `TestWithoutAHistoryTheDaemonServesAndSaysSo`, `TestADryRunReadsTheFileWithoutApplyingIt`, `TestADiffNamesTheSideItCannotRead`, `TestAnAddressAlreadyTakenIsAFailedStart`, `TestAMetricsAddressAlreadyTakenIsAFailedStart`, `TestAKindThisBinaryDoesNotLinkIsRefusedAtStart`, `TestTheListenersLeftToASiblingAreNamedInTheLog`, `TestValidateSaysHowMuchOfTheFileThisDaemonWouldBind`, `TestSdNotifyIgnoresASocketThatIsNotADatagramOne`, `TestRunPrintsItsVersionAndLeaves` | The rest of a daemon's start: the branches that only run when something about the deployment is unusual, each of them a decision taken once and never again -- so either the daemon refused for the right reason or it is running with less than the operator asked for, and nothing says which. Advice is the first: a configuration that loads but weakens the deployment is said at every start and not only by `-validate`, because `policy.mode: shadow` looks exactly like a policy that is working. Then the three failures that have to take the whole process down, because they happen after the listeners are bound: an address already taken, a metrics address already taken (with the management socket gone again behind it), and a listener kind this binary did not link, where the refusal names the daemon that does serve it rather than only the kind. Then the history, which is a convenience and so is a warning rather than a failed start -- and then every action built on it has to answer honestly instead of looking like an empty history, which is the difference between "nothing to roll back to" and "rolling back is not available here". The dry run reads the file without moving the generation and refuses one that does not parse, which is the whole point of having one; a diff names which of `from` and `to` it could not resolve, because both are operator input. And the two readings of one estate file from one daemon: the listeners it left to a sibling are named in the log, and `-validate` says how many it would bind and how many it would leave |
+| `cmd/xproxyctl` (the local commands: ech, mfa, access) | `TestEchKeygenShowAndRecordAgree`, `TestEchReadsTheFormsAnOperatorHasToHand`, `TestEchRefusesWhatWouldBreakARotation`; `TestAnEnrolmentLineIsOneTheVerifierAccepts`, `TestTheEnrolmentParametersReachTheVerifier`, `TestTheFileModeIsCheckedInTwoPlaces`, `TestMfaRefusesWhatWouldProduceAnUnusableEnrolment`; `TestAGrantIsAskedForApprovedAndListed`, `TestADeniedAskAndARevokedGrantAreBothRecorded`, `TestTheActorDefaultsToTheAccountRunningTheCommand`, `TestTheWindowIsBoundedByTheEstatesOwnLimits`, `TestAccessRefusesWhatItCannotActOn`, `TestWithoutAnAccessSectionEveryCallSaysSo` | Three command groups that had no test at all, and each is a place where the tool and something else have to agree or an operator finds out at the worst moment. ECH is a rotation: what `keygen` wrote, `show` reads back and `record` publishes, with the config id and public name the same in all three, the key file 0600 and the config 0644, and a second `keygen` on one id refused -- a key overwritten by accident is a listener that cannot decrypt what DNS still advertises. MFA is a round trip: the line `enrol` prints, pasted into the file, has to be one `verify` accepts a code for, where the code is computed here the way the user's telephone will compute it; the eight-digit SHA256 case is the same assertion again, because parameters that do not reach the verifier are an enrolment nobody can use. The file mode is checked in two places on purpose and both are asserted: world-readable is refused by the store, group-readable loads with a warning. Access is four eyes from the operator's side: the asker may not approve their own ask, `-by` defaults to `SUDO_USER` before the account (root is not a name four eyes can tell apart), a denied ask and a revoked grant read differently in the trail, and an estate with no `access` section says so rather than showing an empty ledger |
 
 ### Fuzz targets
 
@@ -493,18 +495,19 @@ CI (`.github/workflows/ci.yml`) on every push and pull request.
 
 ## Coverage
 
-`make cover` instruments every package under `internal/` for every test
-binary (`-coverpkg=./internal/...`), so an integration test in
+`make cover` instruments every package under `internal/`, and
+`cmd/xproxyctl`, for every test binary
+(`-coverpkg=./internal/...,./cmd/xproxyctl`), so an integration test in
 `internal/kinds/http` counts towards the packages it exercises, and runs under
 the race detector. `make cover-gate` then applies two rules through
 `test/covergate`: the core packages together must reach 80 %, and no
 single package may fall below 60 %. Both numbers are Makefile variables.
-Excluded from the gate: every `main` package, the test fakes
-(`acmetest`, `icaptest`, `filtertest`, `testutil`), `version` and the
-`filters` registration list, and `sandbox`, whose Landlock, seccomp and
-capability code runs in a confined child process that the parent's
-profile cannot observe (the child's probes assert the effects instead).
-CI fails on either rule (ASR-Q2).
+Excluded from the gate: every `main` package except `cmd/xproxyctl`,
+the test fakes (`acmetest`, `icaptest`, `filtertest`, `testutil`),
+`version` and the `filters` registration list, and `sandbox`, whose
+Landlock, seccomp and capability code runs in a confined child process
+that the parent's profile cannot observe (the child's probes assert the
+effects instead). CI fails on either rule (ASR-Q2).
 
 `internal/sandbox` is also left out of the coverage run itself, and only
 that run: its tests apply Landlock and seccomp to a child process, which
@@ -520,28 +523,39 @@ an error print over a package that is gated on its own, and a list
 naming them one by one is a list that goes stale silently — the gate
 stops failing to mention the newest generator.
 
+`cmd/xproxyctl` is the exception, named in `test/covergate`'s `gated`
+list: it is the operator interface rather than a flag parse, nearly
+three thousand statements of views and their formatting, and it sat
+outside the gate while this document carried a figure for it that
+nothing checked. The figure read 82 % until it was measured at 67 %.
+That is the argument for the exception: a number in a document goes
+stale without anything failing, and a number in the gate cannot. Adding
+another binary to that list means adding it to the Makefile's
+`COVERPKGS` as well, because the gate can only read a package the
+profile instruments.
+
 Current numbers from `make cover-gate` (whole suite, race enabled,
 `-coverpkg=./internal/...` so a package's figure includes what other
 packages' tests reach in it):
 
 | Package | Coverage | Statements |
 |---------|----------|------------|
+| `internal/bound` | 100 % | 20 |
+| `internal/securitytxt` | 100 % | 136 |
+| `internal/otlp` | 100 % | 59 |
+| `internal/safe` | 100 % | 15 |
 | `internal/acceptgroup` | 100 % | 21 |
 | `internal/bodybudget` | 100 % | 23 |
-| `internal/bound` | 100 % | 20 |
-| `internal/httpx` | 100 % | 6 |
-| `internal/numrange` | 100 % | 33 |
-| `internal/otlp` | 100 % | 59 |
 | `internal/paths` | 100 % | 3 |
-| `internal/safe` | 100 % | 15 |
-| `internal/securitytxt` | 100 % | 136 |
-| `internal/sesslimit` | 100 % | 28 |
+| `internal/numrange` | 100 % | 33 |
 | `internal/textsafe` | 100 % | 27 |
+| `internal/httpx` | 100 % | 6 |
+| `internal/sesslimit` | 100 % | 28 |
 | `internal/qr` | 99 % | 279 |
+| `internal/pop3` | 99 % | 150 |
 | `internal/schedule` | 98 % | 66 |
 | `internal/deception` | 98 % | 111 |
 | `internal/shadow` | 98 % | 54 |
-| `internal/pop3` | 98 % | 150 |
 | `internal/engineering` | 98 % | 96 |
 | `internal/shed` | 98 % | 92 |
 | `internal/coap` | 98 % | 351 |
@@ -554,11 +568,12 @@ packages' tests reach in it):
 | `internal/correlate` | 96 % | 149 |
 | `internal/assets` | 96 % | 509 |
 | `internal/ntp` | 96 % | 385 |
-| `internal/opcua` | 96 % | 786 |
 | `internal/router` | 96 % | 168 |
-| `internal/attack` | 96 % | 113 |
+| `internal/opcua` | 96 % | 786 |
+| `internal/radius` | 96 % | 299 |
 | `internal/capture` | 96 % | 410 |
 | `internal/config/schema/schemagen` | 96 % | 159 |
+| `internal/attack` | 96 % | 113 |
 | `internal/filters/apiabuse` | 96 % | 201 |
 | `internal/sessions` | 96 % | 88 |
 | `internal/originsig` | 95 % | 84 |
@@ -567,163 +582,162 @@ packages' tests reach in it):
 | `internal/metrics` | 95 % | 295 |
 | `internal/acme/jose` | 94 % | 55 |
 | `internal/respwire` | 94 % | 253 |
-| `internal/filter` | 94 % | 138 |
 | `internal/passwd` | 94 % | 69 |
-| `internal/geoip` | 94 % | 296 |
+| `internal/filter` | 94 % | 138 |
 | `internal/siv` | 94 % | 115 |
 | `internal/sse` | 94 % | 147 |
 | `internal/manpage` | 94 % | 242 |
 | `internal/ntske` | 94 % | 365 |
-| `internal/eax` | 94 % | 78 |
 | `internal/ntlm` | 94 % | 157 |
-| `internal/radius` | 94 % | 299 |
+| `internal/eax` | 94 % | 78 |
 | `internal/filters/formguard` | 94 % | 139 |
-| `internal/tracing` | 93 % | 164 |
 | `internal/tui` | 93 % | 764 |
-| `internal/challenge` | 93 % | 380 |
 | `internal/netutil` | 93 % | 607 |
+| `internal/geoip` | 93 % | 296 |
+| `internal/challenge` | 93 % | 380 |
 | `internal/dhcp` | 93 % | 299 |
 | `internal/filters/botscore` | 93 % | 280 |
+| `internal/imap` | 93 % | 383 |
 | `internal/admit` | 93 % | 41 |
 | `internal/ftp` | 93 % | 177 |
-| `internal/imap` | 93 % | 383 |
 | `internal/filters/headerguard` | 93 % | 54 |
 | `internal/filters/oidc` | 92 % | 482 |
-| `internal/upstream` | 92 % | 1287 |
-| `internal/access` | 92 % | 479 |
-| `internal/syslog` | 92 % | 278 |
 | `internal/termsafe` | 92 % | 140 |
-| `internal/expr` | 92 % | 296 |
+| `internal/syslog` | 92 % | 278 |
+| `internal/access` | 92 % | 479 |
+| `internal/upstream` | 92 % | 1287 |
 | `internal/relay` | 92 % | 62 |
 | `internal/sqlkind` | 92 % | 247 |
+| `internal/expr` | 92 % | 296 |
 | `internal/filters/authz` | 92 % | 159 |
-| `internal/ldap` | 92 % | 869 |
 | `internal/snmp` | 92 % | 858 |
-| `internal/filters/sensitive` | 92 % | 551 |
+| `internal/ldap` | 92 % | 869 |
 | `internal/waf` | 92 % | 845 |
+| `internal/filters/sensitive` | 92 % | 551 |
+| `internal/tacacs` | 92 % | 375 |
+| `internal/tracing` | 92 % | 164 |
 | `internal/modbus` | 91 % | 592 |
 | `internal/filters/ldapauth` | 91 % | 172 |
 | `internal/filters/openapi` | 91 % | 748 |
 | `internal/filters/apikey` | 91 % | 314 |
 | `internal/anomaly` | 91 % | 408 |
 | `internal/filters/graphql` | 91 % | 473 |
-| `internal/tacacs` | 91 % | 375 |
 | `internal/filters/wasm` | 91 % | 376 |
 | `internal/ldap/ldaptest` | 91 % | 170 |
 | `internal/filters/uploadguard` | 90 % | 295 |
 | `internal/icap` | 90 % | 398 |
-| `internal/rdp` | 90 % | 985 |
 | `internal/filters/bodyrewrite` | 90 % | 125 |
-| `internal/filters/accountguard` | 90 % | 604 |
-| `internal/filters/xmlguard` | 90 % | 121 |
-| `internal/jwt` | 90 % | 896 |
+| `internal/rdp` | 90 % | 985 |
 | `internal/keysource` | 90 % | 375 |
+| `internal/filters/xmlguard` | 90 % | 121 |
 | `internal/smtp` | 90 % | 131 |
+| `internal/jwt` | 90 % | 896 |
+| `internal/filters/accountguard` | 90 % | 604 |
 | `internal/ingress` | 90 % | 801 |
 | `internal/kinds/http` | 90 % | 5274 |
 | `internal/apiinv` | 90 % | 367 |
 | `internal/ban` | 90 % | 535 |
 | `internal/filters/basicauth` | 90 % | 79 |
 | `internal/cluster` | 90 % | 629 |
-| `internal/dtlsx` | 90 % | 285 |
-| `internal/grpcmsg` | 90 % | 116 |
 | `internal/dns` | 90 % | 3620 |
+| `internal/grpcmsg` | 90 % | 116 |
 | `internal/filters/samlsp` | 90 % | 366 |
 | `internal/recenc` | 90 % | 125 |
 | `internal/tlsconf` | 90 % | 913 |
+| `internal/dtlsx` | 90 % | 285 |
 | `internal/mysqlwire` | 89 % | 422 |
-| `internal/h3` | 89 % | 173 |
 | `internal/masque` | 89 % | 145 |
 | `internal/logging` | 89 % | 975 |
-| `internal/fipsmode` | 89 % | 71 |
 | `internal/iec104` | 89 % | 373 |
+| `internal/fipsmode` | 89 % | 71 |
 | `internal/secret` | 89 % | 133 |
+| `internal/kinds/dns` | 89 % | 316 |
 | `internal/acme` | 89 % | 430 |
 | `internal/admin` | 88 % | 1104 |
-| `internal/s7` | 88 % | 422 |
+| `internal/h3` | 88 % | 173 |
 | `internal/sessionrec` | 88 % | 328 |
+| `internal/s7` | 88 % | 422 |
 | `internal/mqtt` | 88 % | 313 |
 | `internal/filters/flow` | 88 % | 201 |
 | `internal/tdswire` | 88 % | 385 |
-| `internal/fleet` | 88 % | 575 |
 | `internal/learn` | 88 % | 117 |
+| `internal/fleet` | 88 % | 575 |
 | `internal/xmlsafe` | 88 % | 240 |
 | `internal/saml/samltest` | 88 % | 131 |
 | `internal/mfa` | 88 % | 624 |
-| `internal/mgmt` | 87 % | 1104 |
+| `internal/mgmt` | 88 % | 1104 |
 | `internal/csaf` | 87 % | 653 |
 | `internal/kinds/dhcp` | 87 % | 826 |
+| `internal/kinds/s7` | 87 % | 1421 |
 | `internal/bacnet` | 87 % | 575 |
-| `internal/kinds/s7` | 86 % | 1409 |
-| `internal/kinds/mqtt` | 86 % | 847 |
 | `internal/pgwire` | 86 % | 309 |
+| `internal/kinds/mqtt` | 86 % | 847 |
 | `internal/filters/grpcguard` | 86 % | 135 |
 | `internal/mitm` | 86 % | 198 |
 | `internal/intel` | 86 % | 787 |
 | `internal/rfb` | 86 % | 980 |
-| `internal/fakeshell` | 86 % | 275 |
 | `internal/filters/mfagate` | 86 % | 324 |
-| `internal/kinds/modbus` | 85 % | 1731 |
-| `internal/kinds/ssh` | 85 % | 1931 |
+| `internal/fakeshell` | 86 % | 275 |
 | `internal/kinds/iec104` | 85 % | 2016 |
+| `internal/kinds/ssh` | 85 % | 1931 |
 | `internal/kinds/ntp` | 85 % | 1357 |
+| `internal/kinds/modbus` | 85 % | 1731 |
 | `internal/transparent` | 85 % | 73 |
+| `internal/kinds/opcua` | 85 % | 1498 |
 | `internal/packs` | 85 % | 411 |
-| `internal/saml` | 84 % | 883 |
+| `internal/kinds/mms` | 85 % | 1310 |
 | `internal/kinds/ldap` | 84 % | 935 |
+| `internal/kinds/pop3` | 84 % | 625 |
+| `internal/saml` | 84 % | 883 |
+| `internal/kinds/ntske` | 84 % | 349 |
+| `internal/kinds/tacacs` | 84 % | 879 |
 | `internal/amqpwire` | 84 % | 817 |
-| `internal/kinds/tftp` | 84 % | 927 |
 | `internal/filters/yarascan` | 84 % | 139 |
-| `internal/signerd` | 83 % | 135 |
-| `internal/kinds/ntske` | 83 % | 349 |
-| `internal/scim` | 83 % | 605 |
+| `internal/kinds/tftp` | 83 % | 927 |
 | `internal/proxy` | 83 % | 2628 |
+| `internal/scim` | 83 % | 605 |
 | `internal/listener` | 82 % | 62 |
-| `internal/kinds/coap` | 82 % | 904 |
-| `internal/kinds/snmp` | 82 % | 1893 |
-| `internal/kinds/mms` | 82 % | 1310 |
 | `internal/config` | 82 % | 9965 |
+| `internal/signerd` | 82 % | 135 |
+| `internal/kinds/coap` | 82 % | 904 |
+| `internal/kinds/kkdcp` | 82 % | 614 |
+| `internal/kerberos` | 81 % | 757 |
+| `internal/kinds/snmp` | 81 % | 1893 |
+| `internal/kinds/redis` | 81 % | 997 |
 | `internal/ech` | 81 % | 139 |
+| `internal/kinds/postgres` | 81 % | 975 |
 | `internal/yara` | 81 % | 777 |
-| `internal/kinds/postgres` | 81 % | 961 |
-| `internal/kinds/opcua` | 81 % | 1498 |
-| `internal/kinds/redis` | 81 % | 985 |
-| `internal/kinds/dhcp6` | 81 % | 895 |
-| `internal/kinds/amqp` | 79 % | 1038 |
-| `internal/kinds/udp` | 79 % | 251 |
+| `internal/kinds/udp` | 81 % | 251 |
+| `internal/kinds/radius` | 81 % | 763 |
+| `internal/kinds/dhcp6` | 80 % | 895 |
+| `internal/kinds/amqp` | 80 % | 1050 |
+| `internal/kinds/tds` | 79 % | 682 |
 | `internal/unixsock` | 79 % | 24 |
+| `internal/kinds/mysql` | 79 % | 1046 |
 | `internal/kinds/telnet` | 79 % | 514 |
-| `internal/kerberos` | 79 % | 757 |
 | `internal/asciicast` | 79 % | 113 |
 | `internal/replay` | 78 % | 553 |
-| `internal/kinds/mysql` | 78 % | 1034 |
+| `internal/kinds/imap` | 78 % | 883 |
 | `internal/simulate` | 78 % | 812 |
-| `internal/kinds/tds` | 78 % | 670 |
+| `internal/daemon` | 78 % | 281 |
 | `internal/streamscan` | 78 % | 40 |
 | `internal/telnet` | 78 % | 102 |
 | `internal/webauthn` | 77 % | 563 |
+| `internal/kinds/syslog` | 76 % | 335 |
 | `internal/kinds/bacnet` | 76 % | 805 |
 | `internal/sftp` | 76 % | 148 |
-| `internal/kinds/vnc` | 75 % | 1000 |
-| `internal/kinds/forward` | 75 % | 1857 |
-| `internal/kinds/tcp` | 75 % | 510 |
-| `internal/kinds/syslog` | 75 % | 335 |
-| `internal/kinds/tacacs` | 74 % | 879 |
+| `internal/kinds/forward` | 76 % | 1857 |
+| `internal/kinds/tcp` | 76 % | 510 |
+| `internal/kinds/vnc` | 76 % | 1000 |
+| `internal/kinds/smtp` | 75 % | 509 |
 | `internal/kinds/ftp` | 74 % | 989 |
+| `internal/mms` | 74 % | 869 |
 | `internal/kinds/rdp` | 74 % | 1112 |
-| `internal/kinds/imap` | 74 % | 883 |
 | `internal/proxytest` | 71 % | 51 |
-| `internal/daemon` | 70 % | 281 |
-| `internal/kinds/kkdcp` | 69 % | 614 |
-| `internal/kinds/dns` | 68 % | 316 |
-| `internal/mms` | 67 % | 869 |
-| `internal/kinds/pop3` | 67 % | 618 |
-| `internal/kinds/smtp` | 67 % | 509 |
-| `internal/kinds/radius` | 66 % | 763 |
+| `cmd/xproxyctl` | 68 % | 2764 |
 | `internal/sandbox` | the mechanisms run in a confined child that cannot write a coverage file; the child's probes assert the effects instead (excluded from the gate and from the coverage run) | |
 | `cmd/xproxy-fleet` | 92 % from its own tests (not part of the gate) | |
-| `cmd/xproxyctl` | 82 % from its own tests (not part of the gate); what remains is the formatting of views whose subsystems need a live peer, certificate authority, resolver or scanner behind them, which `internal/kinds/http` and `internal/mgmt` exercise from the other side | |
-| **core packages together** | **85.3 % of 108392 statements** | |
+| **core packages together** | **85.6 % of 111237 statements** | |
 
 Not covered: the descriptor handover of socket activation (the matching
 and the refusals are tested; inheriting a real descriptor needs

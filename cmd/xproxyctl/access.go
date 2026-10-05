@@ -57,6 +57,13 @@ func accessCommand(c *mgmt.Client, fs *flag.FlagSet, out, errOut io.Writer, asJS
 		_, _ = fmt.Fprintln(errOut, accessUsage)
 		return 2
 	}
+	// A state no grant can be in is a typo, and the answer to a typo must not
+	// be an empty list: "no grant matched" reads as "nobody has access", which
+	// is the opposite of what an unfiltered list would have shown.
+	if *state != "" && !knownState(*state) {
+		_, _ = fmt.Fprintf(errOut, "access: %q is not a state; one of %s\n", *state, strings.Join(accessStates, ", "))
+		return 2
+	}
 	rep, err := c.Access(*state)
 	if err != nil {
 		_, _ = fmt.Fprintln(errOut, "error:", err)
@@ -80,6 +87,19 @@ func accessCommand(c *mgmt.Client, fs *flag.FlagSet, out, errOut io.Writer, asJS
 	}
 	_ = tw.Flush()
 	return 0
+}
+
+// accessStates is the vocabulary of the -state filter, which is the set a
+// grant's State can report; the usage line above names the same ones.
+var accessStates = []string{"pending", "scheduled", "active", "spent", "expired", "denied", "revoked"}
+
+func knownState(s string) bool {
+	for _, k := range accessStates {
+		if strings.EqualFold(s, k) {
+			return true
+		}
+	}
+	return false
 }
 
 func accessShow(c *mgmt.Client, args []string, out, errOut io.Writer, asJSON bool) int {
@@ -138,14 +158,27 @@ func accessAct(c *mgmt.Client, what string, args []string, out, errOut io.Writer
 	af.SetOutput(errOut)
 	note := af.String("note", "", "what to record beside the decision")
 	by := af.String("by", "", "who is deciding; the account running this command by default")
+	// The id comes first in the usage line, and flag stops parsing at the
+	// first argument that is not a flag -- so `approve ID -by carol`, which is
+	// what the usage line and the hint printed by `ask` both show, would
+	// otherwise reach here with the flags unread and be refused for having
+	// three arguments. Take a leading id off the front and parse the rest, so
+	// either order works.
+	var lead string
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		lead, args = args[0], args[1:]
+	}
 	if err := af.Parse(args); err != nil {
 		return 2
 	}
-	if af.NArg() != 1 {
+	id := lead
+	switch {
+	case id == "" && af.NArg() == 1:
+		id = af.Arg(0)
+	case id == "" || af.NArg() != 0:
 		_, _ = fmt.Fprintf(errOut, "access %s: one grant id\n", what)
 		return 2
 	}
-	id := af.Arg(0)
 	var g *access.Grant
 	var err error
 	switch what {

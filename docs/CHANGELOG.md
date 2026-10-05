@@ -122,6 +122,123 @@ functional constraint that decides whether a write reaches a breaker, a
 protection setting or a report control; and the four layers an OPC UA session
 is decided at, in the order that makes `read_only` mean what it says.
 
+**The per-package table in `docs/TESTS.md` is regenerated from the passing
+gate.** The core packages together are at 86.0 % of 108466 statements, up from
+85.3 %, and the five kinds this release added are no longer the bottom of the
+table: radius 66 % to 80 %, kkdcp 69 % to 82 %, pop3 67 % to 75 %, imap 74 % to
+78 %, tacacs 74 % to 84 %. Alongside them smtp 67 % to 74 %, the MMS wire reader
+67 % to 74 %, the two OT kinds to 84 % each, and kerberos 79 % to 81 %. The
+lowest core package at that point was `internal/daemon` at 70 %, the
+signal-handling and rollback path of a whole daemon, which the work below then
+took to 78 %. One figure went the other way: the
+`cmd/xproxyctl` row claimed 82 % from its own tests and a measurement now gives
+68 %, so the row was stale -- the package sits outside the gate, which is exactly
+how a figure in a document drifts from the code without anything failing. What the
+remainder is has not changed: the formatting of views whose subsystems need a
+live peer, authority, resolver or scanner behind them.
+
+### Fixed (IMAP: the same upstream upgrade, and two xproxyctl commands)
+
+- **An imap listener with `upstream_tls_mode: starttls` could not carry a
+  session either.** The same defect as pop3 below, in `startTLSUpstream`: the
+  server's greeting was read to reach the STARTTLS exchange and discarded, and
+  the relay then waited for a greeting RFC 3501 never sends -- after STARTTLS
+  the server carries on in the state it was in and the client re-issues
+  CAPABILITY instead of expecting a second greeting. On IMAP that line costs
+  more than the session: it is where this kind refuses a PREAUTH greeting and
+  narrows the capability list, so both decisions went with it. The greeting now
+  comes back from the upgrade, and the tests assert the narrowing and the
+  PREAUTH refusal *on an upgraded leg* rather than only on a plain one.
+
+- **Anything the server pipelines behind its STARTTLS answer is refused**, as
+  on pop3: it travelled in clear and would have been read as part of the
+  encrypted session.
+
+- **`xproxyctl access approve ID -by NAME` was refused with "one grant id".**
+  The usage line, and the hint `access ask` prints, both put the id first --
+  and Go's flag package stops parsing at the first argument that is not a flag,
+  so the flags after it were never read and the command saw three arguments
+  where it wanted one. An operator following the tool's own instructions got a
+  refusal. Both orders work now.
+
+- **`xproxyctl access -state nonsense` answered with an empty list.** A typo in
+  the filter read as "no grant matched", which reads as "nobody has access" --
+  the opposite of what an unfiltered list would have shown. It is refused now,
+  naming the states, which is the rule this project already applies to the
+  asset filters for the same reason.
+
+- **`xproxyctl ech show` could not read a record pasted out of a zone file.**
+  `ech="<base64>"` is the form an operator checking a rotation actually has to
+  hand, and the quotes were trimmed before the `ech=` prefix was stripped, which
+  leaves the opening quote in place and fails to decode.
+
+### Fixed (POP3: the upstream upgrade never worked)
+
+- **A pop3 listener with `upstream_tls_mode: starttls` could not carry a
+  session.** The relay upgrades the server's leg on its own behalf, which means
+  reading the server's greeting to get to the STLS exchange -- and it threw that
+  line away. It then waited for a greeting the server will never send, because
+  RFC 2595 leaves the connection in AUTHORIZATION and does not have it greet
+  again: every session hung until the idle timeout and was counted as
+  `upstream_failed`. On POP3 the same line is also the APOP challenge, so the
+  listener would have lost that mechanism even if the session had survived. The
+  greeting now comes back from the upgrade and is the one the client gets.
+
+  This was the one path in the kind with no test at all -- `stlsUpstream` was at
+  0 % -- which is what the coverage work above was for, and it is the argument
+  for measuring a package rather than reading it: the code looks right.
+
+- **Anything the server pipelines behind its `+OK` to STLS is now refused.**
+  It travelled in clear and would have been read as part of the encrypted
+  session: the client leg's injection check, pointed the other way. Nothing
+  legitimate is lost, because the server has nothing to say until the relay
+  speaks.
+
+**`internal/daemon` and `internal/kinds/pop3`, the two lowest packages left
+in the table.** On the daemon, the branches that only run when something about
+the deployment is unusual: advice said at every start rather than only by
+`-validate`, the three failures after the listeners are bound that have to take
+the process down with them (an address taken, a metrics address taken, a
+listener kind this binary did not link), a history directory that cannot be
+written and every action that then has to answer honestly rather than look like
+an empty history, the dry run that reads the file without moving the
+generation, and the diff that names which of `from` and `to` it could not
+resolve. 69.8 % to 78.3 % of the package's own statements. On pop3, the
+transport: the client's STLS answered here with this listener's certificate, a
+command pipelined behind it refused (CVE-2011-0411 in POP3's spelling), a
+handshake that fails ending the connection because the `+OK` has already gone,
+and the policy asked about the address before a mailbox server is dialled and
+about the name a USER claims before it reaches a server that would check it.
+73.6 % to 84.2 %.
+
+**The three `xproxyctl` command groups that had no test at all.** `ech`, `mfa`
+and `access` were between them a fifth of the package and none of them was
+reached by a test, which is how the four defects above survived. Each is now
+driven as the thing it is rather than as a list of flags: ECH as a rotation
+(what keygen wrote, show reads back and record publishes, with the key 0600 and
+a second keygen on one id refused), MFA as a round trip (the line enrol prints
+has to be one verify accepts a code for, with the code computed in the test the
+way the user's telephone computes it), and access as four eyes from the
+operator's side (the asker may not approve their own ask, and `-by` defaults to
+SUDO_USER before the account, because root is not a name four eyes can tell
+apart). 67.5 % to 77.9 % of the package's own statements.
+
+**`cmd/xproxyctl` is in the gate.** It was outside it because every `main`
+package is, and that rule is right for a flag parse over a package gated on its
+own -- but xproxyctl is the operator interface, nearly three thousand
+statements of views and their formatting, and what stood in for a gate was a
+figure in `docs/TESTS.md` that nothing checked. It read 82 % and measured 67 %.
+`test/covergate` now has a `gated` list that overrides the `cmd/` rule, the
+Makefile instruments the package alongside `internal/...`, and the number is in
+the table with the others where it cannot drift.
+
+The table is regenerated from the gate that passes on all of this: 85.6 % of
+111237 statements, nothing below the 60 % floor. The total is 0.4 points below
+the last one because xproxyctl's 2764 statements enter the denominator at 68 %,
+which is the point of putting it in -- and it is now the lowest gated package
+rather than a figure in a document, so the next person to work on those views has
+a floor under them.
+
 ### Added (the event stream: a policy for text/event-stream)
 
 - **`sse_guard` on a route is a policy for Server-Sent Events**, which is the

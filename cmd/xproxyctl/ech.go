@@ -163,8 +163,12 @@ func readConfigs(path string) ([]ech.Config, error) {
 	if cs, err := ech.ParseList(raw); err == nil {
 		return cs, nil
 	}
+	// A record pasted out of a zone file arrives as `ech="<base64>"`, so the
+	// quotes have to come off on both sides of the prefix: trimming them first
+	// and then stripping `ech=` leaves the opening quote in place, which is
+	// the one form an operator is most likely to have to hand.
 	text := strings.Trim(strings.Join(strings.Fields(string(raw)), ""), `"`)
-	text = strings.TrimPrefix(text, "ech=")
+	text = strings.Trim(strings.TrimPrefix(text, "ech="), `"`)
 	dec, err := base64.StdEncoding.DecodeString(text)
 	if err != nil {
 		return nil, errors.New("not an ECHConfig, an ECHConfigList, or base64 of either")

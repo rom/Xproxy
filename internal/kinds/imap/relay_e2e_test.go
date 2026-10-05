@@ -2,6 +2,7 @@ package imap
 
 import (
 	"bufio"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"strings"
@@ -63,10 +64,15 @@ type fakeServer struct {
 	sasl bool
 	// untagged is sent before the tagged answer of the named command.
 	untagged map[string]string
+	// tlsCert and tlsKey make the server answer STARTTLS and upgrade. Without
+	// them it refuses, which is the other half of that decision.
+	tlsCert, tlsKey string
+	tlsCfg          *tls.Config
 
-	mu      sync.Mutex
-	idleTag string
-	seen    []string
+	mu       sync.Mutex
+	idleTag  string
+	upgraded bool
+	seen     []string
 	// literals holds the octets the server read as literals, which is how a
 	// test proves an APPEND's body crossed intact.
 	literals []string
@@ -84,6 +90,13 @@ func startServer(t *testing.T, f *fakeServer) *fakeServer {
 	}
 	if f.caps == "" {
 		f.caps = "IMAP4rev2 AUTH=PLAIN AUTH=GSSAPI LITERAL+ COMPRESS=DEFLATE IDLE"
+	}
+	if f.tlsCert != "" {
+		pair, err := tls.LoadX509KeyPair(f.tlsCert, f.tlsKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.tlsCfg = &tls.Config{Certificates: []tls.Certificate{pair}, MinVersion: tls.VersionTLS12}
 	}
 	t.Cleanup(func() { _ = ln.Close() })
 	go func() {
@@ -104,6 +117,13 @@ func (f *fakeServer) record(s string) {
 	f.mu.Lock()
 	f.seen = append(f.seen, s)
 	f.mu.Unlock()
+}
+
+// wasUpgraded reports whether this server's connection ended up inside TLS.
+func (f *fakeServer) wasUpgraded() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.upgraded
 }
 
 func (f *fakeServer) saw() []string {
@@ -190,6 +210,24 @@ func (f *fakeServer) serve(c net.Conn) {
 				}
 				f.record("sasl:" + strings.TrimRight(answer, "\r\n"))
 			}
+		case "STARTTLS":
+			// A server with no certificate refuses, which a relay configured
+			// to upgrade has to treat as a failure rather than as permission
+			// to carry on in clear.
+			if f.tlsCfg == nil {
+				_, _ = fmt.Fprintf(c, "%s NO no STARTTLS here\r\n", tag)
+				continue
+			}
+			_, _ = fmt.Fprintf(c, "%s OK begin TLS\r\n", tag)
+			tc := tls.Server(c, f.tlsCfg)
+			if err := tc.Handshake(); err != nil {
+				return
+			}
+			c, br = tc, bufio.NewReader(tc)
+			f.mu.Lock()
+			f.upgraded = true
+			f.mu.Unlock()
+			continue
 		case "CAPABILITY":
 			_, _ = fmt.Fprintf(c, "* CAPABILITY %s\r\n", f.caps)
 		case "IDLE":
