@@ -101,6 +101,29 @@ func (c *collector) waitFor(t *testing.T, n int) []string {
 	return nil
 }
 
+// waitStat polls one of the relay's own counters until it reaches want.
+//
+// It is what a test waits on before it says a record did not arrive. A fixed
+// pause says nothing: it ends wherever it ends, and on a loaded machine that
+// is before the relay has read the message the test is asserting the absence
+// of -- so the assertion holds whether the relay dropped the record or
+// forwarded it a moment later. The counter is written on the path that drops,
+// so once it has moved the relay has decided and the collector's contents are
+// the answer rather than a snapshot of work in progress.
+func waitStat(t *testing.T, s *proxy.Server, what string, get func(proxy.Snapshot) uint64, want uint64) {
+	t.Helper()
+	var last uint64
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		if last = get(s.Stats()); last >= want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s reached %d, want %d", what, last, want)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func syslogRelay(t *testing.T, extra string) (*proxy.Server, string, *collector) {
 	t.Helper()
 	col := startCollector(t)
@@ -222,9 +245,10 @@ func TestSyslogFilters(t *testing.T) {
 		"<84>1 - h a - - - kept: authpriv.warning", // facility 10, severity 4
 	)
 	col.waitFor(t, 1)
-	// The dropped ones would arrive after the kept ones, so the pause
-	// is what makes "they never arrived" mean something.
-	time.Sleep(50 * time.Millisecond)
+	// The dropped ones would arrive after the kept ones, so what makes
+	// "they never arrived" mean something is the relay having finished with
+	// them -- which the drop counter, not a pause, is the evidence of.
+	waitStat(t, s, "syslog_dropped", func(sn proxy.Snapshot) uint64 { return sn.SyslogDropped }, 2)
 	got := col.seen()
 	for _, m := range got {
 		if strings.Contains(m, "dropped") {
@@ -238,7 +262,7 @@ func TestSyslogFilters(t *testing.T) {
 		t.Fatalf("%d records arrived, want 2: %v", len(got), got)
 	}
 	if sn := s.Stats(); sn.SyslogDropped != 2 {
-		t.Errorf("dropped counted: %d", sn.SyslogDropped)
+		t.Errorf("dropped counted: %d, want exactly 2", sn.SyslogDropped)
 	}
 }
 
@@ -283,12 +307,9 @@ func TestSyslogRedacts(t *testing.T) {
 func TestSyslogSenderPolicy(t *testing.T) {
 	s, addr, col := syslogRelay(t, `        allow_senders: ["192.0.2.0/24"]`)
 	sendSyslog(t, addr, "<13>1 - h a - - - from a stranger")
-	time.Sleep(100 * time.Millisecond)
+	waitStat(t, s, "syslog_refused", func(sn proxy.Snapshot) uint64 { return sn.SyslogRefused }, 1)
 	if got := col.seen(); len(got) != 0 {
 		t.Fatalf("a refused sender's records arrived: %v", got)
-	}
-	if sn := s.Stats(); sn.SyslogRefused == 0 {
-		t.Error("the refusal was not counted")
 	}
 }
 
@@ -320,12 +341,13 @@ func TestSyslogRateLimit(t *testing.T) {
 	}
 	sendSyslog(t, addr, lines...)
 	col.waitFor(t, 1)
-	time.Sleep(100 * time.Millisecond)
+	// Fifty messages against a burst of five: the relay has to have refused
+	// the rest before "how many got through" is a number worth asserting on.
+	// The limiter counts each refusal, so waiting for the count to reach the
+	// difference says every message has been decided about.
+	waitStat(t, s, "syslog_rate_limited", func(sn proxy.Snapshot) uint64 { return sn.SyslogRateLimited }, 38)
 	if got := col.seen(); len(got) > 12 {
 		t.Fatalf("%d records got through a limit of 5 a second", len(got))
-	}
-	if sn := s.Stats(); sn.SyslogRateLimited == 0 {
-		t.Error("nothing was rate limited")
 	}
 }
 
@@ -456,11 +478,8 @@ upstreams:
 	if _, err := uc.Write([]byte("<13>1 - h a - - - from a stranger")); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(100 * time.Millisecond)
+	waitStat(t, s, "syslog_refused", func(sn proxy.Snapshot) uint64 { return sn.SyslogRefused }, 1)
 	if got := col.seen(); len(got) != 0 {
 		t.Fatalf("a refused sender's datagram arrived: %v", got)
-	}
-	if sn := s.Stats(); sn.SyslogRefused == 0 {
-		t.Error("the refusal was not counted")
 	}
 }

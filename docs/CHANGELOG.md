@@ -137,6 +137,55 @@ how a figure in a document drifts from the code without anything failing. What t
 remainder is has not changed: the formatting of views whose subsystems need a
 live peer, authority, resolver or scanner behind them.
 
+### Fixed (eight assertions that could only ever pass)
+
+A sweep of all 878 test files for assertions that cannot fail turned up one
+shape in three packages: a test sends something a listener should refuse,
+sleeps for a fixed interval, and then asserts that nothing arrived. The sleep is
+not synchronisation. It ends where it ends, and on a loaded machine it can end
+before the listener has read the datagram at all -- at which point the
+collector, the device or the counter is empty for the trivial reason that
+nothing has happened yet, and the assertion holds whether the listener refuses
+the message or forwards it a moment later. Every one of them would have passed
+against a relay with the refusal taken out.
+
+What makes the absence mean something is already in the process: the refusal
+counter the listener writes on the path that returns without forwarding. So the
+wait is on that counter, and the absence is asserted after it has moved, when
+the decision is made and the upstream's emptiness is the answer rather than a
+snapshot of work in progress. That deletes the timer in the process -- these
+tests are now faster as well as sound.
+
+- **bacnet, nine refusal tests through one helper.** `device.nothingReached`
+  slept 150 ms before looking at what reached the fake controller; it now sums
+  the listener's `bacnet` refusal reasons and waits for the total to move. Two
+  more in the same file -- the shadow-mode test, which asserts a bound still
+  holds when the policy is shadowed, and the routed-network test -- wait on the
+  one reason that applies, through a new `waitRefusal`.
+- **syslog, four.** The facility and severity filters, the sender policy on both
+  the stream and the datagram listener, and the per-sender rate limit all slept
+  and then read a counter. They now wait for the counter first: the same two
+  lines in the other order, which is strictly stronger, and in two of them the
+  counter check the sleep was standing in for is now the wait itself.
+- **coap, the client-certificate requirement.** It recorded what the device had
+  received, drove a handshake with no certificate, and compared -- with nothing
+  between the two reads. It now waits for `coap_handshake_failed` to move.
+
+Each was verified by mutation rather than by passing: the refusal was removed
+from the relay -- forwarded after being counted, which is exactly the leak the
+assertion exists to catch -- and every test failed, naming the message that got
+through. For syslog's sender policy that took removing both layers, because the
+listener checks the sender at the connection and again at each message; a
+defence in depth worth recording.
+
+The bacnet routed-network test also turned out to be refusing the wrong thing.
+It rewrote two octets to aim the second request at a network the configuration
+does not name, and the second of those two is the destination address *length* --
+so every field behind it moved and the relay was refusing a message it could not
+parse. It still refused, for a reason that happened to match, which is why
+nobody noticed. One octet now, and the mutation check that found this is what
+proves the test reads the policy rather than the parser.
+
 ### Fixed (an RDP dynamic-channel assertion counted bytes it was racing)
 
 - **`TestDataFromTheClientOnARefusedDynamicChannelIsDropped` snapshotted a byte

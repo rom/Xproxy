@@ -156,11 +156,49 @@ func (d *device) waitFor(t *testing.T, n int, what string) [][]byte {
 // nothingReached fails if the device received anything at all. This is the
 // assertion a refusal test needs: a relay that refuses the client and
 // forwards the request anyway has refused nothing.
-func (d *device) nothingReached(t *testing.T) {
+//
+// It waits for the relay to count the refusal before it looks rather than
+// sleeping for a fixed time first. An absence asserted after a sleep is an
+// absence asserted wherever that sleep happened to land in the relay's work,
+// and on a loaded machine it can land before the relay has read the datagram
+// at all -- so the test would pass whether the message was refused or
+// forwarded, which is a test that cannot fail. Every path that returns
+// without forwarding counts its reason first, so once the count has moved the
+// decision is made and the empty device is the real answer.
+func (d *device) nothingReached(t *testing.T, s *proxy.Server) {
 	t.Helper()
-	time.Sleep(150 * time.Millisecond)
+	refused := func() uint64 {
+		var n uint64
+		for _, c := range s.Stats().Refusals["bacnet"] {
+			n += c
+		}
+		return n
+	}
+	for deadline := time.Now().Add(3 * time.Second); refused() == 0; {
+		if time.Now().After(deadline) {
+			t.Fatalf("the relay counted no refusal: %v", s.Stats().Refusals["bacnet"])
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	if got := d.seen(); len(got) != 0 {
 		t.Fatalf("%d messages reached the device through a refusal", len(got))
+	}
+}
+
+// waitRefusal waits for one named refusal reason to be counted. It is the
+// positive half of an absence: a test that wants to say "and this did not go
+// through" waits for the refusal that stopped it and then looks, rather than
+// looking after a fixed wait and hoping the relay was finished.
+func waitRefusal(t *testing.T, s *proxy.Server, reason string) {
+	t.Helper()
+	for deadline := time.Now().Add(3 * time.Second); ; {
+		if s.Stats().Refusals["bacnet"][reason] > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the relay counted no %s refusal: %v", reason, s.Stats().Refusals["bacnet"])
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -353,7 +391,7 @@ func TestTwoClientsWithTheSameInvokeIdentifierEachGetTheirOwnAnswer(t *testing.T
 // carry changes.
 func TestAWriteIsRefusedByTheDefaultServiceList(t *testing.T) {
 	d := startDevice(t, &device{})
-	_, addr := bacnetServer(t, `        upstream: devices
+	s, addr := bacnetServer(t, `        upstream: devices
         allow_clients: [127.0.0.0/8]`, d.addr())
 	cl := dialClient(t, addr)
 	cl.send(t, writeReq(1, wire.ObjectID{Type: wire.AnalogOutput, Instance: 3}, wire.PropPresentValue, 0))
@@ -362,7 +400,7 @@ func TestAWriteIsRefusedByTheDefaultServiceList(t *testing.T) {
 	} else if a.Type != wire.PDUReject {
 		t.Fatalf("the client got a %s, want a reject", a.Type)
 	}
-	d.nothingReached(t)
+	d.nothingReached(t, s)
 }
 
 // And a write the configuration allows does reach the plant, because a
@@ -389,7 +427,7 @@ func TestAnAllowedWriteReachesThePlant(t *testing.T) {
 // until whoever wrote it relinquishes it.
 func TestAWriteAtLifeSafetyPriorityIsRefused(t *testing.T) {
 	d := startDevice(t, &device{})
-	_, addr := bacnetServer(t, `        upstream: devices
+	s, addr := bacnetServer(t, `        upstream: devices
         allow_clients: [127.0.0.0/8]
         services: [writeProperty]
         max_command_priority: 8
@@ -399,7 +437,7 @@ func TestAWriteAtLifeSafetyPriorityIsRefused(t *testing.T) {
 	if a, ok := cl.answer(t, 2*time.Second); !ok || a.Type != wire.PDUReject {
 		t.Fatalf("a write at priority 1 was not rejected: %v %v", a.Type, ok)
 	}
-	d.nothingReached(t)
+	d.nothingReached(t, s)
 }
 
 // A write at a priority the bound allows goes through, so the bound is a
@@ -421,7 +459,7 @@ func TestAWriteAtAnOrdinaryPriorityIsCarried(t *testing.T) {
 // reports whatever was written as the truth.
 func TestAWriteToOutOfServiceIsRefused(t *testing.T) {
 	d := startDevice(t, &device{})
-	_, addr := bacnetServer(t, `        upstream: devices
+	s, addr := bacnetServer(t, `        upstream: devices
         allow_clients: [127.0.0.0/8]
         services: [writeProperty]
         objects: [analog-input]
@@ -431,17 +469,17 @@ func TestAWriteToOutOfServiceIsRefused(t *testing.T) {
 	if a, ok := cl.answer(t, 2*time.Second); !ok || a.Type != wire.PDUReject {
 		t.Fatalf("a write to out-of-service was not rejected: %v %v", a.Type, ok)
 	}
-	d.nothingReached(t)
+	d.nothingReached(t, s)
 }
 
 // The BBMD registration: one unauthenticated datagram that asks to be sent
 // every broadcast on a network the sender is not on.
 func TestAForeignDeviceRegistrationIsRefused(t *testing.T) {
 	d := startDevice(t, &device{})
-	_, addr := bacnetServer(t, base, d.addr())
+	s, addr := bacnetServer(t, base, d.addr())
 	cl := dialClient(t, addr)
 	cl.send(t, bvlcWrap(wire.FuncRegisterForeignDevice, []byte{0x01, 0x2C}))
-	d.nothingReached(t)
+	d.nothingReached(t, s)
 }
 
 // A discovery broadcast is bounded in the answers it brings back. This is
@@ -486,12 +524,12 @@ func TestAnUnsolicitedReplyIsNotDelivered(t *testing.T) {
 // its datagram is read.
 func TestAClientOutsideTheListIsRefusedWithoutReadingItsRequest(t *testing.T) {
 	d := startDevice(t, &device{})
-	_, addr := bacnetServer(t, `        upstream: devices
+	s, addr := bacnetServer(t, `        upstream: devices
         allow_clients: [192.0.2.0/24]
         default_action: allow`, d.addr())
 	cl := dialClient(t, addr)
 	cl.send(t, readReq(1, wire.ObjectID{Type: wire.AnalogInput, Instance: 1}, wire.PropPresentValue))
-	d.nothingReached(t)
+	d.nothingReached(t, s)
 	if _, ok := cl.answer(t, 500*time.Millisecond); ok {
 		t.Fatal("a client outside the list was answered")
 	}
@@ -500,11 +538,11 @@ func TestAClientOutsideTheListIsRefusedWithoutReadingItsRequest(t *testing.T) {
 // A datagram that is not a BACnet message never reaches the plant.
 func TestSomethingElseOnThePortDoesNotReachTheDevice(t *testing.T) {
 	d := startDevice(t, &device{})
-	_, addr := bacnetServer(t, base, d.addr())
+	s, addr := bacnetServer(t, base, d.addr())
 	cl := dialClient(t, addr)
 	cl.send(t, []byte{0x16, 0x03, 0x01, 0x00, 0x2A})
 	cl.send(t, []byte{0x81, 0x0A, 0xFF, 0xFF, 0x01, 0x00})
-	d.nothingReached(t)
+	d.nothingReached(t, s)
 }
 
 // An object rule the relay cannot apply is a refusal rather than a pass. A
@@ -513,7 +551,7 @@ func TestSomethingElseOnThePortDoesNotReachTheDevice(t *testing.T) {
 // gap in a table.
 func TestARequestWhoseObjectCannotBeFoundIsRefusedWhenObjectRulesExist(t *testing.T) {
 	d := startDevice(t, &device{})
-	_, addr := bacnetServer(t, `        upstream: devices
+	s, addr := bacnetServer(t, `        upstream: devices
         allow_clients: [127.0.0.0/8]
         services: [createObject, readProperty]
         objects: [analog-value]
@@ -526,14 +564,14 @@ func TestARequestWhoseObjectCannotBeFoundIsRefusedWhenObjectRulesExist(t *testin
 	if a, ok := cl.answer(t, 2*time.Second); !ok || a.Type != wire.PDUReject {
 		t.Fatalf("a request with an unlocatable object was not rejected: %v %v", a.Type, ok)
 	}
-	d.nothingReached(t)
+	d.nothingReached(t, s)
 }
 
 // A relay in shadow mode records what it would have refused and forwards
 // the request -- except for the bounds, which are never shadowed.
 func TestShadowModeCarriesAPolicyRefusalAndStillHoldsTheBounds(t *testing.T) {
 	d := startDevice(t, &device{})
-	_, addr := bacnetServer(t, `        upstream: devices
+	s, addr := bacnetServer(t, `        upstream: devices
         allow_clients: [127.0.0.0/8]
         services: [readProperty]
         default_action: allow
@@ -545,7 +583,11 @@ func TestShadowModeCarriesAPolicyRefusalAndStillHoldsTheBounds(t *testing.T) {
 	// A write at life safety priority: refused anyway, because a bound in
 	// shadow mode is a bound that is not there.
 	cl.send(t, writeReq(2, wire.ObjectID{Type: wire.AnalogOutput, Instance: 3}, wire.PropPresentValue, 1))
-	time.Sleep(200 * time.Millisecond)
+	// Waited for rather than slept past: the refusal is counted on the path
+	// that returns without forwarding, so the count moving is the relay
+	// saying it has decided. A sleep here would let the second write be
+	// counted as absent before the relay had read it.
+	waitRefusal(t, s, "command_priority_too_high")
 	if got := d.seen(); len(got) != 1 {
 		t.Fatalf("the device saw %d messages: a bound was shadowed", len(got))
 	}
@@ -557,19 +599,19 @@ func TestShadowModeCarriesAPolicyRefusalAndStillHoldsTheBounds(t *testing.T) {
 // configuration names the networks it should reach.
 func TestAGlobalBroadcastIsRefused(t *testing.T) {
 	d := startDevice(t, &device{})
-	_, addr := bacnetServer(t, `        upstream: devices
+	s, addr := bacnetServer(t, `        upstream: devices
         allow_clients: [127.0.0.0/8]
         allow_broadcast: true
         default_action: allow`, d.addr())
 	cl := dialClient(t, addr)
 	cl.send(t, globalWhoIs())
-	d.nothingReached(t)
+	d.nothingReached(t, s)
 }
 
 // And a routed broadcast to a network the configuration names does go.
 func TestARoutedRequestToANamedNetworkIsCarried(t *testing.T) {
 	d := startDevice(t, &device{})
-	_, addr := bacnetServer(t, `        upstream: devices
+	s, addr := bacnetServer(t, `        upstream: devices
         allow_clients: [127.0.0.0/8]
         networks: [5]
         default_action: allow`, d.addr())
@@ -580,11 +622,17 @@ func TestARoutedRequestToANamedNetworkIsCarried(t *testing.T) {
 	body = append(body, 0x19, byte(wire.PropPresentValue))
 	cl.send(t, bvlcWrap(wire.FuncOriginalUnicast, body))
 	d.waitFor(t, 1, "a routed read")
-	// And a network the configuration does not name is refused.
-	body[3] = 0x00
-	body[4] = 0x09
+	// And a network the configuration does not name is refused. Only the low
+	// octet of DNET is rewritten: the octet after it is the destination
+	// address length, and writing a 9 there would move every field behind it,
+	// so the relay would be refusing a message it could not parse rather than
+	// a well formed request to network 9 -- which is what this test is about.
+	body[3] = 0x09
 	cl.send(t, bvlcWrap(wire.FuncOriginalUnicast, body))
-	time.Sleep(200 * time.Millisecond)
+	// The refusal, not a pause, is what says the relay has finished with the
+	// second request: a sleep ends wherever it ends, and the device being
+	// empty at that moment would mean nothing about what happens next.
+	waitRefusal(t, s, "network_not_allowed")
 	if got := d.seen(); len(got) != 1 {
 		t.Fatalf("the device saw %d messages: a request to an unnamed network was carried", len(got))
 	}
@@ -772,10 +820,10 @@ func TestASegmentedExchangeIsTranslatedInBothDirections(t *testing.T) {
 // or a stranger interfering with somebody else's transfer.
 func TestAnAcknowledgementForNoExchangeIsNotForwarded(t *testing.T) {
 	d := startDevice(t, &device{})
-	_, addr := bacnetServer(t, base, d.addr())
+	s, addr := bacnetServer(t, base, d.addr())
 	cl := dialClient(t, addr)
 	cl.send(t, bvlcWrap(wire.FuncOriginalUnicast, []byte{0x01, 0x00, 0x40, 99, 0x00, 0x01}))
-	d.nothingReached(t)
+	d.nothingReached(t, s)
 }
 
 // A listener shut down at the moment it starts, two hundred times, under

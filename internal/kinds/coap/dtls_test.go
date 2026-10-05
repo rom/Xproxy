@@ -226,7 +226,7 @@ func TestAClientCertificateIsRequiredWhenAsked(t *testing.T) {
 
 	up := startDevice(t, &fakeDevice{})
 	tlsExtra := "        client_auth: require\n        client_ca_file: " + ca.Path + "\n"
-	_, addr := dtlsRelay(t, base, tlsExtra, up.addr())
+	s, addr := dtlsRelay(t, base, tlsExtra, up.addr())
 
 	// With a certificate the CA issued: the session establishes and the request
 	// is relayed.
@@ -272,6 +272,15 @@ func TestAClientCertificateIsRequiredWhenAsked(t *testing.T) {
 			t.Fatal("a client with no certificate got an answer where one is required")
 		}
 	}
+	// The handshake this listener refused is counted, and waiting for that
+	// count is what makes the device's contents an answer. Reading them
+	// straight after the write would read them while the listener was still
+	// deciding -- and a count that had not moved yet looks exactly like a
+	// certificate requirement that holds, so the assertion below would stand
+	// whether the client was refused or let through.
+	until(t, s, "the refused handshake", func(st proxy.Snapshot) bool {
+		return st.CoAPHandshakeFailed > 0
+	})
 	if n := len(up.seen()); n != before {
 		t.Fatalf("a client with no certificate reached the device (%d then %d)", before, n)
 	}
