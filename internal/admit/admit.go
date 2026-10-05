@@ -64,6 +64,10 @@ type Gate struct {
 	// Deny counts and logs an enforced refusal. It may be nil for a kind whose
 	// caller counts the reason it is handed.
 	Deny func(reason, rule, detail string)
+	// Quarantine counts and logs an enforced pack quarantine without feeding
+	// the listener's ordinary denial path. In particular, implementations must
+	// not submit this refusal to the automatic-ban ladder.
+	Quarantine func(reason, rule, detail string)
 }
 
 // Deps are the process-wide facilities the two questions need. A kind passes
@@ -127,8 +131,17 @@ func ask(d Deps, sub authorization.Subject, g Gate) string {
 			if g.Shadowing != nil && g.Shadowing() {
 				g.Record(QuarantineReason, pack, detail)
 			} else {
-				if g.Deny != nil {
-					g.Deny(QuarantineReason, pack, detail)
+				if g.Quarantine != nil {
+					g.Quarantine(QuarantineReason, pack, detail)
+				} else if d.Logs != nil {
+					// Ordinary deny callbacks may also submit the actor to the
+					// automatic-ban ladder. A quarantine is deliberately bounded
+					// by its pack window, so report it directly when the kind has
+					// no non-escalating callback.
+					d.Logs.SecurityEvent(context.Background(), "deny", QuarantineReason,
+						"listener", sub.Listener, "proto", sub.Kind,
+						"client_ip", sub.Client.String(), "pack", pack,
+						"detail", detail)
 				}
 				return QuarantineReason
 			}
