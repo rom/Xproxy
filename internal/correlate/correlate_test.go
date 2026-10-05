@@ -196,6 +196,26 @@ func TestTheActorsAreBoundedAndTheOldestGoes(t *testing.T) {
 	}
 }
 
+func TestActorActivityRefreshesEvictionOrder(t *testing.T) {
+	s, c := newTestStore(t, Bounds{MaxActors: 2})
+	first := addr("10.71.0.1")
+	second := addr("10.71.0.2")
+	s.Observe(first, Fact{Class: ClassSession, Kind: "modbus"})
+	c.advance(time.Second)
+	s.Observe(second, Fact{Class: ClassSession, Kind: "modbus"})
+	c.advance(time.Second)
+	s.Observe(first, Fact{Class: ClassRead, Kind: "modbus"})
+	c.advance(time.Second)
+	s.Observe(addr("10.71.0.3"), Fact{Class: ClassSession, Kind: "modbus"})
+
+	if !s.Seen(first, ClassSession, "", 0) {
+		t.Error("recently active actor was evicted")
+	}
+	if s.Seen(second, ClassSession, "", 0) {
+		t.Error("least recently active actor was kept")
+	}
+}
+
 // The estate's facts are not an actor a stranger can create, so a flood of
 // addresses must not push out the left half of every chain.
 func TestAFloodDoesNotEvictTheEstate(t *testing.T) {
