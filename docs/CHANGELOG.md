@@ -222,6 +222,22 @@ and the policy asked about the address before a mailbox server is dialled and
 about the name a USER claims before it reaches a server that would check it.
 73.6 % to 84.2 %.
 
+**The RDP legacy encryption seam, driven one unit at a time.** The end-to-end
+test puts a client, this gateway and a desktop that speaks the protocol's own
+encryption together, and proves the three fit. What it cannot do is reach one
+direction at a time: `open` is only ever called on what a desktop sends, and a
+fake desktop that sends the awkward cases is a fake desktop nobody would write
+-- so `open` sat at 0 % while the session it belongs to was covered. The pair is
+now driven directly, with keys derived the way the session derives them, and the
+asymmetries are what the cases are about: a security header goes back only on
+the packet kinds that have one, the encrypt bit never survives the decryption, a
+packet the desktop did not encrypt is passed through while one that does not
+decrypt ends the session, and fast path input before the key exchange is refused
+because it carries keystrokes. `TestWhichUnitsHaveToWaitForTheKeys` is the one
+with a wrong answer in each direction -- too eager stalls every connection at
+the gateway, too lax sends session traffic before there is a key for it.
+73.8 % to 77.0 % of the package's own statements.
+
 **The MMS answer side, which was the half nothing read.** The request readers
 had the tests, because requests are what a relay decides about -- so the
 answers, where the reports come from, were at 0 % function by function:
