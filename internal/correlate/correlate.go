@@ -49,6 +49,7 @@
 package correlate
 
 import (
+	"container/list"
 	"net/netip"
 	"sort"
 	"sync"
@@ -185,7 +186,9 @@ func (b Bounds) withDefaults() Bounds {
 // actor is one address's recent facts, oldest first.
 type actor struct {
 	facts []Fact
-	last  time.Time
+	// order is this actor's position in the store's least-recently-used
+	// list. Estate facts are deliberately not put on that list.
+	order *list.Element
 	// dropped counts this actor's facts the bound pushed out, so a
 	// detector reading a truncated window can tell.
 	dropped uint64
@@ -198,6 +201,10 @@ type Store struct {
 	b  Bounds
 	mu sync.Mutex
 	m  map[netip.Addr]*actor
+	// lru holds non-estate actor keys, least recently active first. Keeping
+	// the order incrementally makes eviction constant-time even when the
+	// actor bound is large and attacker-controlled addresses churn.
+	lru list.List
 	// now is the clock, injectable for the tests -- a window store whose
 	// tests slept would be a test suite that took half an hour.
 	now func() time.Time
@@ -288,8 +295,12 @@ func (s *Store) record(key netip.Addr, f Fact) {
 		}
 		a = &actor{}
 		s.m[key] = a
+		if key != estate {
+			a.order = s.lru.PushBack(key)
+		}
+	} else if a.order != nil {
+		s.lru.MoveToBack(a.order)
 	}
-	a.last = now
 	a.expireLocked(now.Add(-s.b.Window))
 
 	// Collapse an identical fact seen a moment ago. A burst of refusals
@@ -331,24 +342,12 @@ func (a *actor) expireLocked(cutoff time.Time) {
 
 // evictOldestLocked removes the least recently active actor.
 func (s *Store) evictOldestLocked() {
-	var oldest netip.Addr
-	first := true
-	var when time.Time
-	for k, a := range s.m {
-		if k == estate {
-			// The estate's own facts are not an actor a stranger can
-			// create, and evicting them would lose the left half of every
-			// chain that starts with a clock step.
-			continue
-		}
-		if first || a.last.Before(when) {
-			oldest, when, first = k, a.last, false
-		}
-	}
-	if first {
+	oldest := s.lru.Front()
+	if oldest == nil {
 		return
 	}
-	delete(s.m, oldest)
+	s.lru.Remove(oldest)
+	delete(s.m, oldest.Value.(netip.Addr))
 	s.evicted++
 }
 
