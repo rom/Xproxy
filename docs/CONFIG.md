@@ -13817,6 +13817,8 @@ on the management socket, where the kernel decides who may throw it.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | string | `rules[i]` | Identifies the rule in `GET /v1/capture` |
+| `listeners` | list of names | any | Only traffic on these listeners. The one selector that works on every kind, HTTP and otherwise |
+| `kinds` | list of kinds | any | Only these listener kinds (`mysql`, `ssh`, `tcp`, ...). Validated against the kinds in the configuration, so a typo is a load error rather than a rule that never matches |
 | `hosts` | list | any | Host patterns, exact or `*.example.com`, matched against the request authority |
 | `routes` | list of names | any | Only requests matched to these routes. A request refused before routing (a ban, the maintenance gate) has no route, so it never matches this selector; an answer-side selector is how those are captured |
 | `methods` | list | any | Upper-case methods |
@@ -13831,6 +13833,70 @@ on the management socket, where the kernel decides who may throw it.
 Selectors within a rule are AND, values within a selector are OR, and
 rules are tried in order. To capture one route for one client, put both
 selectors in one rule; to capture two unrelated things, write two rules.
+
+### Capturing a session on a non-HTTP listener
+
+Most listener kinds carry sessions rather than requests, and they are
+captured too: one pcapng flow per session, holding the bytes each way up
+to `max_body_bytes`, with the protocol, the listener, the login the
+protocol named and the refusal in the flow's comment.
+
+Four selectors apply to a session, because they are the four things that
+are true of one before it has sent anything: `listeners`, `kinds`,
+`client_cidrs` and `denied`. The request-shaped selectors -- `hosts`,
+`routes`, `methods`, `paths`, `statuses`, `reasons` -- cannot be
+answered about a session, so a rule naming any of them never matches
+one; `percent` and `max_flows` work as they do for a request.
+
+```yaml
+capture:
+  enabled: true
+  directory: /var/lib/xproxy/capture
+  bodies: true            # a session *is* payload: without this nothing is written
+  max_body_bytes: 65536
+  rules:
+    # What the database relay turned away, whatever turned it away.
+    - name: refused-sessions
+      kinds: [mysql, postgres, tds]
+      denied: true
+      max_flows: 500
+
+    # One engineer's bastion sessions, for a reported problem.
+    - name: reported-operator
+      listeners: [plant-ssh]
+      client_cidrs: ["198.51.100.7/32"]
+```
+
+`bodies: true` is required and not the default: a session has no head to
+keep the way an HTTP request has one, so with bodies off there is
+nothing to write, and the configuration says so at load rather than
+leaving an operator to find an empty file.
+
+**What the file holds depends on where the kind terminates
+encryption.** A kind that terminates TLS -- the databases, the mail
+protocols, ldap, mqtt, modbus, iec104 -- is captured as plaintext
+protocol, with the handshake left out, so a dissector reads it. A kind
+that does not is captured as it crossed: `tcp` splices TLS records and
+`ntske` relays or terminates a handshake, so those files hold
+ciphertext, which still names the server, the version and the cipher
+suites. `ssh` holds the SSH transport, encrypted after the key
+exchange; `vnc` holds RFB's own TLS where a session negotiates it. On
+`ssh`, `vnc`, `rdp`, `ftp` and `telnet` the plaintext record of a
+session is that kind's own session recording (`recording:` in its listener
+section), which answers a different question: what the operator did,
+rather than what crossed the wire.
+
+The `request_id` in a flow's comment is the kind's own session
+identifier where it has one -- the identifier `xproxyctl sessions`
+lists, and the one a recording file is named after -- so a capture, a
+recording and the access log can be lined up. Kinds that do not
+register with the session table get a random identifier instead, so that
+a file holding several of their sessions still says which packet belongs
+to which.
+
+The `http` and `forward` kinds, and `kkdcp` and `dns`, are
+request-shaped rather than session-shaped: `http` writes one capture per
+request as described above, and the other three are not captured yet.
 
 ## mysql
 

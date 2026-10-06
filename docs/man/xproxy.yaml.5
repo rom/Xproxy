@@ -33393,8 +33393,8 @@ T}
 .PP
 .TS
 allbox;
-lbw(0.9i) lbw(0.9i) lbw(0.9i) lbx
-lw(0.9i) lw(0.9i) lw(0.9i) lx.
+lbw(1.0i) lbw(0.9i) lbw(0.9i) lbx
+lw(1.0i) lw(0.9i) lw(0.9i) lx.
 T{
 Key
 T}	T{
@@ -33412,6 +33412,24 @@ T}	T{
 \fBrules[i]\fR
 T}	T{
 Identifies the rule in \fBGET /\:v1/\:capture\fR
+T}
+T{
+\fBlisteners\fR
+T}	T{
+list of names
+T}	T{
+any
+T}	T{
+Only traffic on these listeners. The one selector that works on every kind,\: HTTP and otherwise
+T}
+T{
+\fBkinds\fR
+T}	T{
+list of kinds
+T}	T{
+any
+T}	T{
+Only these listener kinds (\fBmysql\fR,\: \fBssh\fR,\: \fBtcp\fR,\: ...). Validated against the kinds in the configuration,\: so a typo is a load error rather than a rule that never matches
 T}
 T{
 \fBhosts\fR
@@ -33506,6 +33524,42 @@ T}
 .TE
 .PP
 Selectors within a rule are AND, values within a selector are OR, and rules are tried in order. To capture one route for one client, put both selectors in one rule; to capture two unrelated things, write two rules.
+.SS "Capturing a session on a non\-HTTP listener"
+.PP
+Most listener kinds carry sessions rather than requests, and they are captured too: one pcapng flow per session, holding the bytes each way up to \fBmax_body_bytes\fR, with the protocol, the listener, the login the protocol named and the refusal in the flow\(aqs comment.
+.PP
+Four selectors apply to a session, because they are the four things that are true of one before it has sent anything: \fBlisteners\fR, \fBkinds\fR, \fBclient_cidrs\fR and \fBdenied\fR. The request\-shaped selectors \-\- \fBhosts\fR, \fBroutes\fR, \fBmethods\fR, \fBpaths\fR, \fBstatuses\fR, \fBreasons\fR \-\- cannot be answered about a session, so a rule naming any of them never matches one; \fBpercent\fR and \fBmax_flows\fR work as they do for a request.
+.PP
+.RS 4
+.nf
+.ft CR
+capture:
+  enabled: true
+  directory: /var/lib/xproxy/capture
+  bodies: true            # a session *is* payload: without this nothing is written
+  max_body_bytes: 65536
+  rules:
+    # What the database relay turned away, whatever turned it away.
+    \- name: refused\-sessions
+      kinds: [mysql, postgres, tds]
+      denied: true
+      max_flows: 500
+
+    # One engineer's bastion sessions, for a reported problem.
+    \- name: reported\-operator
+      listeners: [plant\-ssh]
+      client_cidrs: ["198.51.100.7/32"]
+.ft
+.fi
+.RE
+.PP
+\fBbodies: true\fR is required and not the default: a session has no head to keep the way an HTTP request has one, so with bodies off there is nothing to write, and the configuration says so at load rather than leaving an operator to find an empty file.
+.PP
+\fBWhat the file holds depends on where the kind terminates encryption.\fR A kind that terminates TLS \-\- the databases, the mail protocols, ldap, mqtt, modbus, iec104 \-\- is captured as plaintext protocol, with the handshake left out, so a dissector reads it. A kind that does not is captured as it crossed: \fBtcp\fR splices TLS records and \fBntske\fR relays or terminates a handshake, so those files hold ciphertext, which still names the server, the version and the cipher suites. \fBssh\fR holds the SSH transport, encrypted after the key exchange; \fBvnc\fR holds RFB\(aqs own TLS where a session negotiates it. On \fBssh\fR, \fBvnc\fR, \fBrdp\fR, \fBftp\fR and \fBtelnet\fR the plaintext record of a session is that kind\(aqs own session recording (\fBrecording:\fR in its listener section), which answers a different question: what the operator did, rather than what crossed the wire.
+.PP
+The \fBrequest_id\fR in a flow\(aqs comment is the kind\(aqs own session identifier where it has one \-\- the identifier \fBxproxyctl sessions\fR lists, and the one a recording file is named after \-\- so a capture, a recording and the access log can be lined up. Kinds that do not register with the session table get a random identifier instead, so that a file holding several of their sessions still says which packet belongs to which.
+.PP
+The \fBhttp\fR and \fBforward\fR kinds, and \fBkkdcp\fR and \fBdns\fR, are request\-shaped rather than session\-shaped: \fBhttp\fR writes one capture per request as described above, and the other three are not captured yet.
 .SH "mysql"
 .PP
 \fBkind: mysql\fR is a relay in front of a MySQL or MariaDB server.

@@ -6,6 +6,52 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Added (the pcapng capture reaches the twenty-five kinds that carry sessions)
+
+The capture subsystem has recorded HTTP exchanges since it was built, and nothing
+else: on a proxy whose other thirty-six listener kinds carry databases, control
+systems and bastion sessions, "record what happened" stopped at the one protocol
+that was already the best logged. It now covers every kind whose traffic is a
+session.
+
+One pcapng flow per session, holding the bytes each way up to `max_body_bytes`,
+with the protocol, the listener, the login the protocol named and the refusal in
+the flow's comment -- so a file is readable months later with no access log beside
+it. Four selectors apply, because they are the four things true of a session
+before it has sent anything: `listeners` and `kinds`, both new and both usable on
+an HTTP rule too, plus `client_cidrs` and `denied`.
+
+`denied` is the rule an operator writes first, and it is why the tap is opened
+before anything can refuse the session: a session turned away at the concurrency
+gate never dials, so after that point there is nothing left to record. It is also
+why the refusal is taken from each kind's own refusal funnel rather than from the
+access log -- several kinds log one reason for a refusal and for a session that
+ran for an hour and then timed out, and a `denied: true` rule that matched the
+second would have selected most of the listener.
+
+What a file holds depends on where the kind terminates encryption, and the
+difference is documented per kind in [CONFIG.md](CONFIG.md#capture). A kind that
+terminates TLS is captured as readable protocol, with the handshake left out --
+including the in-band upgrades, MySQL's `CLIENT_SSL`, Postgres's `SSLRequest`,
+STARTTLS, FTP's `AUTH TLS`, LDAP's StartTLS, RDP's and TDS's, where the tap pauses
+over the handshake and picks the plaintext up on the far side. A kind that does not
+terminate anything is captured as it crossed: `tcp` splices TLS records, `ssh`
+holds the SSH transport. On the bastion kinds the plaintext record remains that
+kind's own session recording, which answers a different question.
+
+Not covered: the eight datagram kinds, which have no connection to tap, and the
+four request-shaped kinds -- `http`, which has had its own per-request capture from
+the start, and `forward`, `kkdcp` and `dns`, which need the same shape rather than
+a session tap. A sweep over the kind registry fails if a connection-oriented kind
+is added without a tap.
+
+Two hazards the wrapping exposed, fixed before the kinds were wired: a type
+assertion cannot be forwarded through a wrapper, so `conn.(*tls.Conn)` read
+plaintext on a connection that was in fact TLS -- the seven places that asked now
+go through `netutil.TLSConn`, which follows `Unwrap()`; and `net.Conn` does not
+carry `CloseWrite`, so a spliced session over a wrapped connection would have
+waited for a timeout instead of ending.
+
 ### Fixed (an eighth audit round: the attack surface, and who controls the data on it)
 
 A review of every network component, parser and protocol implementation,
