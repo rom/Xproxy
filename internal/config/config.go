@@ -11080,7 +11080,10 @@ type CaptureRule struct {
 	// is true of it before a byte is read. Both lists also apply to HTTP
 	// exchanges, where the listener is the one the request arrived on.
 	Listeners []string `yaml:"listeners"`
-	Kinds     []string `yaml:"kinds"`
+	// Kinds are listener kinds ("mysql", "ssh", "tcp"), validated against
+	// the kinds in this configuration so that a typo is a load error
+	// rather than a rule that never matches.
+	Kinds []string `yaml:"kinds"`
 	// Percent samples the exchanges this rule would take. Default 100.
 	Percent int `yaml:"percent"`
 	// MaxFlows bounds how many exchanges this rule ever writes, so a

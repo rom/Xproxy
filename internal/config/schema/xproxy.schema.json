@@ -1921,6 +1921,20 @@
             "type": "string"
           }
         },
+        "kinds": {
+          "description": "Kinds are listener kinds (\"mysql\", \"ssh\", \"tcp\"), validated against the kinds in this configuration so that a typo is a load error rather than a rule that never matches.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "listeners": {
+          "description": "Listeners are listener names, and Kinds listener kinds. They are how a rule selects a session on a protocol that has no hosts, routes, methods or paths: everything but the HTTP listeners. An HTTP exchange is identified by what was asked for; a relayed session is identified by which listener it arrived on and which protocol that listener speaks, because there is nothing else that is true of it before a byte is read. Both lists also apply to HTTP exchanges, where the listener is the one the request arrived on.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
         "max_flows": {
           "description": "MaxFlows bounds how many exchanges this rule ever writes, so a rule left on cannot fill a disk. 0 is unbounded.",
           "type": "integer"
