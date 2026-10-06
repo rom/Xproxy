@@ -3,6 +3,7 @@
 package netutil
 
 import (
+	"crypto/tls"
 	"mime"
 	"net"
 	"net/http"
@@ -251,4 +252,29 @@ func PeerAddr(a net.Addr) netip.Addr {
 		return ap.Addr().Unmap()
 	}
 	return AddrOf(a.String())
+}
+
+// TLSConn is the TLS connection c is, or carries underneath a wrapper.
+//
+// A plain `c.(*tls.Conn)` is the obvious spelling and it is wrong as soon as
+// anything wraps the connection -- the pcapng capture's tap does, and so would a
+// counter or a rate limiter. Go cannot forward a type assertion through a
+// wrapper, so a wrapper exposes `Unwrap() net.Conn` and this follows it. A kind
+// asking "is my client encrypted" has to go through here, or it will read a
+// plaintext answer on a connection that is in fact TLS.
+func TLSConn(c net.Conn) (*tls.Conn, bool) {
+	for range 8 { // a bound rather than a loop, in case a wrapper unwraps to itself
+		if c == nil {
+			return nil, false
+		}
+		if tc, ok := c.(*tls.Conn); ok {
+			return tc, true
+		}
+		u, ok := c.(interface{ Unwrap() net.Conn })
+		if !ok {
+			return nil, false
+		}
+		c = u.Unwrap()
+	}
+	return nil, false
 }

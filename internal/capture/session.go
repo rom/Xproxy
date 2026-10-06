@@ -3,6 +3,7 @@ package capture
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"net"
 	"net/netip"
 	"sync"
@@ -258,6 +259,27 @@ type tapped struct {
 	net.Conn
 	t           *Tap
 	read, wrote *boundedBuf
+}
+
+// Unwrap returns the connection underneath, for a caller that has to know what it
+// really is.
+//
+// A tap sits between a kind and its socket, and Go has no way to forward a type
+// assertion: `conn.(*tls.Conn)` on a wrapped connection is false however much TLS
+// is underneath it, and a kind that asked whether its client was encrypted would
+// get the wrong answer. netutil.TLSConn follows this; so should anything else that
+// needs the concrete connection rather than its behaviour.
+func (t *tapped) Unwrap() net.Conn { return t.Conn }
+
+// CloseWrite forwards the half-close, which is how a relay tells the other end
+// that one direction is finished. The embedded net.Conn does not carry it, so
+// without this a tapped TCP connection would stop propagating it and a spliced
+// session would hang until a timeout rather than ending.
+func (t *tapped) CloseWrite() error {
+	if cw, ok := t.Conn.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return errors.ErrUnsupported
 }
 
 func (t *tapped) Read(p []byte) (int, error) {

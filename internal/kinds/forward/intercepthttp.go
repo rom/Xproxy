@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/relay"
 	"github.com/rom/xproxy/internal/streamscan"
 	"github.com/rom/xproxy/internal/textsafe"
@@ -82,7 +82,7 @@ const maxRequestLine = 8 << 10
 
 // alpnOf is what a TLS connection negotiated, or "" for anything else.
 func alpnOf(c net.Conn) string {
-	if tc, ok := c.(*tls.Conn); ok {
+	if tc, ok := netutil.TLSConn(c); ok {
 		return tc.ConnectionState().NegotiatedProtocol
 	}
 	return ""

@@ -50,7 +50,7 @@ func (t *server) handle(client net.Conn) {
 		return
 	}
 	defer t.gate.Leave(ip)
-	if _, isTLS := client.(*tls.Conn); boolOr(t.c.RequireTLS, false) && !isTLS {
+	if _, isTLS := netutil.TLSConn(client); boolOr(t.c.RequireTLS, false) && !isTLS {
 		t.deny(ip, "tls_required", "")
 		return
 	}
