@@ -301,7 +301,7 @@ func (se *session) decide(pdu rdp.PDU) (out []byte, drop bool, reason string) {
 		}
 		sealed, err := se.legacy.sealFast(pdu.Raw)
 		if err != nil {
-			se.t.deny(se.ip, "rdp_fast_path", err.Error())
+			se.t.deny(se, "rdp_fast_path", err.Error())
 			return nil, false, "client_protocol"
 		}
 		return sealed, false, ""
@@ -314,7 +314,7 @@ func (se *session) decide(pdu rdp.PDU) (out []byte, drop bool, reason string) {
 	}
 	data, ok, err := rdp.ParseSendData(payload)
 	if err != nil {
-		se.t.deny(se.ip, "rdp_data_unit", err.Error())
+		se.t.deny(se, "rdp_data_unit", err.Error())
 		return nil, false, "client_protocol"
 	}
 	if !ok {

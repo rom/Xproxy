@@ -27,6 +27,7 @@ import (
 	"github.com/rom/xproxy/internal/acceptgroup"
 	"github.com/rom/xproxy/internal/access"
 	"github.com/rom/xproxy/internal/authorization"
+	"github.com/rom/xproxy/internal/capture"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/mfa"
 	"github.com/rom/xproxy/internal/netutil"
@@ -231,7 +232,14 @@ func (t *server) shutdown(ctx context.Context) {
 	t.mu.Unlock()
 }
 
-func (t *server) deny(ip netip.Addr, what, detail string) {
+// deny records a refusal, and tells the capture the session was one.
+//
+// The capture asks about the refusal rather than how the session ended: a session
+// that ran and then closed on a timeout was not turned away, so recording it from
+// the access log would make a `denied: true` rule select most of the listener.
+func (t *server) deny(se *session, what, detail string) {
+	ip := se.ip
+	se.tap.Deny(what)
 	t.engine.Counters().Refuse("vnc", what)
 	if bl := t.engine.Bans(); bl != nil && ip.IsValid() {
 		bl.Observe(ip, "vnc_denied")
@@ -273,13 +281,14 @@ func (t *server) recordWouldDeny(ip netip.Addr, what, rule, detail string) {
 // authzGate lends the estate's authorisation policy this listener's own refusal
 // machinery, so a refusal it makes is counted, logged and banned on exactly as
 // one this listener made itself.
-func (t *server) authzGate(ip netip.Addr) authorization.Gate {
+func (t *server) authzGate(se *session) authorization.Gate {
+	ip := se.ip
 	return authorization.Gate{
 		Shadowing: t.cfg.Shadowing,
 		Record:    func(reason, rule, detail string) { t.recordWouldDeny(ip, reason, rule, detail) },
 		Deny: func(reason, _, detail string) {
 			t.engine.Counters().VNCRefused.Add(1)
-			t.deny(ip, reason, detail)
+			t.deny(se, reason, detail)
 		},
 	}
 }
@@ -305,6 +314,10 @@ type session struct {
 	ip     netip.Addr
 	target string
 	user   string
+
+	// tap records the session for a pcapng capture, and is nil -- usable, and
+	// doing nothing -- whenever no rule wants this one, which is the usual case.
+	tap *capture.Tap
 	// clientVersion and upVersion are what was settled on each leg.
 	// They need not agree: a 3.3 client can reach a 3.8 server, and
 	// the proxy is what makes that work.
@@ -357,10 +370,20 @@ func (t *server) handle(client net.Conn) {
 	s.Counters().VNCSessionsOpen.Add(1)
 	defer s.Counters().VNCSessionsOpen.Add(-1)
 	defer func() { se.closeRecording() }()
+	// Opened before anything can refuse the session, because a refused session is
+	// the one an operator most often wants and it never dials: after that point
+	// there is nothing left to record. A nil tap wraps nothing and writes nothing.
+	//
+	// The socket is what is wrapped. Where RFB carries its own TLS -- VeNCrypt, or
+	// the tls security type -- what the file holds from the upgrade onwards is
+	// those records: this kind's plaintext record of a session is its own
+	// recording, and the capture is of what crossed the wire.
+	se.tap = t.engine.Capture().Open("vnc", t.cfg.Name, "", client.RemoteAddr())
+	defer se.tap.Close()
 
 	if !t.clientAllowed(se.ip) && !t.shadowed(se.ip, "client_refused", "") {
 		s.Counters().VNCRejected.Add(1)
-		t.deny(se.ip, "client_refused", "")
+		t.deny(se, "client_refused", "")
 		_ = client.Close()
 		return
 	}
@@ -380,6 +403,7 @@ func (t *server) handle(client net.Conn) {
 		Kind: "vnc", Listener: t.cfg.Name, Client: client.RemoteAddr().String(),
 	}, func() { _ = client.Close() })
 	defer se.live.Done()
+	se.tap.Name(se.live.ID)
 	// Only tls_mode: wrap makes the socket itself TLS. In the default
 	// mode the same certificate is presented inside RFB instead, by
 	// VeNCrypt or the tls security type.
@@ -391,6 +415,10 @@ func (t *server) handle(client net.Conn) {
 		}
 		client, se.client = tc, tc
 	}
+	// Wrapped after the socket's own handshake, so that in tls_mode: wrap the
+	// capture holds RFB rather than the records carrying it.
+	client = se.tap.Client(client)
+	se.client = client
 	defer func() { _ = se.client.Close() }()
 	if t.v.SessionTimeout > 0 {
 		timer := time.AfterFunc(t.v.SessionTimeout.D(), func() { _ = se.client.Close() })
@@ -512,7 +540,7 @@ func (se *session) admitByGrant() string {
 		return ""
 	}
 	t.engine.Counters().VNCRefused.Add(1)
-	t.deny(se.ip, adm.Reason, textsafe.Clip64(se.user))
+	t.deny(se, adm.Reason, textsafe.Clip64(se.user))
 	return adm.Reason
 }
 
@@ -534,7 +562,7 @@ func (se *session) admitByPolicy() string {
 		User:     se.user,
 		Target:   t.v.Upstream,
 		Action:   authorization.ActionConnect,
-	}, textsafe.Clip64(se.user), t.authzGate(se.ip))
+	}, textsafe.Clip64(se.user), t.authzGate(se))
 }
 
 func (se *session) connect() error {
@@ -566,7 +594,7 @@ func (se *session) connect() error {
 			lastErr = err
 			continue
 		}
-		se.up, se.ep, se.target = conn, ep, ep.Address
+		se.up, se.ep, se.target = se.tap.Upstream(conn), ep, ep.Address
 		// The window is spent once a machine was actually reached.
 		t.grants.Use(se.grant, se.sessionID())
 		se.live.Annotate(se.user, se.target, se.desktop)

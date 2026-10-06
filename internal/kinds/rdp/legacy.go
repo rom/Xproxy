@@ -70,7 +70,7 @@ func (se *session) clientLegacySecurity(resp *rdp.Connect, offered uint32) strin
 	t := se.t
 	method, ok := rdp.StrongestMethod(offered)
 	if !ok {
-		t.deny(se.ip, "rdp_no_encryption_method", fmt.Sprintf("%#x", offered))
+		t.deny(se, "rdp_no_encryption_method", fmt.Sprintf("%#x", offered))
 		return "client_no_method"
 	}
 	random, err := rdp.NewRandom()
@@ -107,17 +107,17 @@ func (se *session) clientExchange(payload []byte) string {
 	l := se.clientLegacy
 	sealed, err := rdp.ParseSecurityExchange(payload)
 	if err != nil {
-		t.deny(se.ip, "rdp_security_exchange", err.Error())
+		t.deny(se, "rdp_security_exchange", err.Error())
 		return "client_protocol"
 	}
 	clientRandom, err := rdp.OpenClientRandom(t.legacyKey, sealed)
 	if err != nil {
-		t.deny(se.ip, "rdp_security_exchange", err.Error())
+		t.deny(se, "rdp_security_exchange", err.Error())
 		return "client_protocol"
 	}
 	keys, err := rdp.DeriveKeys(l.method, clientRandom, l.serverRandom)
 	if err != nil {
-		t.deny(se.ip, "rdp_security_exchange", err.Error())
+		t.deny(se, "rdp_security_exchange", err.Error())
 		return "client_protocol"
 	}
 	// The server's view of the two keys is the client's the other way
@@ -348,7 +348,7 @@ func (se *session) waitForClientKeys(raw []byte) string {
 	case <-se.ended:
 		return "closed"
 	case <-timer.C:
-		se.t.deny(se.ip, "rdp_security_exchange", "no key exchange before the desktop had something to show")
+		se.t.deny(se, "rdp_security_exchange", "no key exchange before the desktop had something to show")
 		return "client_no_exchange"
 	}
 }
@@ -408,7 +408,7 @@ func (se *session) fromClient(pdu rdp.PDU) (out []byte, consumed bool, reason st
 		}
 		plain, err := l.in.FastPathOpen(pdu.Raw)
 		if err != nil {
-			se.t.deny(se.ip, "rdp_client_encryption", err.Error())
+			se.t.deny(se, "rdp_client_encryption", err.Error())
 			return nil, false, "client_encryption"
 		}
 		return plain, false, ""
@@ -427,7 +427,7 @@ func (se *session) fromClient(pdu rdp.PDU) (out []byte, consumed bool, reason st
 	}
 	if head.Flags&rdp.SecExchangePkt != 0 {
 		if l.exchanged {
-			se.t.deny(se.ip, "rdp_security_exchange", "a second key exchange")
+			se.t.deny(se, "rdp_security_exchange", "a second key exchange")
 			return nil, false, "client_protocol"
 		}
 		return nil, true, se.clientExchange(rest)
@@ -437,18 +437,18 @@ func (se *session) fromClient(pdu rdp.PDU) (out []byte, consumed bool, reason st
 			// After the exchange the client encrypts everything. One
 			// that stops is either broken or is not the client that
 			// did the exchange.
-			se.t.deny(se.ip, "rdp_client_encryption", "a packet in the clear after the key exchange")
+			se.t.deny(se, "rdp_client_encryption", "a packet in the clear after the key exchange")
 			return nil, false, "client_encryption"
 		}
 		return pdu.Raw, false, ""
 	}
 	if !l.exchanged {
-		se.t.deny(se.ip, "rdp_client_encryption", "an encrypted packet before the key exchange")
+		se.t.deny(se, "rdp_client_encryption", "an encrypted packet before the key exchange")
 		return nil, false, "client_protocol"
 	}
 	plain, err := l.in.Open(rest)
 	if err != nil {
-		se.t.deny(se.ip, "rdp_client_encryption", err.Error())
+		se.t.deny(se, "rdp_client_encryption", err.Error())
 		return nil, false, "client_encryption"
 	}
 	flags := head.Flags &^ rdp.SecEncrypt

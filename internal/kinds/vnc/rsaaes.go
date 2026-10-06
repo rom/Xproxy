@@ -40,13 +40,13 @@ func (se *session) clientRSAAES() string {
 	}
 	peer, peerPub, err := rfb.ReadRSAAESKey(se.client)
 	if err != nil {
-		t.deny(se.ip, "vnc_rsaaes_key", err.Error())
+		t.deny(se, "vnc_rsaaes_key", err.Error())
 		return "client_auth"
 	}
 	// The client's random comes first, then this end's.
 	clientRandom, err := rfb.OpenRSAAESRandom(se.client, t.rsaKey, sec)
 	if err != nil {
-		t.deny(se.ip, "vnc_rsaaes_random", err.Error())
+		t.deny(se, "vnc_rsaaes_random", err.Error())
 		return "client_auth"
 	}
 	serverRandom, err := rfb.RSAAESRandom(sec)
@@ -81,7 +81,7 @@ func (se *session) clientRSAAES() string {
 	if !rfb.RSAAESTranscriptMatches(got, want) {
 		// The two ends did not see the same pair of keys, which is
 		// what someone in the middle swapping them looks like.
-		t.deny(se.ip, "vnc_rsaaes_transcript", "")
+		t.deny(se, "vnc_rsaaes_transcript", "")
 		return "client_auth"
 	}
 	if _, err := ch.Write([]byte{rfb.RSAAESSubtypeUserPassword}); err != nil {

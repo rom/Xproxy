@@ -18,6 +18,7 @@ import (
 
 	"github.com/rom/xproxy/internal/access"
 	"github.com/rom/xproxy/internal/authorization"
+	"github.com/rom/xproxy/internal/capture"
 	"github.com/rom/xproxy/internal/config"
 	wire "github.com/rom/xproxy/internal/ftp"
 	"github.com/rom/xproxy/internal/mfa"
@@ -268,7 +269,14 @@ func (t *server) shutdown(ctx context.Context) {
 	}
 }
 
-func (t *server) deny(ip netip.Addr, what, detail string) {
+// deny records a refusal, and tells the capture the session was one.
+//
+// The capture asks about the refusal rather than how the session ended: a session
+// that ran and then closed on a timeout was not turned away, so recording it from
+// the access log would make a `denied: true` rule select most of the listener.
+func (t *server) deny(se *session, what, detail string) {
+	ip := se.ip
+	se.tap.Deny(what)
 	t.engine.Counters().Refuse("ftp", what)
 	attrs := []any{"listener", t.cfg.Name, "client_ip", ip.String(), "proto", "ftp"}
 	if detail != "" {
@@ -312,13 +320,14 @@ func (t *server) recordWouldDeny(ip netip.Addr, what, rule, detail string) {
 // authzGate lends the estate's authorisation policy this listener's own refusal
 // machinery, so a refusal it makes is counted, logged and banned on exactly as
 // one this listener made itself.
-func (t *server) authzGate(ip netip.Addr) authorization.Gate {
+func (t *server) authzGate(se *session) authorization.Gate {
+	ip := se.ip
 	return authorization.Gate{
 		Shadowing: t.cfg.Shadowing,
 		Record:    func(reason, rule, detail string) { t.recordWouldDeny(ip, reason, rule, detail) },
 		Deny: func(reason, _, detail string) {
 			t.engine.Counters().FTPRefused.Add(1)
-			t.deny(ip, reason, detail)
+			t.deny(se, reason, detail)
 		},
 	}
 }
@@ -332,9 +341,13 @@ type session struct {
 	cw     *bufio.Writer
 	up     net.Conn
 	ur     *wire.Reader
-	uw     *bufio.Writer
-	pool   *upstream.Pool
-	ep     *upstream.Endpoint
+
+	// tap records the session for a pcapng capture, and is nil -- usable, and
+	// doing nothing -- whenever no rule wants this one, which is the usual case.
+	tap  *capture.Tap
+	uw   *bufio.Writer
+	pool *upstream.Pool
+	ep   *upstream.Endpoint
 
 	ip     netip.Addr
 	target string
@@ -402,10 +415,15 @@ func (t *server) handle(client net.Conn) {
 	// The recording is opened at login and closed here, so a session
 	// that ends any way at all still leaves a complete file.
 	defer func() { se.closeRecording() }()
+	// Opened before anything can refuse the session, because a refused session is
+	// the one an operator most often wants and it never dials: after that point
+	// there is nothing left to record. A nil tap wraps nothing and writes nothing.
+	se.tap = t.engine.Capture().Open("ftp", t.cfg.Name, "", client.RemoteAddr())
+	defer se.tap.Close()
 
 	if !t.clientAllowed(se.ip) && !t.shadowed(se.ip, "client_refused", "") {
 		s.Counters().FTPRejected.Add(1)
-		t.deny(se.ip, "client_refused", "")
+		t.deny(se, "client_refused", "")
 		_ = client.Close()
 		return
 	}
@@ -425,6 +443,7 @@ func (t *server) handle(client net.Conn) {
 		Kind: "ftp", Listener: t.cfg.Name, Client: client.RemoteAddr().String(),
 	}, func() { _ = client.Close() })
 	defer se.live.Done()
+	se.tap.Name(se.live.ID)
 	if t.f.SessionTimeout > 0 {
 		timer := time.AfterFunc(t.f.SessionTimeout.D(), func() { _ = client.Close() })
 		defer timer.Stop()
@@ -437,6 +456,10 @@ func (t *server) handle(client net.Conn) {
 		}
 		client, se.client, se.secure = tc, tc, true
 	}
+	// Wrapped after the socket's own handshake, so the capture holds FTP rather
+	// than the TLS records carrying it.
+	client = se.tap.Client(client)
+	se.client = client
 	defer func() { _ = se.client.Close() }()
 	defer func() {
 		if se.stopAtExpiry != nil {
@@ -545,7 +568,7 @@ func (se *session) connect() error {
 			}
 			conn = tc
 		}
-		se.up, se.ep, se.target = conn, ep, ep.Address
+		se.up, se.ep, se.target = se.tap.Upstream(conn), ep, ep.Address
 		se.live.Annotate(se.user, se.target, "")
 		se.ur = wire.NewReader(bufio.NewReaderSize(conn, t.f.MaxCommandLine+2), t.f.MaxCommandLine)
 		se.uw = bufio.NewWriter(conn)
@@ -594,7 +617,7 @@ func (se *session) toUpstream(c wire.Command) error {
 func (se *session) refuse(code int, text, what, detail string) bool {
 	se.errors++
 	se.t.engine.Counters().FTPRefused.Add(1)
-	se.t.deny(se.ip, what, detail)
+	se.t.deny(se, what, detail)
 	if err := se.toClient(wire.Line(code, text)); err != nil {
 		return false
 	}
@@ -614,7 +637,7 @@ func (se *session) loop() string {
 			switch {
 			case errors.Is(err, wire.ErrLineTooLong):
 				se.t.engine.Counters().FTPRefused.Add(1)
-				t.deny(se.ip, "line_too_long", "")
+				t.deny(se, "line_too_long", "")
 				_ = se.toClient(wire.Line(500, "command line too long"))
 				return "line_too_long"
 			case errors.Is(err, wire.ErrBareNewline), errors.Is(err, wire.ErrBareCR), errors.Is(err, wire.ErrTelnet):
@@ -622,7 +645,7 @@ func (se *session) loop() string {
 				// to disagree about where a command ends, which is how
 				// one command becomes two.
 				se.t.engine.Counters().FTPRefused.Add(1)
-				t.deny(se.ip, "malformed_line", err.Error())
+				t.deny(se, "malformed_line", err.Error())
 				_ = se.toClient(wire.Line(500, "malformed command"))
 				return "malformed_line"
 			}
@@ -878,7 +901,7 @@ func (se *session) admitByPolicy() string {
 		User:     se.user,
 		Target:   t.f.Upstream,
 		Action:   authorization.ActionConnect,
-	}, textsafe.Clip64(se.user), t.authzGate(se.ip))
+	}, textsafe.Clip64(se.user), t.authzGate(se))
 }
 
 // grantGate is the just-in-time access decision, reached from admissionGate
@@ -903,7 +926,7 @@ func (se *session) grantGate() (reason string, line []byte) {
 		return "", nil
 	}
 	t.engine.Counters().FTPRefused.Add(1)
-	t.deny(se.ip, adm.Reason, textsafe.Clip64(se.user))
+	t.deny(se, adm.Reason, textsafe.Clip64(se.user))
 	return adm.Reason, wire.Line(530, "no access grant is in force")
 }
 
@@ -921,6 +944,7 @@ func (se *session) follow(c wire.Command, rep wire.Reply) {
 	switch c.Verb {
 	case "USER":
 		se.user = c.Arg
+		se.tap.User(c.Arg)
 		se.live.Annotate(c.Arg, "", "")
 	case "PASS", "ACCT":
 		if rep.Code >= 200 && rep.Code < 300 {
@@ -937,7 +961,7 @@ func (se *session) follow(c wire.Command, rep wire.Reply) {
 				"user", textsafe.Clip64(se.user), "target", se.target, "tls", se.secure)
 		} else if rep.Code >= 400 {
 			se.t.engine.Counters().FTPAuthFailed.Add(1)
-			se.t.deny(se.ip, "auth_failed", textsafe.Clip64(se.user))
+			se.t.deny(se, "auth_failed", textsafe.Clip64(se.user))
 		}
 	case "REST":
 		// 350 is the server saying it will honour the marker. Until it
@@ -972,7 +996,7 @@ func (se *session) resolvePolicy() {
 		return
 	}
 	if !textsafe.Component(se.user) {
-		se.t.deny(se.ip, "identity_refused", textsafe.Clip256(se.user))
+		se.t.deny(se, "identity_refused", textsafe.Clip256(se.user))
 		_ = se.toClient(wire.Line(421, "this login cannot be used with the path policy here"))
 		_ = se.client.Close()
 		return
@@ -1144,7 +1168,7 @@ func (se *session) passive(c wire.Command) (bool, string) {
 	case c.Verb == "PASV" && rep.Code == 227:
 		ap, err := wire.ParsePASV(rep.Text())
 		if err != nil {
-			se.t.deny(se.ip, "upstream_address", textsafe.Clip256(rep.Text()))
+			se.t.deny(se, "upstream_address", textsafe.Clip256(rep.Text()))
 			_ = se.toClient(wire.Line(425, "the server's passive reply could not be read"))
 			return false, ""
 		}
@@ -1152,7 +1176,7 @@ func (se *session) passive(c wire.Command) (bool, string) {
 	case c.Verb == "EPSV" && rep.Code == 229:
 		port, err = wire.ParseEPSV(rep.Text())
 		if err != nil {
-			se.t.deny(se.ip, "upstream_address", textsafe.Clip256(rep.Text()))
+			se.t.deny(se, "upstream_address", textsafe.Clip256(rep.Text()))
 			_ = se.toClient(wire.Line(425, "the server's passive reply could not be read"))
 			return false, ""
 		}
@@ -1311,21 +1335,25 @@ func (se *session) auth(c wire.Command) (bool, string) {
 	}
 	if n := se.cr.Buffered(); n > 0 {
 		se.t.engine.Counters().FTPRefused.Add(1)
-		t.deny(se.ip, "tls_pipelined", strconv.Itoa(n))
+		t.deny(se, "tls_pipelined", strconv.Itoa(n))
 		_ = se.toClient(wire.Line(500, "data pipelined across AUTH"))
 		return true, "tls_pipelined"
 	}
 	if err := se.toClient(wire.Line(234, "proceeding with TLS")); err != nil {
 		return true, "write"
 	}
+	// AUTH TLS is an in-band upgrade, so the capture pauses over the handshake and
+	// picks the plaintext up again on the far side: the file then holds one
+	// readable stream of the protocol rather than cleartext and then ciphertext.
+	se.tap.Pause()
 	tc := tls.Server(se.client, t.tlsCfg)
 	if err := tc.HandshakeContext(context.Background()); err != nil {
 		return true, "tls_handshake"
 	}
-	se.client = tc
+	se.client = se.tap.Client(tc)
 	se.secure = true
-	se.cr = wire.NewReader(bufio.NewReaderSize(tc, t.f.MaxCommandLine+2), t.f.MaxCommandLine)
-	se.cw = bufio.NewWriter(tc)
+	se.cr = wire.NewReader(bufio.NewReaderSize(se.client, t.f.MaxCommandLine+2), t.f.MaxCommandLine)
+	se.cw = bufio.NewWriter(se.client)
 	// RFC 4217 section 4: the login starts again on the protected
 	// connection, so nothing learned before it is carried over.
 	se.user, se.authed = "", false
@@ -1441,7 +1469,7 @@ func (se *session) moveData(d *dataConn, c wire.Command, upload bool) (int64, st
 		}
 	}
 	if ap, err := netip.ParseAddrPort(near.RemoteAddr().String()); err != nil || ap.Addr().Unmap() != want.Unmap() {
-		se.t.deny(se.ip, "data_stranger", near.RemoteAddr().String())
+		se.t.deny(se, "data_stranger", near.RemoteAddr().String())
 		return 0, "the data connection came from somewhere else"
 	}
 	dialer := net.Dialer{Timeout: se.t.f.DataTimeout.D()}
@@ -1486,14 +1514,14 @@ func (se *session) moveData(d *dataConn, c wire.Command, upload bool) (int64, st
 		n, reason := se.scanned(svc, dst, src, c, upload, scan)
 		if reason != "" {
 			se.t.engine.Counters().FTPRefused.Add(1)
-			se.t.deny(se.ip, "transfer_cut", reason+" "+textsafe.Clip256(se.resolve(c.Arg)))
+			se.t.deny(se, "transfer_cut", reason+" "+textsafe.Clip256(se.resolve(c.Arg)))
 		}
 		return n, reason
 	}
 	n, reason := se.copyData(dst, src, scan)
 	if reason != "" {
 		se.t.engine.Counters().FTPRefused.Add(1)
-		se.t.deny(se.ip, "transfer_cut", reason+" "+textsafe.Clip256(se.resolve(c.Arg)))
+		se.t.deny(se, "transfer_cut", reason+" "+textsafe.Clip256(se.resolve(c.Arg)))
 	}
 	return n, reason
 }

@@ -44,7 +44,7 @@ func (se *session) conference() string {
 	}
 	conn, err := rdp.ParseConnect(payload)
 	if err != nil {
-		t.deny(se.ip, "rdp_conference", err.Error())
+		t.deny(se, "rdp_conference", err.Error())
 		return "client_conference"
 	}
 	if reason := se.applyChannelPolicy(conn); reason != "" {
@@ -133,7 +133,7 @@ func (se *session) readClientMethods(conn *rdp.Connect) (uint32, string) {
 		}
 		methods, err := rdp.ParseClientSecurity(b.Data)
 		if err != nil {
-			se.t.deny(se.ip, "rdp_client_security", err.Error())
+			se.t.deny(se, "rdp_client_security", err.Error())
 			return 0, "client_conference"
 		}
 		return methods, ""
@@ -155,7 +155,7 @@ func (se *session) applyChannelPolicy(conn *rdp.Connect) string {
 			continue
 		}
 		if list, err = rdp.ParseChannels(b.Data); err != nil {
-			t.deny(se.ip, "rdp_channels", err.Error())
+			t.deny(se, "rdp_channels", err.Error())
 			return "client_conference"
 		}
 	}

@@ -274,7 +274,7 @@ func (se *session) wantsFactor() bool {
 func (se *session) factorFailed(why string) {
 	t := se.t
 	t.engine.Counters().VNCMFAFailed.Add(1)
-	t.deny(se.ip, "vnc_mfa_failed", textsafe.Clip64(se.user)+" "+why)
+	t.deny(se, "vnc_mfa_failed", textsafe.Clip64(se.user)+" "+why)
 	t.engine.Logs().SecurityEvent(context.Background(), "deny", "vnc_mfa_failed",
 		"listener", t.cfg.Name, "client_ip", se.ip.String(),
 		"user", textsafe.Clip64(se.user), "reason", why)

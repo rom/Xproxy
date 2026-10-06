@@ -26,6 +26,7 @@ import (
 	"github.com/rom/xproxy/internal/acceptgroup"
 	"github.com/rom/xproxy/internal/access"
 	"github.com/rom/xproxy/internal/authorization"
+	"github.com/rom/xproxy/internal/capture"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/mfa"
 	"github.com/rom/xproxy/internal/netutil"
@@ -246,7 +247,14 @@ func (t *server) shutdown(ctx context.Context) {
 	t.mu.Unlock()
 }
 
-func (t *server) deny(ip netip.Addr, what, detail string) {
+// deny records a refusal, and tells the capture the session was one.
+//
+// The capture asks about the refusal rather than how the session ended: a session
+// that ran and then closed on a timeout was not turned away, so recording it from
+// the access log would make a `denied: true` rule select most of the listener.
+func (t *server) deny(se *session, what, detail string) {
+	ip := se.ip
+	se.tap.Deny(what)
 	t.engine.Counters().Refuse("rdp", what)
 	if bl := t.engine.Bans(); bl != nil && ip.IsValid() {
 		bl.Observe(ip, "rdp_denied")
@@ -288,13 +296,14 @@ func (t *server) recordWouldDeny(ip netip.Addr, what, rule, detail string) {
 // authzGate lends the estate's authorisation policy this listener's own refusal
 // machinery, so a refusal it makes is counted, logged and banned on exactly as
 // one this listener made itself.
-func (t *server) authzGate(ip netip.Addr) authorization.Gate {
+func (t *server) authzGate(se *session) authorization.Gate {
+	ip := se.ip
 	return authorization.Gate{
 		Shadowing: t.cfg.Shadowing,
 		Record:    func(reason, rule, detail string) { t.recordWouldDeny(ip, reason, rule, detail) },
 		Deny: func(reason, _, detail string) {
 			t.engine.Counters().RDPRefused.Add(1)
-			t.deny(ip, reason, detail)
+			t.deny(se, reason, detail)
 		},
 	}
 }
@@ -319,6 +328,11 @@ type session struct {
 	up     net.Conn
 	ip     netip.Addr
 	target string
+
+	// tap records the session for a pcapng capture, and is nil -- usable, and
+	// doing nothing -- whenever no rule wants this one, which is the usual case.
+	tap *capture.Tap
+
 	// cookie is the routing token the client put in front of its
 	// negotiation, which is the only identity available that early.
 	cookie string
@@ -396,10 +410,16 @@ func (t *server) handle(client net.Conn) {
 	s.Counters().RDPSessionsOpen.Add(1)
 	defer s.Counters().RDPSessionsOpen.Add(-1)
 	defer func() { se.closeRecording() }()
+	// Opened before anything can refuse the session, because a refused session is
+	// the one an operator most often wants and it never dials: after that point
+	// there is nothing left to record. A nil tap wraps nothing and writes nothing.
+	se.tap = t.engine.Capture().Open("rdp", t.cfg.Name, "", client.RemoteAddr())
+	defer se.tap.Close()
+	se.client = se.tap.Client(client)
 
 	if !t.clientAllowed(se.ip) && !t.shadowed(se.ip, "client_refused", "") {
 		s.Counters().RDPRejected.Add(1)
-		t.deny(se.ip, "client_refused", "")
+		t.deny(se, "client_refused", "")
 		_ = client.Close()
 		return
 	}
@@ -418,6 +438,7 @@ func (t *server) handle(client net.Conn) {
 		Kind: "rdp", Listener: t.cfg.Name, Client: client.RemoteAddr().String(),
 	}, func() { _ = client.Close() })
 	defer se.live.Done()
+	se.tap.Name(se.live.ID)
 	defer func() { _ = se.client.Close() }()
 	if t.v.SessionTimeout > 0 {
 		timer := time.AfterFunc(t.v.SessionTimeout.D(), func() { _ = se.client.Close() })
@@ -500,7 +521,7 @@ func (se *session) connect() error {
 			lastErr = err
 			continue
 		}
-		se.up, se.ep, se.target = conn, ep, ep.Address
+		se.up, se.ep, se.target = se.tap.Upstream(conn), ep, ep.Address
 		se.live.Annotate(se.user, se.target, "")
 		_ = conn.SetDeadline(time.Now().Add(t.v.HandshakeTimeout.D()))
 		return nil

@@ -35,7 +35,7 @@ func (se *session) clientTight() string {
 	if !rfb.TightHasCapability(auths, code) {
 		// A Tight authentication code is not a security type, so it
 		// is logged as the number it is rather than named as one.
-		t.deny(se.ip, "vnc_tight_auth_not_offered", fmt.Sprintf("auth %d", code))
+		t.deny(se, "vnc_tight_auth_not_offered", fmt.Sprintf("auth %d", code))
 		se.securityResult(false, "that authentication was not offered")
 		return "security_not_offered"
 	}
@@ -118,7 +118,7 @@ func (se *session) clientARD() string {
 	}
 	key, err := rfb.ARDKey(pub, params.Prime, priv)
 	if err != nil {
-		t.deny(se.ip, "vnc_ard_parameters", err.Error())
+		t.deny(se, "vnc_ard_parameters", err.Error())
 		return "client_auth"
 	}
 	user, secret, err := rfb.ARDOpen(key, blob)

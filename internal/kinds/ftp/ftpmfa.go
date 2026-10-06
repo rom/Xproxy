@@ -124,7 +124,7 @@ func (se *session) factorPrompt() string {
 func (se *session) mfaFail(why string) {
 	t := se.t
 	t.engine.Counters().FTPMFAFailed.Add(1)
-	t.deny(se.ip, "ftp_mfa_failed", textsafe.Clip64(se.user)+" "+why)
+	t.deny(se, "ftp_mfa_failed", textsafe.Clip64(se.user)+" "+why)
 	t.engine.Logs().SecurityEvent(context.Background(), "deny", "ftp_mfa_failed",
 		"listener", t.cfg.Name, "client_ip", se.ip.String(),
 		"user", textsafe.Clip64(se.user), "reason", why)

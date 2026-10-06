@@ -44,7 +44,7 @@ func (se *session) clientMSLogon() string {
 	if err != nil {
 		// A public value that fixes the secret is a client trying
 		// something, not one that is confused.
-		t.deny(se.ip, "vnc_mslogon_parameters", err.Error())
+		t.deny(se, "vnc_mslogon_parameters", err.Error())
 		return "client_auth"
 	}
 	user, secret, err := rfb.ReadMSLogonCredential(se.client, shared)
