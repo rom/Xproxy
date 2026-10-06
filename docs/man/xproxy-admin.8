@@ -1,0 +1,248 @@
+.\" Generated from Markdown by internal/manpage; do not edit.
+.TH XPROXY\-ADMIN 8 "" "Xproxy" "System administration"
+.nh
+.ad l
+.SH "NAME"
+.PP
+xproxy\-admin \- web interface for xproxy, in a process of its own
+.SH "SYNOPSIS"
+.PP
+\fBxproxy\-admin serve\fR [\fB\-listen\fR \fIADDR\fR] [\fB\-socket\fR \fIPATH\fR] [\fB\-config\fR \fIPATH\fR] [\fB\-users\fR \fIPATH\fR] [\fB\-tls\-cert\fR \fIPATH\fR \fB\-tls\-key\fR \fIPATH\fR [\fB\-client\-ca\fR \fIPATH\fR]] [\fB\-restart\-cmd\fR \fICOMMAND\fR] [\fB\-validate\fR]
+.PP
+\fBxproxy\-admin user add\fR \fINAME\fR [\fB\-role\fR viewer|operator] [\fB\-cert\-only\fR]
+.PP
+\fBxproxy\-admin user del\fR \fINAME\fR
+.PP
+\fBxproxy\-admin user list\fR
+.PP
+\fBxproxy\-admin passwd\fR \fINAME\fR
+.PP
+\fBxproxy\-admin version\fR
+.SH "DESCRIPTION"
+.PP
+\fBxproxy\-admin\fR serves the browser interface for \fBxproxy\fR(8) and its siblings. It is a separate program and a separate process, and that is the point: the data plane terminates TLS for an estate and has no business also parsing session cookies, rendering HTML and writing configuration files. Everything this process decides it decides for itself; everything it \fIdoes\fR it asks the management socket to do, which is the same socket \fBxproxyctl\fR(8) uses and the same authorisation.
+.PP
+It holds no copy of the proxy\(aqs state. Each page is a question put to the management socket and the answer rendered, so a GUI that is out of date is a GUI that cannot reach the socket, which it says rather than showing a stale number.
+.PP
+\fBWhat it can change\fR is what the socket exposes: the ban list, the WAF\(aqs mode and rule statistics, rate\-limit and quota state, listener drain and maintenance, live sessions (list and kill), MFA enrolments, API keys, work orders against OT devices, the behaviour packs, and \[u2014] with \fB\-config\fR \[u2014] the configuration file itself, through the same dry\-run, diff and rollback path \fBxproxyctl policy\fR uses. A change is written, validated by the data plane, and either applied or refused with the reason.
+.SS "Where it may listen"
+.PP
+A plaintext listener is permitted on the loopback address and a Unix socket, and nowhere else: any other address requires \fB\-tls\-cert\fR, \fB\-tls\-key\fR \fBand\fR \fB\-client\-ca\fR, and the process refuses to start otherwise. This is not advice in the documentation, it is a check in the code, because the alternative is an interface that can restart the estate\(aqs proxy reachable over the office network behind a password. The shipped unit binds \fB127.0.0.1:8443\fR and expects an SSH tunnel:
+.PP
+.RS 4
+.nf
+.ft CR
+ssh \-L 8443:127.0.0.1:8443 proxyhost
+.ft
+.fi
+.RE
+.SS "Who may log in"
+.PP
+Two roles. A \fBviewer\fR reads every page and changes nothing. An \fBoperator\fR may act: everything in \fIWhat it can change\fR above. The roles live in the users file, one \fBname:role:hash\fR line each, re\-read whenever it changes on disk \[u2014] so removing a user or downgrading a role takes effect without a restart, because revocation that needs a restart is revocation that silently does not happen.
+.PP
+Three ways to authenticate, which compose:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+A \fBpassword\fR from the users file (PBKDF2\-HMAC\-SHA256). Failed logins are rate limited per account.
+.PP
+.ti -3n
+\(bu
+A \fBclient certificate\fR, when \fB\-client\-ca\fR is set: the common name is the user name. \fBuser add \-cert\-only\fR creates a user with no password at all, which is the arrangement worth having \[u2014] there is then no password to guess.
+.PP
+.ti -3n
+\(bu
+\fBSingle sign\-on\fR, when \fB\-oidc\-issuer\fR is set: the role comes from a claim (\fB\-oidc\-role\-claim\fR, default \fBgroups\fR) matched against \fB\-oidc\-operators\fR and \fB\-oidc\-viewers\fR.
+.RE
+.PP
+.PP
+Sessions are bounded twice, by idle time (\fB\-session\-idle\fR) and absolutely (\fB\-session\-max\fR), because a browser tab left open overnight is not a reason to stay logged in.
+.SH "OPTIONS"
+.SS "serve"
+.PP
+.TS
+allbox;
+lbw(1.1i) lbx
+lw(1.1i) lx.
+T{
+Option
+T}	T{
+Description
+T}
+T{
+\fB\-\:listen\fR \fIADDR\fR
+T}	T{
+\fBhost:\:port\fR or \fBunix:\:/\:path\fR. Default \fB127.\:0.\:0.\:1:\:8443\fR. A non\-loopback address requires \fB\-\:tls\-\:cert\fR,\: \fB\-\:tls\-\:key\fR and \fB\-\:client\-\:ca\fR.
+T}
+T{
+\fB\-\:socket\fR \fIPATH\fR
+T}	T{
+Management socket of the data plane. Default \fB/\:run/\:xproxy/\:mgmt.\:sock\fR.
+T}
+T{
+\fB\-\:config\fR \fIPATH\fR
+T}	T{
+The data plane\(aqs configuration file,\: which operators may then edit through the GUI,\: and which the log view reads paths from. Empty disables editing and the log view.
+T}
+T{
+\fB\-\:users\fR \fIPATH\fR
+T}	T{
+Users file. Default \fB/\:etc/\:xproxy/\:admin\-\:users\fR.
+T}
+T{
+\fB\-\:tls\-\:cert\fR,\: \fB\-\:tls\-\:key\fR \fIPATH\fR
+T}	T{
+Server certificate and key,\: PEM. They go together.
+T}
+T{
+\fB\-\:client\-\:ca\fR \fIPATH\fR
+T}	T{
+Require a client certificate from this CA;\: its common name is the user. Needs \fB\-\:tls\-\:cert\fR.
+T}
+T{
+\fB\-\:restart\-\:cmd\fR \fICOMMAND\fR
+T}	T{
+Command behind the restart action,\: split on spaces and run \fBwithout a shell\fR. Empty disables the action.
+T}
+T{
+\fB\-\:session\-\:idle\fR \fIDURATION\fR
+T}	T{
+Session idle timeout. Default 30m.
+T}
+T{
+\fB\-\:session\-\:max\fR \fIDURATION\fR
+T}	T{
+Session absolute lifetime. Default 12h.
+T}
+T{
+\fB\-\:oidc\-\:issuer\fR \fIURL\fR
+T}	T{
+OpenID Connect issuer;\: setting it enables single sign\-on.
+T}
+T{
+\fB\-\:oidc\-\:client\-\:id\fR,\: \fB\-\:oidc\-\:client\-\:secret\-\:file\fR
+T}	T{
+The client registration.
+T}
+T{
+\fB\-\:oidc\-\:external\-\:url\fR \fIURL\fR
+T}	T{
+Address users reach the GUI at,\: for the redirect URI. Default: taken from the request.
+T}
+T{
+\fB\-\:oidc\-\:ca\fR \fIPATH\fR
+T}	T{
+CA that signs the provider\(aqs certificate. Default: the system pool.
+T}
+T{
+\fB\-\:oidc\-\:scopes\fR \fILIST\fR
+T}	T{
+Scopes requested,\: comma separated. Default \fBopenid,\:profile,\:email\fR.
+T}
+T{
+\fB\-\:oidc\-\:user\-\:claim\fR,\: \fB\-\:oidc\-\:role\-\:claim\fR
+T}	T{
+Which claims name the user and carry the role. Defaults \fBemail\fR and \fBgroups\fR.
+T}
+T{
+\fB\-\:oidc\-\:operators\fR,\: \fB\-\:oidc\-\:viewers\fR \fILIST\fR
+T}	T{
+Role claim values granting each role,\: comma separated. \fB*\fR in \fB\-\:oidc\-\:viewers\fR accepts every authenticated user.
+T}
+T{
+\fB\-\:validate\fR
+T}	T{
+Check the options,\: the users file,\: the certificates,\: the configuration file and the restart command,\: print what was found,\: and exit without binding anything.
+T}
+.TE
+.SS "user, passwd"
+.PP
+.TS
+allbox;
+lbw(0.9i) lbx
+lw(0.9i) lx.
+T{
+Option
+T}	T{
+Description
+T}
+T{
+\fB\-\:users\fR \fIPATH\fR
+T}	T{
+Users file.
+T}
+T{
+\fB\-\:role\fR viewer|\:operator
+T}	T{
+The role for \fBuser add\fR. Default \fBviewer\fR.
+T}
+T{
+\fB\-\:cert\-\:only\fR
+T}	T{
+Create the user with no password;\: they log in with a client certificate whose common name is the user name.
+T}
+.TE
+.PP
+A password is read from the terminal without echo, or from standard input when that is not a terminal, one line \[u2014] so \fBpasswd\fR works from a provisioning script without a password ever appearing in a command line.
+.SH "VALIDATION"
+.PP
+\fB\-validate\fR is the check worth running from a unit file\(aqs \fBExecStartPre\fR or by hand after an edit. \fBserve\fR already refuses a configuration that contradicts itself \[u2014] a non\-loopback address without mutual TLS, a certificate without a key, a users file that will not parse \[u2014] but those are decisions about the options. \fB\-validate\fR additionally \fItouches the files\fR: the certificate and key must pair, the client CA must hold a certificate, the configuration file must be readable by this process, and the restart command must exist on the system. Each of those otherwise fails at its first use, and the first use of the restart command is an operator pressing the button during an incident.
+.SH "EXIT STATUS"
+.PP
+0 on success, 1 on a configuration, file or runtime error, 2 on a usage mistake.
+.SH "EXAMPLES"
+.PP
+Create the first operator and check what would start:
+.PP
+.RS 4
+.nf
+.ft CR
+xproxy\-admin user add admin \-role operator
+xproxy\-admin serve \-validate \-users /etc/xproxy/admin\-users \-config /etc/xproxy/xproxy.yaml
+.ft
+.fi
+.RE
+.PP
+Serve on an internal address, with client certificates as the only credential:
+.PP
+.RS 4
+.nf
+.ft CR
+xproxy\-admin user add alice \-role operator \-cert\-only
+xproxy\-admin serve \-listen 10.0.0.5:8443 \e
+  \-tls\-cert /etc/xproxy/tls/gui.pem \-tls\-key /etc/xproxy/tls/gui\-key.pem \e
+  \-client\-ca /etc/xproxy/tls/operators\-ca.pem
+.ft
+.fi
+.RE
+.SH "FILES"
+.PP
+.TS
+allbox;
+lbw(0.8i) lbx
+lw(0.8i) lx.
+T{
+Path
+T}	T{
+What
+T}
+T{
+\fB/\:etc/\:xproxy/\:admin\-\:users\fR
+T}	T{
+The users file,\: mode 0600,\: written atomically.
+T}
+T{
+\fB/\:run/\:xproxy/\:mgmt.\:sock\fR
+T}	T{
+The management socket this process asks.
+T}
+T{
+\fB/\:usr/\:share/\:polkit\-\:1/\:rules.\:d/\:50\-\:xproxy\-\:admin.\:rules\fR
+T}	T{
+Authorises the restart action for the \fBxproxy\-\:admin\fR user,\: so the process needs no general privilege.
+T}
+.TE
+.SH "SEE ALSO"
+.PP
+\fBxproxy\fR(8), \fBxgate\fR(8), \fBxrelay\fR(8), \fBxot\fR(8), \fBxproxyctl\fR(8), \fBxproxy.yaml\fR(5), \fBdocs/HARDENING.md\fR

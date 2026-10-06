@@ -638,8 +638,7 @@ func (s *Server) listUsers(w http.ResponseWriter, _ *http.Request) {
 	list := s.users.List()
 	out := make([]uv, 0, len(list))
 	for _, u := range list {
-		x, _ := s.users.Lookup(u.Name)
-		out = append(out, uv{Name: u.Name, Role: u.Role, CertOnly: x.CertOnly()})
+		out = append(out, uv{Name: u.Name, Role: u.Role, CertOnly: u.CertOnly()})
 	}
 	writeJSON(w, 200, out)
 }
