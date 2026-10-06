@@ -137,6 +137,27 @@ func (f *fakeServer) saw() []string {
 	return append([]string(nil), f.seen...)
 }
 
+// waitSaw is saw() once the server has recorded at least n lines.
+//
+// The server records from its own goroutine, and the relay forwards a command
+// before it decides about the line that follows it: reading the client socket to
+// the end says the session is over, not that the bookkeeping on the far side has
+// caught up. A test that asserted on saw() at that moment passed on an idle
+// machine and failed under load.
+func (f *fakeServer) waitSaw(t *testing.T, n int) []string {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if lines := f.saw(); len(lines) >= n {
+			return lines
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the server recorded %d of %d lines", len(f.saw()), n)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func (f *fakeServer) bodies() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -470,16 +491,17 @@ func TestALineTheServerDidNotAskForIsNotCredentialMaterial(t *testing.T) {
 	if s.Stats().Refusals["imap"]["auth_injection"] == 0 {
 		t.Errorf("the line was carried as a credential: %v", s.Stats().Refusals["imap"])
 	}
-	for _, line := range srv.saw() {
-		if strings.Contains(strings.ToUpper(line), "LOGIN") {
-			t.Fatalf("a command was smuggled past the policy:\n%s", strings.Join(srv.saw(), "\n"))
-		}
-	}
 	// The AUTHENTICATE itself did reach the server, so what the test held back
 	// is the answer and not the exchange: a run where nothing was forwarded
 	// would prove nothing about the line that followed.
-	if len(srv.saw()) == 0 || !strings.Contains(strings.ToUpper(srv.saw()[0]), "AUTHENTICATE") {
-		t.Errorf("the exchange never opened: %v", srv.saw())
+	lines := srv.waitSaw(t, 1)
+	if !strings.Contains(strings.ToUpper(lines[0]), "AUTHENTICATE") {
+		t.Errorf("the exchange never opened: %v", lines)
+	}
+	for _, line := range lines {
+		if strings.Contains(strings.ToUpper(line), "LOGIN") {
+			t.Fatalf("a command was smuggled past the policy:\n%s", strings.Join(lines, "\n"))
+		}
 	}
 }
 
