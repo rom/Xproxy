@@ -324,7 +324,7 @@ func (c *wsConn) readEnforced(p []byte) (int, error) {
 					c.readBuf = nil
 					c.readHold = nil
 					c.mu.Unlock()
-					return 0, c.fail(&wsViolation{"message_size", "fragmented message wire data over max_message_bytes", wsCloseTooBig})
+					return 0, c.fail(&wsViolation{reason: "message_size", detail: "fragmented message wire data over max_message_bytes", code: wsCloseTooBig})
 				}
 				c.readHold = append(c.readHold, c.readBuf[:consumed]...)
 				c.readBuf = c.readBuf[consumed:]
