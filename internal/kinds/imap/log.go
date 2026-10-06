@@ -52,6 +52,7 @@ func (t *server) deny(ip netip.Addr, reason, detail string) {
 // denyConn is deny with the connection's identity attached, for the
 // refusals that happen once a session is under way.
 func (t *server) denyConn(c *conn, reason, detail string) {
+	c.tap.Deny(reason)
 	_, user, _ := c.snapshot()
 	t.host.Counters().Refuse("imap", reason)
 	if t.alerts() {
@@ -79,6 +80,7 @@ func (t *server) refused(c *conn, req *Request, d Decision) {
 		t.host.Logs().Access.Info("imap would refuse", attrs...)
 		return
 	}
+	c.tap.Deny(d.Reason)
 	t.host.Counters().Refuse("imap", d.Reason)
 	if t.alerts() {
 		t.host.Logs().SecurityEvent(context.Background(), "deny", "imap_"+d.Reason, attrs...)

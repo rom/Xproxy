@@ -94,6 +94,7 @@ func (se *session) askFactor() string {
 		return reason
 	}
 	se.user = name
+	se.tap.User(name)
 	se.live.Annotate(name, "", "")
 	code, reason := se.prompt(se.factorPrompt(), false)
 	if reason != "" {

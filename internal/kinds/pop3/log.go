@@ -38,6 +38,7 @@ func (t *server) deny(ip netip.Addr, reason, detail string) {
 
 // denyConn is deny with the connection's identity attached.
 func (t *server) denyConn(c *conn, reason, detail string) {
+	c.tap.Deny(reason)
 	t.host.Counters().Refuse("pop3", reason)
 	if t.alerts() {
 		a := []any{"listener", t.name, "client_ip", c.ip.String(), "proto", "pop3",
@@ -64,6 +65,7 @@ func (t *server) refused(c *conn, req *Request, d Decision) {
 		t.host.Logs().Access.Info("pop3 would refuse", attrs...)
 		return
 	}
+	c.tap.Deny(d.Reason)
 	t.host.Counters().Refuse("pop3", d.Reason)
 	if t.alerts() {
 		t.host.Logs().SecurityEvent(context.Background(), "deny", "pop3_"+d.Reason, attrs...)

@@ -15,6 +15,7 @@ import (
 
 	"github.com/rom/xproxy/internal/admit"
 	"github.com/rom/xproxy/internal/authorization"
+	"github.com/rom/xproxy/internal/capture"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/proxy"
@@ -180,11 +181,14 @@ func (t *server) shutdown(ctx context.Context) {
 type session struct {
 	t      *server
 	client net.Conn
-	cr     *wire.Reader
-	up     net.Conn
-	ur     *wire.Reader
-	pool   *upstream.Pool
-	ep     *upstream.Endpoint
+	// tap records the session for a pcapng capture, and is nil -- usable, and
+	// doing nothing -- whenever no rule wants this one, which is the usual case.
+	tap  *capture.Tap
+	cr   *wire.Reader
+	up   net.Conn
+	ur   *wire.Reader
+	pool *upstream.Pool
+	ep   *upstream.Endpoint
 
 	ip        netip.Addr
 	secure    bool // the client side is encrypted
@@ -208,6 +212,12 @@ func (t *server) handle(client net.Conn) {
 	defer s.Counters().SMTPSessionsOpen.Add(-1)
 	ip := netutil.AddrOf(client.RemoteAddr().String())
 	se := &session{t: t, client: client, ip: ip, deadline: start.Add(t.m.SessionTimeout.D())}
+	// Opened before anything can refuse the session, because a refused session is
+	// the one an operator most often wants and it never dials: after that point
+	// there is nothing left to record. A nil tap wraps nothing and writes nothing.
+	se.tap = t.engine.Capture().Open("smtp", t.cfg.Name, "", client.RemoteAddr())
+	defer se.tap.Close()
+	se.client = se.tap.Client(client)
 	defer func() {
 		if se.up != nil {
 			_ = se.up.Close()
@@ -243,7 +253,10 @@ func (t *server) handle(client net.Conn) {
 			return
 		}
 		_ = tc.SetDeadline(time.Time{})
-		se.client = tc
+		// The tap follows the protocol rather than the TLS records carrying it:
+		// tls.Server reads the socket directly, so nothing recorded the handshake,
+		// and from here the tap sees the plaintext inside it.
+		se.client = se.tap.Client(tc)
 		se.secure = true
 	}
 	se.cr = wire.NewReader(se.client, t.m.MaxCommandLine)
@@ -365,6 +378,9 @@ func (t *server) shadowed(ip netip.Addr, what, detail string) bool {
 }
 
 func (t *server) log(se *session, start time.Time, reason string) {
+	// The one place an smtp session's outcome is known, whatever ended it, so it
+	// is where the capture learns whether this was a refusal.
+	se.tap.Deny(reason)
 	attrs := []any{"listener", t.cfg.Name, "client_ip", se.ip.String(), "tls", se.secure,
 		"messages", se.messages, "bytes_in", se.bytesIn, "refused", se.errors,
 		"duration_ms", float64(time.Since(start).Microseconds()) / 1000}
@@ -408,7 +424,7 @@ func (se *session) connect() (wire.Reply, error) {
 	if conn == nil {
 		return wire.Reply{}, errors.New("no reachable endpoint")
 	}
-	se.up, se.ep = conn, ep
+	se.up, se.ep = se.tap.Upstream(conn), ep
 	// Anything that goes wrong from here until the upstream session is
 	// up is the endpoint's to answer for.
 	se.upFailed = true
@@ -768,13 +784,17 @@ func (se *session) startTLS(wire.Command) (string, error) {
 	if err := se.toClient(wire.Reply{Code: 220, Lines: []string{"2.0.0 ready to start TLS"}}); err != nil {
 		return "", err
 	}
+	// STARTTLS is an in-band upgrade, so the capture pauses over the handshake and
+	// picks the plaintext up again on the far side: the file then holds one
+	// readable stream of the protocol rather than cleartext and then ciphertext.
+	se.tap.Pause()
 	tc := tls.Server(se.client, t.tlsCfg)
 	_ = tc.SetDeadline(time.Now().Add(t.m.ReadTimeout.D()))
 	if err := tc.HandshakeContext(context.Background()); err != nil {
 		return "tls_handshake", nil
 	}
 	_ = tc.SetDeadline(time.Time{})
-	se.client = tc
+	se.client = se.tap.Client(tc)
 	se.secure = true
 	se.greeted, se.authed, se.inMail, se.rcpts = false, false, false, 0
 	se.cr = wire.NewReader(se.client, t.m.MaxCommandLine)

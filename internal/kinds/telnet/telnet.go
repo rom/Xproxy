@@ -24,6 +24,7 @@ import (
 	"github.com/rom/xproxy/internal/acceptgroup"
 	"github.com/rom/xproxy/internal/access"
 	"github.com/rom/xproxy/internal/authorization"
+	"github.com/rom/xproxy/internal/capture"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/mfa"
 	"github.com/rom/xproxy/internal/netutil"
@@ -243,6 +244,11 @@ type session struct {
 	up     net.Conn
 	ip     netip.Addr
 	target string
+
+	// tap records the session for a pcapng capture, and is nil -- usable, and
+	// doing nothing -- whenever no rule wants this one, which is the usual case.
+	tap *capture.Tap
+
 	// user is the name the second factor was checked against, empty
 	// where there is no factor. The target's own login is separate and
 	// the proxy does not read it.
@@ -335,6 +341,11 @@ func (t *server) handle(client net.Conn) {
 	s.Counters().TelnetSessionsOpen.Add(1)
 	defer s.Counters().TelnetSessionsOpen.Add(-1)
 	defer func() { se.closeRecording() }()
+	// Opened before anything can refuse the session, because a refused session is
+	// the one an operator most often wants and it never dials: after that point
+	// there is nothing left to record. A nil tap wraps nothing and writes nothing.
+	se.tap = t.engine.Capture().Open("telnet", t.cfg.Name, "", client.RemoteAddr())
+	defer se.tap.Close()
 
 	if !t.clientAllowed(se.ip) && !t.shadowed(se.ip, "client_refused", "") {
 		s.Counters().TelnetRejected.Add(1)
@@ -357,6 +368,7 @@ func (t *server) handle(client net.Conn) {
 		Kind: "telnet", Listener: t.cfg.Name, Client: client.RemoteAddr().String(),
 	}, func() { _ = client.Close() })
 	defer se.live.Done()
+	se.tap.Name(se.live.ID)
 	if t.tlsCfg != nil {
 		tc := tls.Server(client, t.tlsCfg)
 		if err := tc.HandshakeContext(context.Background()); err != nil {
@@ -365,6 +377,11 @@ func (t *server) handle(client net.Conn) {
 		}
 		client, se.client = tc, tc
 	}
+	// Wrapped here rather than at the top, so that on a TLS listener the capture
+	// holds the protocol and not the TLS records carrying it: the handshake above
+	// ran on the socket itself and nothing recorded it.
+	client = se.tap.Client(client)
+	se.client = client
 	defer func() { _ = se.client.Close() }()
 	if t.t.SessionTimeout > 0 {
 		timer := time.AfterFunc(t.t.SessionTimeout.D(), func() { _ = se.client.Close() })
@@ -479,7 +496,7 @@ func (se *session) connect() error {
 				continue
 			}
 		}
-		se.up, se.ep, se.target = conn, ep, ep.Address
+		se.up, se.ep, se.target = se.tap.Upstream(conn), ep, ep.Address
 		se.live.Annotate(se.user, se.target, "")
 		// The window is spent once a machine was actually reached: a
 		// session that never got there did not use the access.
@@ -493,6 +510,9 @@ func (se *session) connect() error {
 }
 
 func (t *server) log(se *session, start time.Time, reason string) {
+	// The one place a telnet session's outcome is known, whatever ended it, so it
+	// is where the capture learns whether this was a refusal.
+	se.tap.Deny(reason)
 	attrs := []any{"listener", t.cfg.Name, "client_ip", se.ip.String(),
 		"user", textsafe.Clip64(se.user), "target", se.target, "reason", reason,
 		"refused_options", se.refused.Load(), "duration_ms", time.Since(start).Milliseconds()}
