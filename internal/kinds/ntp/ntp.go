@@ -1051,15 +1051,17 @@ func (s *server) probe(b *backend) (*wire.Packet, time.Duration, time.Duration, 
 
 // enforcing says whether the policy decides or only records. A learning
 // run is observe-only unless it says otherwise.
-func (s *server) enforcing() bool {
-	if s.cfg.Shadowing() {
-		return false
+func (s *server) enforcing() bool { return s.enforcement().Enforcing() }
+
+// enforcement folds this listener's reasons not to enforce into one answer, so
+// that the precedence, and the name a status view reports, are the same on
+// every kind.
+func (s *server) enforcement() config.Enforcement {
+	e := config.Enforcement{Shadow: s.cfg.Shadowing()}
+	if l := s.n.Learn; l != nil {
+		e.Learning, e.LearnEnforce = l.Enabled, l.Enforce
 	}
-	l := s.n.Learn
-	if l == nil || !l.Enabled {
-		return true
-	}
-	return l.Enforce
+	return e
 }
 
 // sweep expires associations and outstanding requests on the monotonic

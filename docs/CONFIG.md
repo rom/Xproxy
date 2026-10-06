@@ -91,6 +91,26 @@ applies to integrity, identity or a bound, because forwarding those would
 mean acting on bytes the code could not read, or admitting somebody who
 did not authenticate — a trial instead of a door.
 
+**Three settings stop a listener enforcing, and they belong to different
+layers.** `policy.mode: shadow` is this switch, the estate's; `monitor_only` is
+a kind's own; and a `learn` run is observe-only unless `learn.enforce` says
+otherwise. They are folded with one precedence — either explicit switch beats a
+learning run, and `shadow` is reported first because it is the one an operator
+who set it will look for — so a listener carrying two of them behaves
+predictably. What it must not do is behave predictably and *report* something
+else: `xproxyctl listeners` shows the mode as `enforce`, `shadow`, `monitor` or
+`learn`, naming which one it is rather than collapsing three reasons into "not
+enforcing", and a configuration that sets two of them is advised on at load,
+because turning one off then changes nothing.
+
+**One name, two meanings, and this is the exception to know about.** On thirteen
+kinds `monitor_only` means "evaluate and do not enforce". On [`iec104`](#iec104)
+it means the protocol's own *monitor direction*: the link carries monitoring and
+no control, so every command and every system command is **refused** rather than
+permitted. The two are opposite in effect, which is why the IEC 104 listener's
+`monitor_only` is not one of the three settings above and does not appear in a
+listener's mode.
+
 | Kind | Evaluated and recorded | Still refused |
 |------|------------------------|---------------|
 | `modbus` | every rule: function, unit, address range, value bounds, rate and window | malformed frames, the unit table, the queue bound, rate limits, bans |

@@ -96,15 +96,17 @@ func newServer(host proxy.Host, cfg config.Listener, ln net.Listener) (*server, 
 // one being left on by accident: the point of learning is to find out what the
 // traffic is, and a run that refused half of it has changed the thing it was
 // measuring.
-func (t *server) enforcing() bool {
-	if t.sc.MonitorOnly || t.cfg.Shadowing() {
-		return false
+func (t *server) enforcing() bool { return t.enforcement().Enforcing() }
+
+// enforcement folds this listener's reasons not to enforce into one answer, so
+// that the precedence, and the name a status view reports, are the same on
+// every kind.
+func (t *server) enforcement() config.Enforcement {
+	e := config.Enforcement{Shadow: t.cfg.Shadowing(), MonitorOnly: t.sc.MonitorOnly}
+	if l := t.sc.Learn; l != nil {
+		e.Learning, e.LearnEnforce = l.Enabled, l.Enforce
 	}
-	l := t.sc.Learn
-	if l == nil || !l.Enabled {
-		return true
-	}
-	return l.Enforce
+	return e
 }
 
 func (t *server) maxFrame() int {

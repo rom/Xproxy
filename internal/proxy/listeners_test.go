@@ -82,6 +82,35 @@ func TestTheModeSaysWhetherTheListenerRefusesAnything(t *testing.T) {
 	if enforce.Mode != "enforce" {
 		t.Errorf("mode %q", enforce.Mode)
 	}
+	// The third reason, and the one this view used to miss. A learning run is
+	// observe-only unless it says otherwise, so the listener decides nothing --
+	// and the mode read "enforce", which is the one field a status view must not
+	// get wrong. The guard row said "observe" all along, so the two disagreed.
+	learning := listenerView(config.Listener{Name: "plant3", Kind: "modbus",
+		Modbus: &config.ModbusListener{Learn: &config.ModbusLearn{Enabled: true}}})
+	if learning.Mode != "learn" {
+		t.Errorf("mode %q: a learning run that does not enforce", learning.Mode)
+	}
+	// And a run that says it enforces is enforcing, so the mode must not
+	// frighten anybody into thinking otherwise.
+	learnEnforce := listenerView(config.Listener{Name: "plant4", Kind: "modbus",
+		Modbus: &config.ModbusListener{Learn: &config.ModbusLearn{Enabled: true, Enforce: true}}})
+	if learnEnforce.Mode != "enforce" {
+		t.Errorf("mode %q: a learning run that enforces", learnEnforce.Mode)
+	}
+	// An explicit switch still wins, because it is about the whole listener.
+	learnShadow := listenerView(config.Listener{Name: "plant5", Kind: "modbus",
+		Policy: &config.ListenerPolicy{Mode: "shadow"},
+		Modbus: &config.ModbusListener{Learn: &config.ModbusLearn{Enabled: true, Enforce: true}}})
+	if learnShadow.Mode != "shadow" {
+		t.Errorf("mode %q: shadow over a learning run", learnShadow.Mode)
+	}
+	// The guard row and the mode are two readings of the same thing and must
+	// agree: the row saying "observe" while the mode says "enforce" is exactly
+	// the state that shipped.
+	if f := feat(t, learning, "learn"); f.Mode == "observe" && learning.Mode == "enforce" {
+		t.Error("the learn row and the listener mode disagree")
+	}
 }
 
 // A kind reports the guards it has and only those: there is no mfa row on

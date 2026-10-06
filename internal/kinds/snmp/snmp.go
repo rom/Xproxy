@@ -268,7 +268,15 @@ func (t *server) requireSecurityName() bool {
 
 // enforcing says whether this listener refuses for policy or only records
 // what it would have refused.
-func (t *server) enforcing() bool { return !t.cfg.Shadowing() }
+func (t *server) enforcing() bool { return t.enforcement().Enforcing() }
+
+// enforcement folds this listener's reasons not to enforce into one answer, so
+// that the precedence, and the name a status view reports, are the same on
+// every kind.
+func (t *server) enforcement() config.Enforcement {
+	e := config.Enforcement{Shadow: t.cfg.Shadowing()}
+	return e
+}
 
 // alerts says whether a refusal writes a security event.
 func (t *server) alerts() bool { return t.m.AlertOnDeny == nil || *t.m.AlertOnDeny }

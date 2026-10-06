@@ -104,7 +104,15 @@ func (t *server) maxMessage() int { return min(t.policy.maxMessage, wire.MaxMess
 
 // enforcing reports whether this listener acts on its policy or only
 // records what it would have done.
-func (t *server) enforcing() bool { return !t.cfg.Shadowing() }
+func (t *server) enforcing() bool { return t.enforcement().Enforcing() }
+
+// enforcement folds this listener's reasons not to enforce into one answer, so
+// that the precedence, and the name a status view reports, are the same on
+// every kind.
+func (t *server) enforcement() config.Enforcement {
+	e := config.Enforcement{Shadow: t.cfg.Shadowing()}
+	return e
+}
 
 func (t *server) shutdown(ctx context.Context) {
 	t.running.Close()

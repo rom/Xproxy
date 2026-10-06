@@ -289,15 +289,17 @@ func (t *server) shutdown(ctx context.Context) {
 // traffic is, and a run that refuses half of it has changed the thing it was
 // measuring. A listener in shadow mode records without deciding whether or not
 // it is also learning.
-func (t *server) enforcing() bool {
-	if t.cfg.Shadowing() {
-		return false
+func (t *server) enforcing() bool { return t.enforcement().Enforcing() }
+
+// enforcement folds this listener's reasons not to enforce into one answer, so
+// that the precedence, and the name a status view reports, are the same on
+// every kind.
+func (t *server) enforcement() config.Enforcement {
+	e := config.Enforcement{Shadow: t.cfg.Shadowing()}
+	if l := t.m.Learn; l != nil {
+		e.Learning, e.LearnEnforce = l.Enabled, l.Enforce
 	}
-	l := t.m.Learn
-	if l == nil || !l.Enabled {
-		return true
-	}
-	return l.Enforce
+	return e
 }
 
 // session is one controlling station's connection and the station

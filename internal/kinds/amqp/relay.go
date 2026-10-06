@@ -162,7 +162,15 @@ func (t *server) admitUser(se *session) string {
 	})
 }
 
-func (t *server) enforcing() bool { return !t.ac.MonitorOnly && !t.cfg.Shadowing() }
+func (t *server) enforcing() bool { return t.enforcement().Enforcing() }
+
+// enforcement folds this listener's reasons not to enforce into one answer, so
+// that the precedence, and the name a status view reports, are the same on
+// every kind.
+func (t *server) enforcement() config.Enforcement {
+	e := config.Enforcement{Shadow: t.cfg.Shadowing(), MonitorOnly: t.ac.MonitorOnly}
+	return e
+}
 
 func (t *server) serve() {
 	for {

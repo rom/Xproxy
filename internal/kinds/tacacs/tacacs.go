@@ -138,7 +138,15 @@ func (t *server) reading() bool { return len(t.key) > 0 }
 
 // enforcing reports whether this listener acts on its policy or only
 // records what it would have done.
-func (t *server) enforcing() bool { return !t.c.MonitorOnly && !t.cfg.Shadowing() }
+func (t *server) enforcing() bool { return t.enforcement().Enforcing() }
+
+// enforcement folds this listener's reasons not to enforce into one answer, so
+// that the precedence, and the name a status view reports, are the same on
+// every kind.
+func (t *server) enforcement() config.Enforcement {
+	e := config.Enforcement{Shadow: t.cfg.Shadowing(), MonitorOnly: t.c.MonitorOnly}
+	return e
+}
 
 // maxBody is the largest body this listener will read.
 func (t *server) maxBody() int { return min(or(t.c.MaxBodyBytes, 32<<10), wire.MaxBody) }

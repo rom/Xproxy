@@ -83,15 +83,17 @@ func newServer(host proxy.Host, cfg config.Listener, ln net.Listener) (*server, 
 // A learning run is observe-only unless it says otherwise, which is what stops one
 // being left on by accident: the point of learning is to find out what the traffic
 // is, and a run that refused half of it has changed the thing it was measuring.
-func (t *server) enforcing() bool {
-	if t.oc.MonitorOnly || t.cfg.Shadowing() {
-		return false
+func (t *server) enforcing() bool { return t.enforcement().Enforcing() }
+
+// enforcement folds this listener's reasons not to enforce into one answer, so
+// that the precedence, and the name a status view reports, are the same on
+// every kind.
+func (t *server) enforcement() config.Enforcement {
+	e := config.Enforcement{Shadow: t.cfg.Shadowing(), MonitorOnly: t.oc.MonitorOnly}
+	if l := t.oc.Learn; l != nil {
+		e.Learning, e.LearnEnforce = l.Enabled, l.Enforce
 	}
-	l := t.oc.Learn
-	if l == nil || !l.Enabled {
-		return true
-	}
-	return l.Enforce
+	return e
 }
 
 // The bounds, each falling back to the wire package's own.

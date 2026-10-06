@@ -27,7 +27,7 @@ func listenersCommand(c *mgmt.Client, fs *flag.FlagSet, out, errOut io.Writer, a
 	lf := flag.NewFlagSet("listeners", flag.ContinueOnError)
 	lf.SetOutput(errOut)
 	kind := lf.String("kind", "", "only listeners of this kind")
-	mode := lf.String("mode", "", "only listeners in this mode (enforce, shadow, monitor)")
+	mode := lf.String("mode", "", "only listeners in this mode (enforce, shadow, monitor, learn)")
 	reasons := lf.Bool("reasons", false, "break the refusals down by reason")
 	if err := lf.Parse(fs.Args()[1:]); err != nil {
 		return 2
@@ -57,7 +57,7 @@ func listenersCommand(c *mgmt.Client, fs *flag.FlagSet, out, errOut io.Writer, a
 func filterListeners(rep proxy.ListenersReport, kind, mode string) proxy.ListenersReport {
 	out := rep
 	out.Listeners = nil
-	out.Enforcing, out.Shadowing, out.Monitoring = 0, 0, 0
+	out.Enforcing, out.Shadowing, out.Monitoring, out.Learning = 0, 0, 0, 0
 	keep := make(map[string]bool)
 	for _, l := range rep.Listeners {
 		if kind != "" && l.Kind != kind {
@@ -73,6 +73,8 @@ func filterListeners(rep proxy.ListenersReport, kind, mode string) proxy.Listene
 			out.Shadowing++
 		case "monitor":
 			out.Monitoring++
+		case "learn":
+			out.Learning++
 		default:
 			out.Enforcing++
 		}
@@ -102,6 +104,9 @@ func printListeners(out io.Writer, rep proxy.ListenersReport, reasons bool) {
 	}
 	if rep.Monitoring > 0 {
 		_, _ = fmt.Fprintf(out, ", %d monitoring only", rep.Monitoring)
+	}
+	if rep.Learning > 0 {
+		_, _ = fmt.Fprintf(out, ", %d learning", rep.Learning)
 	}
 	_, _ = fmt.Fprintln(out)
 

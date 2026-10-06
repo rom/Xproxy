@@ -85,7 +85,15 @@ func newServer(host proxy.Host, cfg config.Listener, ln net.Listener, tlsCfg *tl
 // listener's policy: {mode: shadow}, which is the estate-wide spelling every
 // other kind honours. This kind honoured only the first, so an operator who
 // trialled a redis policy the documented way got enforcement.
-func (t *server) enforcing() bool { return !t.rc.MonitorOnly && !t.cfg.Shadowing() }
+func (t *server) enforcing() bool { return t.enforcement().Enforcing() }
+
+// enforcement folds this listener's reasons not to enforce into one answer, so
+// that the precedence, and the name a status view reports, are the same on
+// every kind.
+func (t *server) enforcement() config.Enforcement {
+	e := config.Enforcement{Shadow: t.cfg.Shadowing(), MonitorOnly: t.rc.MonitorOnly}
+	return e
+}
 
 func (t *server) serve() {
 	for {
