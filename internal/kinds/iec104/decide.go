@@ -73,7 +73,7 @@ func (se *session) decide(frame *wire.Frame, fromClient bool) (string, bool) {
 	if t.cmdRate != nil && (command || system) && !t.cmdRate.Allow(se.ip.String()) {
 		t.host.Counters().IEC104RateLimited.Add(1)
 		t.host.Counters().Refuse("iec104", "command_rate_limited")
-		t.deny(se.ip, "iec104_command_rate_limited", a.Type.String())
+		t.deny(se, "iec104_command_rate_limited", a.Type.String())
 		return "iec104_command_rate_limited", false
 	}
 	// A station sending an activation to its own control centre is a
@@ -82,7 +82,7 @@ func (se *session) decide(frame *wire.Frame, fromClient bool) (string, bool) {
 	// gateway pivoting upstream looks like.
 	if !fromClient && a.Cause.Commanding() && (command || system) {
 		t.host.Counters().Refuse("iec104", "station_command")
-		t.deny(se.ip, "iec104_station_command", a.Type.String())
+		t.deny(se, "iec104_station_command", a.Type.String())
 		if t.enforcing() {
 			return "iec104_station_command", false
 		}
@@ -278,7 +278,7 @@ func (se *session) decideControl(frame *wire.Frame, fromClient bool) (string, bo
 	t.host.Counters().IEC104Denied.Add(1)
 	se.denied.Add(1)
 	t.host.Counters().Refuse("iec104", d.Reason)
-	t.deny(se.ip, "iec104_control", frame.Control.String())
+	t.deny(se, "iec104_control", frame.Control.String())
 	return d.Reason, false
 }
 
@@ -301,7 +301,7 @@ func (se *session) decideAck(frame *wire.Frame, fromClient bool) (string, bool) 
 	if reason := end.acknowledged(frame.Recv); reason != "" {
 		t.host.Counters().IEC104SeqGaps.Add(1)
 		t.host.Counters().Refuse("iec104", "ack_ahead")
-		t.deny(se.ip, "iec104_ack_ahead", "")
+		t.deny(se, "iec104_ack_ahead", "")
 		if t.enforcing() {
 			return reason, false
 		}
@@ -335,7 +335,7 @@ func (se *session) decideSequence(frame *wire.Frame, fromClient bool) (string, b
 	case "iec104_window":
 		t.host.Counters().IEC104WindowFull.Add(1)
 		t.host.Counters().Refuse("iec104", "window")
-		t.deny(se.ip, "iec104_window", "")
+		t.deny(se, "iec104_window", "")
 		if t.enforcing() {
 			return reason, false
 		}
@@ -343,7 +343,7 @@ func (se *session) decideSequence(frame *wire.Frame, fromClient bool) (string, b
 	default:
 		t.host.Counters().IEC104SeqGaps.Add(1)
 		t.host.Counters().Refuse("iec104", "sequence")
-		t.deny(se.ip, "iec104_sequence", "")
+		t.deny(se, "iec104_sequence", "")
 		if t.enforcing() {
 			return reason, false
 		}
@@ -380,7 +380,7 @@ func (se *session) decideSelect(frame *wire.Frame) (string, bool) {
 			// selection that was never kept would be a bound that disabled
 			// the check.
 			t.host.Counters().Refuse("iec104", "select_unavailable")
-			t.deny(se.ip, "iec104_select_unavailable", a.Type.String())
+			t.deny(se, "iec104_select_unavailable", a.Type.String())
 			if t.enforcing() && t.m.RequireSelect {
 				return "iec104_select_unavailable", false
 			}
@@ -428,7 +428,7 @@ func (se *session) decideSelect(frame *wire.Frame) (string, bool) {
 		// Refuse strips the kind's own prefix, so the counter is
 		// select_expired rather than iec104_select_expired.
 		t.host.Counters().Refuse("iec104", reason)
-		t.deny(se.ip, reason, detailOf(a))
+		t.deny(se, reason, detailOf(a))
 		t.host.Counters().IEC104Denied.Add(1)
 		se.denied.Add(1)
 		return reason, false
@@ -472,7 +472,7 @@ func (se *session) decideStandby(fromClient bool) (string, bool) {
 	}
 	t.host.Counters().IEC104Standby.Add(1)
 	t.host.Counters().Refuse("iec104", "standby")
-	t.deny(se.ip, "iec104_standby", se.group.name)
+	t.deny(se, "iec104_standby", se.group.name)
 	t.host.Counters().IEC104Denied.Add(1)
 	se.denied.Add(1)
 	return "iec104_standby", false
@@ -500,7 +500,7 @@ func (se *session) decideDataTransfer(frame *wire.Frame) (string, bool) {
 				return "", true
 			}
 			t.host.Counters().Refuse("iec104", "redundancy_active")
-			t.deny(se.ip, "iec104_redundancy_active", se.group.name+" held by "+prev.String())
+			t.deny(se, "iec104_redundancy_active", se.group.name+" held by "+prev.String())
 			t.host.Counters().IEC104Denied.Add(1)
 			se.denied.Add(1)
 			return "iec104_redundancy_active", false
@@ -539,6 +539,7 @@ func (t *server) logFailover(se *session, prev netip.Addr) {
 // asked for, because "a command was refused" is not an audit trail and
 // "station 1, C_SC_NA_1 act on point 4321, rule breakers" is.
 func (t *server) refuse(se *session, frame *wire.Frame, d Decision) {
+	se.tap.Deny(d.Reason)
 	t.host.Counters().Refuse("iec104", d.Reason)
 	if !t.alerts() {
 		return
@@ -556,7 +557,15 @@ func (t *server) refuse(se *session, frame *wire.Frame, d Decision) {
 
 // deny records a refusal that is not about an ASDU: a client that may not
 // connect, a malformed frame, a bound.
-func (t *server) deny(ip netip.Addr, what, detail string) {
+// deny records a refusal, and tells the capture the session was one.
+//
+// The capture asks about the refusal rather than how the session ended, which is
+// why it is recorded here and not from the access log: a session that ran and then
+// closed on a timeout did not get turned away, and a `denied: true` rule that
+// matched it would select most of the traffic on the listener.
+func (t *server) deny(se *session, what, detail string) {
+	ip := se.ip
+	se.tap.Deny(what)
 	// Counted before the alert switch, because a listener with alerts off is one
 	// that does not want the records and still wants the numbers. Every decision
 	// about an ASDU is counted by reason; these were not, so an operator reading
@@ -693,9 +702,6 @@ func detailOf(a *wire.ASDU) string {
 
 // log writes the session line: one per connection, with what it carried.
 func (t *server) log(se *session, start time.Time, reason string) {
-	// The one place an iec104 session's outcome is known, whatever ended it, so it
-	// is where the capture learns whether this was a refusal.
-	se.tap.Deny(reason)
 	attrs := []any{"listener", t.cfg.Name, "client_ip", se.ip.String(), "tls", se.secure,
 		"commands", se.commands.Load(), "denied", se.denied.Load(),
 		"duration_ms", time.Since(start).Milliseconds()}

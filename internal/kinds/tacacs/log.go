@@ -54,6 +54,7 @@ func (t *server) refused(c *conn, req *Request, d Decision) {
 		t.host.Logs().Access.Info("tacacs would refuse", t.attrs(c, req, d)...)
 		return
 	}
+	c.tap.Deny(d.Reason)
 	t.host.Counters().Refuse("tacacs", d.Reason)
 	if t.alerts() {
 		t.host.Logs().SecurityEvent(context.Background(), "deny", "tacacs_"+d.Reason,
@@ -87,6 +88,7 @@ func (t *server) refusedAnswer(c *conn, s *sess, a Answer, d Decision) {
 		t.host.Logs().Access.Info("tacacs would refuse a reply", attrs...)
 		return
 	}
+	c.tap.Deny(d.Reason)
 	t.host.Counters().Refuse("tacacs", d.Reason)
 	if t.alerts() {
 		t.host.Logs().SecurityEvent(context.Background(), "deny", "tacacs_"+d.Reason, attrs...)

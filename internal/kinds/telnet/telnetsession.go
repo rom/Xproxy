@@ -142,7 +142,7 @@ func (se *session) factorPrompt() string {
 func (se *session) factorFailed(why string) {
 	t := se.t
 	t.engine.Counters().TelnetMFAFailed.Add(1)
-	t.deny(se.ip, "telnet_mfa_failed", textsafe.Clip64(se.user)+" "+why)
+	t.deny(se, "telnet_mfa_failed", textsafe.Clip64(se.user)+" "+why)
 	t.engine.Logs().SecurityEvent(context.Background(), "deny", "telnet_mfa_failed",
 		"listener", t.cfg.Name, "client_ip", se.ip.String(),
 		"user", textsafe.Clip64(se.user), "reason", why)
@@ -188,7 +188,7 @@ func (se *session) prompt(question string, echo bool) (string, string) {
 	}
 	malformed := func(why string) (string, string) {
 		t.engine.Counters().TelnetRefused.Add(1)
-		t.deny(se.ip, "telnet_prompt", why)
+		t.deny(se, "telnet_prompt", why)
 		return "", "prompt_malformed"
 	}
 	for {

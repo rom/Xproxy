@@ -311,23 +311,36 @@ func (t *server) serveUDP() {
 func (t *server) handleStream(c net.Conn) {
 	defer func() { _ = c.Close() }()
 	ip := netutil.AddrOf(c.RemoteAddr().String())
+	// Opened before anything can refuse the sender, because a refused connection
+	// is the one an operator most often wants. A nil tap wraps nothing and writes
+	// nothing. Only the client side is wrapped and the capture names no server: a
+	// syslog listener forwards each message on its own, so there is no one
+	// upstream connection to be the other end of the conversation.
+	tap := t.host.Capture().Open("syslog", t.cfg.Name, "", c.RemoteAddr())
+	defer tap.Close()
 	if !t.senderAllowed(ip) {
+		tap.Deny("sender_refused")
 		t.refuse(ip, "sender_refused", "")
 		return
 	}
 	// The imported lists and the estate's authorisation policy, after this
 	// listener's own allow_senders -- that is local policy about local senders,
 	// and a feed must not overrule an allow rule an operator wrote.
-	if t.admitSender(ip) != "" {
+	if reason := t.admitSender(ip); reason != "" {
+		tap.Deny(reason)
 		return
 	}
 	if t.l.TLSMode == "implicit" {
 		tc := tls.Server(c, t.tlsCfg)
 		if err := tc.HandshakeContext(context.Background()); err != nil {
+			tap.Deny("tls_handshake")
 			return
 		}
 		c = tc
 	}
+	// Wrapped after the handshake, so the capture holds syslog rather than the TLS
+	// records carrying it.
+	c = tap.Client(c)
 	t.host.Counters().SyslogConnections.Add(1)
 	r := wire.NewReader(c, t.l.MaxMessageBytes, t.framing)
 	for {

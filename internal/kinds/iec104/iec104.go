@@ -361,7 +361,8 @@ type session struct {
 // hour. Which type identifications and which information objects that station may
 // touch is the `iec104` policy's own business, and the select-before-execute rule
 // is the thing only it can enforce.
-func (t *server) admitClient(ip netip.Addr) string {
+func (t *server) admitClient(se *session) string {
+	ip := se.ip
 	h := t.host
 	return admit.Client(admit.Deps{
 		Lists: h.ThreatIntel(),
@@ -388,7 +389,7 @@ func (t *server) admitClient(ip netip.Addr) string {
 			h.Counters().WouldRefuse("iec104", reason)
 			h.Shadow().Record("iec104", t.cfg.Name, reason, rule, detail)
 		},
-		Deny: func(reason, _, detail string) { t.deny(ip, reason, detail) },
+		Deny: func(reason, _, detail string) { t.deny(se, reason, detail) },
 	})
 }
 
@@ -442,7 +443,7 @@ func (t *server) handle(client net.Conn) {
 	}()
 	if !t.policy.Client(ip) {
 		s.Counters().IEC104Rejected.Add(1)
-		t.deny(ip, "client_not_allowed", "")
+		t.deny(se, "client_not_allowed", "")
 		t.log(se, start, "client_not_allowed")
 		return
 	}
@@ -452,7 +453,7 @@ func (t *server) handle(client net.Conn) {
 	if g := t.groups.of(ip); g != nil {
 		if !g.join(se.id, ip) {
 			s.Counters().IEC104Rejected.Add(1)
-			t.deny(ip, "iec104_redundancy_full", g.name)
+			t.deny(se, "iec104_redundancy_full", g.name)
 			t.log(se, start, "iec104_redundancy_full")
 			return
 		}
@@ -462,7 +463,7 @@ func (t *server) handle(client net.Conn) {
 	// listener's own address lists -- those are local policy about local
 	// clients, and a feed must not overrule an allow rule an operator wrote --
 	// and before the station is dialled.
-	if reason := t.admitClient(ip); reason != "" {
+	if reason := t.admitClient(se); reason != "" {
 		s.Counters().IEC104Rejected.Add(1)
 		t.log(se, start, reason)
 		return
@@ -476,7 +477,7 @@ func (t *server) handle(client net.Conn) {
 		tc := tls.Server(client, t.tlsCfg)
 		_ = tc.SetDeadline(time.Now().Add(10 * time.Second))
 		if err := tc.HandshakeContext(context.Background()); err != nil {
-			t.deny(ip, "tls_handshake", err.Error())
+			t.deny(se, "tls_handshake", err.Error())
 			t.log(se, start, "tls_handshake")
 			return
 		}
@@ -679,7 +680,7 @@ func (se *session) pump(fromClient bool) string {
 		if max > 0 && len(frame.Raw) > max {
 			t.host.Counters().IEC104Malformed.Add(1)
 			t.host.Counters().Refuse("iec104", "frame_too_long")
-			t.deny(se.ip, "iec104_frame_too_long", itoa(len(frame.Raw)))
+			t.deny(se, "iec104_frame_too_long", itoa(len(frame.Raw)))
 			return "iec104_frame_too_long"
 		}
 		reason, allow := se.decide(frame, fromClient)
@@ -769,7 +770,7 @@ func (se *session) readError(err error, fromClient bool) string {
 		if !fromClient {
 			from = "station"
 		}
-		t.deny(se.ip, "iec104_malformed", from+": "+err.Error())
+		t.deny(se, "iec104_malformed", from+": "+err.Error())
 		return "iec104_malformed"
 	}
 	return ""

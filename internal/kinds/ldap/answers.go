@@ -2,7 +2,6 @@ package ldap
 
 import (
 	"errors"
-	"net/netip"
 	"strconv"
 	"time"
 
@@ -21,7 +20,7 @@ func (se *session) fromDirectory() string {
 		_ = se.up.SetReadDeadline(time.Now().Add(t.idleTimeout()))
 		raw, err := rd.Next()
 		if err != nil {
-			if reason := t.readError(err, se.ip, "directory"); reason != "" {
+			if reason := t.readError(err, se, "directory"); reason != "" {
 				return reason
 			}
 			return "closed"
@@ -33,14 +32,14 @@ func (se *session) fromDirectory() string {
 			// somehow.
 			s.Counters().LDAPMalformed.Add(1)
 			s.Counters().Refuse("ldap", "malformed_response")
-			t.deny(se.ip, "ldap_malformed_response", perr.Error())
+			t.deny(se, "ldap_malformed_response", perr.Error())
 			return "ldap_malformed_response"
 		}
 		if m.Op.Request() {
 			// The directory answers; it does not ask. A request from that
 			// side is a datagram sent in the wrong direction at best.
 			s.Counters().Refuse("ldap", "wrong_direction_response")
-			t.deny(se.ip, "ldap_wrong_direction_response", m.Op.String())
+			t.deny(se, "ldap_wrong_direction_response", m.Op.String())
 			return "ldap_wrong_direction_response"
 		}
 		out, drop := se.filter(m, raw)
@@ -141,7 +140,7 @@ func (se *session) settle(m *wire.Message) {
 		// one is a typo, and forty from one address in five minutes is a
 		// password list.
 		t.host.Counters().Refuse("ldap", "bind_failed")
-		t.deny(se.ip, "ldap_bind_failed", name)
+		t.deny(se, "ldap_bind_failed", name)
 	}
 }
 
@@ -160,7 +159,7 @@ func (se *session) entry(m *wire.Message, raw []byte) ([]byte, bool) {
 		// that received entries for a search it did not make would be
 		// reading somebody else's answer.
 		s.Counters().Refuse("ldap", "unsolicited_entry")
-		t.deny(se.ip, "ldap_unsolicited_entry", strconv.Itoa(m.ID))
+		t.deny(se, "ldap_unsolicited_entry", strconv.Itoa(m.ID))
 		return nil, true
 	}
 	if e.cut {
@@ -182,7 +181,7 @@ func (se *session) entry(m *wire.Message, raw []byte) ([]byte, bool) {
 		// would look like a hang.
 		s.Counters().LDAPTruncated.Add(1)
 		s.Counters().Refuse("ldap", "max_entries")
-		t.deny(se.ip, "ldap_max_entries", strconv.Itoa(e.entries))
+		t.deny(se, "ldap_max_entries", strconv.Itoa(e.entries))
 		if out := wire.Answer(m.ID, wire.OpSearchRequest, wire.ResultSizeLimitExceeded,
 			"the relay's entry bound was reached"); out != nil {
 			_ = se.writeClient(out)
@@ -202,7 +201,7 @@ func (se *session) entry(m *wire.Message, raw []byte) ([]byte, bool) {
 	if err != nil {
 		s.Counters().LDAPMalformed.Add(1)
 		s.Counters().Refuse("ldap", "malformed_response")
-		t.deny(se.ip, "ldap_malformed_response", err.Error())
+		t.deny(se, "ldap_malformed_response", err.Error())
 		return nil, true
 	}
 	if removed > 0 {
@@ -214,17 +213,17 @@ func (se *session) entry(m *wire.Message, raw []byte) ([]byte, bool) {
 
 // readError turns a reader failure into a reason, or the empty string for an
 // ordinary end of connection.
-func (t *server) readError(err error, ip netip.Addr, from string) string {
+func (t *server) readError(err error, se *session, from string) string {
 	switch {
 	case errors.Is(err, wire.ErrTooLong):
 		t.host.Counters().LDAPMalformed.Add(1)
 		t.host.Counters().Refuse("ldap", "message_too_large")
-		t.deny(ip, "ldap_message_too_large", from)
+		t.deny(se, "ldap_message_too_large", from)
 		return "ldap_message_too_large"
 	case errors.Is(err, wire.ErrFraming):
 		t.host.Counters().LDAPMalformed.Add(1)
 		t.host.Counters().Refuse("ldap", "framing")
-		t.deny(ip, "ldap_framing", from)
+		t.deny(se, "ldap_framing", from)
 		return "ldap_framing"
 	}
 	return ""

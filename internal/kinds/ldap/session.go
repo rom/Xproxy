@@ -150,7 +150,7 @@ func (t *server) handle(c net.Conn) {
 	if !t.policy.Client(se.ip) {
 		s.Counters().LDAPRejected.Add(1)
 		s.Counters().Refuse("ldap", "client_not_allowed")
-		t.deny(se.ip, "client_not_allowed", "")
+		t.deny(se, "client_not_allowed", "")
 		t.logSession(se, start, "client_not_allowed")
 		return
 	}
@@ -167,7 +167,7 @@ func (t *server) handle(c net.Conn) {
 		_ = tc.SetDeadline(time.Now().Add(10 * time.Second))
 		if err := tc.HandshakeContext(context.Background()); err != nil {
 			s.Counters().Refuse("ldap", "tls_handshake")
-			t.deny(se.ip, "tls_handshake", err.Error())
+			t.deny(se, "tls_handshake", err.Error())
 			t.logSession(se, start, "tls_handshake")
 			return
 		}
@@ -250,7 +250,7 @@ func (se *session) fromClient() string {
 		_ = conn.SetReadDeadline(time.Now().Add(t.idleTimeout()))
 		raw, err := rd.Next()
 		if err != nil {
-			if reason := t.readError(err, se.ip, "client"); reason != "" {
+			if reason := t.readError(err, se, "client"); reason != "" {
 				return reason
 			}
 			return "closed"
@@ -263,7 +263,7 @@ func (se *session) fromClient() string {
 		if perr != nil {
 			s.Counters().LDAPMalformed.Add(1)
 			s.Counters().Refuse("ldap", "malformed")
-			t.deny(se.ip, "ldap_malformed", perr.Error())
+			t.deny(se, "ldap_malformed", perr.Error())
 			return "ldap_malformed"
 		}
 		if end, handled := se.check(m); end != "" {
@@ -275,7 +275,7 @@ func (se *session) fromClient() string {
 			// A response arriving from the client is traffic going the wrong
 			// way: this side asks and the directory answers.
 			s.Counters().Refuse("ldap", "wrong_direction")
-			t.deny(se.ip, "ldap_wrong_direction", m.Op.String())
+			t.deny(se, "ldap_wrong_direction", m.Op.String())
 			return "ldap_wrong_direction"
 		}
 		if reason, handled := se.handleStartTLS(m); handled {
@@ -323,13 +323,13 @@ func (se *session) check(m *wire.Message) (end string, handled bool) {
 		// pair an answer with a request nobody made.
 		s.Counters().LDAPMalformed.Add(1)
 		s.Counters().Refuse("ldap", "message_id_zero")
-		t.deny(se.ip, "ldap_message_id_zero", "")
+		t.deny(se, "ldap_message_id_zero", "")
 		return "ldap_message_id_zero", false
 	}
 	if m.Op == wire.OpBindRequest && t.binds != nil && !t.binds.Allow(se.ip.String()) {
 		s.Counters().LDAPRateLimited.Add(1)
 		s.Counters().Refuse("ldap", "bind_rate_limited")
-		t.deny(se.ip, "ldap_bind_rate_limited", "")
+		t.deny(se, "ldap_bind_rate_limited", "")
 		return "ldap_bind_rate_limited", false
 	}
 	if t.limiter != nil && !t.limiter.Allow(se.ip.String()) {
@@ -452,7 +452,7 @@ func (se *session) remember(m *wire.Message, d Decision) bool {
 	if len(se.outstanding) >= se.t.maxOutstanding() {
 		se.mu.Unlock()
 		se.t.host.Counters().Refuse("ldap", "too_many_outstanding")
-		se.t.deny(se.ip, "ldap_too_many_outstanding", "")
+		se.t.deny(se, "ldap_too_many_outstanding", "")
 		if out := wire.Answer(m.ID, m.Op, wire.ResultBusy,
 			"too many operations outstanding"); out != nil {
 			_ = se.writeClient(out)

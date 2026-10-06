@@ -3,7 +3,6 @@ package ldap
 import (
 	"context"
 	"crypto/tls"
-	"net/netip"
 	"time"
 
 	wire "github.com/rom/xproxy/internal/ldap"
@@ -80,7 +79,15 @@ func (se *session) enforcedRefusal(m *wire.Message, d Decision) {
 // deny records a refusal that is not about a request the policy read: a
 // client that may not connect, a malformed message, a bound, a bind the
 // directory itself refused. None of these is shadowed.
-func (t *server) deny(ip netip.Addr, what, detail string) {
+// deny records a refusal, and tells the capture the session was one.
+//
+// The capture asks about the refusal rather than how the session ended, which is
+// why it is recorded here and not from the access log: a session that ran and then
+// closed on a timeout did not get turned away, and a `denied: true` rule that
+// matched it would select most of the traffic on the listener.
+func (t *server) deny(se *session, what, detail string) {
+	ip := se.ip
+	se.tap.Deny(what)
 	if !t.alerts() {
 		return
 	}
@@ -196,9 +203,6 @@ func (t *server) stripped(se *session, m *wire.Message, removed int) {
 
 // logSession writes the line for one session: what it did, and why it ended.
 func (t *server) logSession(se *session, start time.Time, reason string) {
-	// The one place an ldap session's outcome is known, whatever ended it, so it
-	// is where the capture learns whether this was a refusal.
-	se.tap.Deny(reason)
 	se.mu.Lock()
 	attrs := []any{"listener", t.cfg.Name, "client_ip", se.ip.String(), "tls", se.secure,
 		"requests", se.requests, "binds", se.binds, "bind_failures", se.failures,
@@ -251,7 +255,7 @@ func (se *session) handleStartTLS(m *wire.Message) (string, bool) {
 		// needs it; refusing keeps the session's state something both ends
 		// agree about.
 		t.host.Counters().Refuse("ldap", "starttls_twice")
-		t.deny(se.ip, "ldap_starttls_twice", "")
+		t.deny(se, "ldap_starttls_twice", "")
 		_ = se.writeClient(wire.StartTLSResponse(m.ID, wire.ResultOperationsError,
 			"the connection is already protected"))
 		return "", true
@@ -264,7 +268,7 @@ func (se *session) handleStartTLS(m *wire.Message) (string, bool) {
 		// A relay that upgraded anyway would be changing the transport under
 		// answers already in flight.
 		t.host.Counters().Refuse("ldap", "starttls_outstanding")
-		t.deny(se.ip, "ldap_starttls_outstanding", "")
+		t.deny(se, "ldap_starttls_outstanding", "")
 		_ = se.writeClient(wire.StartTLSResponse(m.ID, wire.ResultOperationsError,
 			"operations are outstanding"))
 		return "", true
@@ -286,7 +290,7 @@ func (se *session) handleStartTLS(m *wire.Message) (string, bool) {
 	if err := tc.HandshakeContext(context.Background()); err != nil {
 		se.cmu.Unlock()
 		t.host.Counters().Refuse("ldap", "tls_handshake")
-		t.deny(se.ip, "tls_handshake", err.Error())
+		t.deny(se, "tls_handshake", err.Error())
 		return "tls_handshake", true
 	}
 	_ = tc.SetDeadline(time.Time{})

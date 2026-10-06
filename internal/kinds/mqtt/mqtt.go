@@ -281,7 +281,7 @@ func (t *server) handle(client net.Conn) {
 
 	if !t.allowed(ip) && !t.shadowed(ip, "client_not_allowed", "") {
 		s.Counters().MQTTRejected.Add(1)
-		t.deny(ip, "client_not_allowed", "")
+		t.deny(se, "client_not_allowed", "")
 		t.log(se, start, "client_not_allowed")
 		return
 	}
@@ -318,7 +318,15 @@ func (t *server) allowed(ip netip.Addr) bool {
 	return false
 }
 
-func (t *server) deny(ip netip.Addr, what, detail string) {
+// deny records a refusal, and tells the capture the session was one.
+//
+// The capture asks about the refusal rather than how the session ended, which is
+// why it is recorded here and not from the access log: a session that ran and then
+// closed on a timeout did not get turned away, and a `denied: true` rule that
+// matched it would select most of the traffic on the listener.
+func (t *server) deny(se *session, what, detail string) {
+	ip := se.ip
+	se.tap.Deny(what)
 	t.host.Counters().Refuse("mqtt", what)
 	attrs := []any{"listener", t.cfg.Name, "client_ip", ip.String(), "proto", "mqtt"}
 	if detail != "" {
@@ -388,7 +396,7 @@ func (se *session) admitByPolicy() string {
 	}, textsafe.Clip64(se.username), authorization.Gate{
 		Shadowing: t.cfg.Shadowing,
 		Record:    func(reason, rule, detail string) { t.recordWouldDeny(se.ip, reason, rule, detail) },
-		Deny:      func(reason, _, detail string) { t.deny(se.ip, reason, detail) },
+		Deny:      func(reason, _, detail string) { t.deny(se, reason, detail) },
 	})
 }
 
@@ -411,9 +419,6 @@ func (t *server) observe(se *session) {
 }
 
 func (t *server) log(se *session, start time.Time, reason string) {
-	// The one place an mqtt session's outcome is known, whatever ended it, so it
-	// is where the capture learns whether this was a refusal.
-	se.tap.Deny(reason)
 	attrs := []any{"listener", t.cfg.Name, "client_ip", se.ip.String(), "tls", se.secure,
 		"client_id", se.clientID, "username", se.username, "version", mqttVersionName(se.version),
 		"subscriptions", len(se.subs), "published", se.published.Load(),
@@ -453,7 +458,7 @@ func (se *session) run(time.Time) string {
 		// Every session begins with CONNECT (3.1.1 section 3.1). A
 		// first packet of any other type is either a confused client
 		// or an attempt to reach the broker without one.
-		t.deny(se.ip, "not_connect", first.Name())
+		t.deny(se, "not_connect", first.Name())
 		return "not_connect"
 	}
 	c, err := wire.ParseConnect(first)
@@ -472,7 +477,7 @@ func (se *session) run(time.Time) string {
 	}
 	if reason, code := se.checkConnect(c); reason != "" && !t.shadowed(se.ip, reason, c.ClientID) {
 		se.refuseConnect(code)
-		t.deny(se.ip, reason, "")
+		t.deny(se, reason, "")
 		return reason
 	}
 	if err := se.connect(); err != nil {
@@ -693,7 +698,7 @@ func (se *session) decide(p wire.Packet) (string, bool) {
 		// A second CONNECT on one session is a protocol error in both
 		// versions, and a broker that accepted it would be taking a new
 		// identity from a session already authorised as another.
-		t.deny(se.ip, "second_connect", "")
+		t.deny(se, "second_connect", "")
 		return "second_connect", false
 	case wire.PUBLISH:
 		return se.decidePublish(p)
@@ -762,7 +767,7 @@ func (se *session) decidePublish(p wire.Packet) (string, bool) {
 		return "", true
 	}
 	t.host.Counters().MQTTRefused.Add(1)
-	t.deny(se.ip, bad, detail)
+	t.deny(se, bad, detail)
 	if t.m.Action == "disconnect" {
 		se.disconnectClient(mqttNotAuthorized(se.version))
 		return bad, false
@@ -826,7 +831,7 @@ func (se *session) decideSubscribe(p wire.Packet) (string, bool) {
 		return "", true
 	}
 	t.host.Counters().MQTTRefused.Add(1)
-	t.deny(se.ip, why, mqttClipTopic(refused))
+	t.deny(se, why, mqttClipTopic(refused))
 	if t.m.Action == "disconnect" {
 		se.disconnectClient(mqttNotAuthorized(se.version))
 		return why, false
@@ -883,13 +888,13 @@ func (se *session) badPacket(err error, where string) string {
 	switch {
 	case errors.Is(err, wire.ErrPacketTooLarge):
 		t.host.Counters().MQTTRefused.Add(1)
-		t.deny(se.ip, "packet_too_large", where)
+		t.deny(se, "packet_too_large", where)
 		se.disconnectClient(0x95)
 		return "packet_too_large"
 	case errors.Is(err, wire.ErrMalformed), errors.Is(err, wire.ErrVarintTooLong),
 		errors.Is(err, wire.ErrBadTopic), errors.Is(err, wire.ErrBadFilter):
 		t.host.Counters().MQTTProtocolErrors.Add(1)
-		t.deny(se.ip, "malformed", where+": "+err.Error())
+		t.deny(se, "malformed", where+": "+err.Error())
 		se.disconnectClient(0x81)
 		return "malformed"
 	default:

@@ -235,12 +235,26 @@ func (s *server) handle(client net.Conn) {
 	c.NTSKESessions.Add(1)
 	ip := netutil.AddrOf(client.RemoteAddr().String())
 	defer func() { _ = client.Close() }()
+	// Opened before anything can refuse the session, because a refused session is
+	// the one an operator most often wants and it never dials: after that point
+	// there is nothing left to record. A nil tap wraps nothing and writes nothing.
+	//
+	// What it records on this kind is TLS records, not key establishment: a
+	// relaying listener peeks the ClientHello and splices the rest, and a
+	// terminating one hands the socket to the terminator, which does the
+	// handshake itself. The capture is of what crossed the proxy, which is all
+	// this kind ever sees.
+	tap := s.host.Capture().Open("ntske", s.cfg.Name, "", client.RemoteAddr())
+	defer tap.Close()
+	client = tap.Client(client)
 	if bl := s.host.Bans(); bl != nil && bl.Banned(ip) {
+		tap.Deny("banned")
 		c.Refuse("ntske", "banned")
 		return
 	}
 	if !s.clientAllowed(ip) {
 		s.deny_(ip, "client_not_allowed", "")
+		tap.Deny("client_not_allowed")
 		s.log(ip, start, "", nil, "client_not_allowed", 0, 0)
 		return
 	}
@@ -249,6 +263,7 @@ func (s *server) handle(client net.Conn) {
 	// clients, and a feed must not overrule an allow rule an operator wrote --
 	// and before a handshake slot is taken.
 	if reason := s.admitClient(ip); reason != "" {
+		tap.Deny(reason)
 		s.log(ip, start, "", nil, reason, 0, 0)
 		return
 	}
@@ -265,6 +280,7 @@ func (s *server) handle(client net.Conn) {
 	case <-time.After(time.Second):
 		c.NTSKEHandshakeLimited.Add(1)
 		s.deny_(ip, "handshake_limit", "")
+		tap.Deny("handshake_limit")
 		s.log(ip, start, "", nil, "handshake_limit", 0, 0)
 		return
 	}
@@ -279,12 +295,14 @@ func (s *server) handle(client net.Conn) {
 		if reason != "" {
 			s.deny_(ip, reason, name)
 		}
+		tap.Deny(reason)
 		s.log(ip, start, name, protos, reason, 0, 0)
 		return
 	}
 	name, protos, peeked, reason := s.peek(client)
 	if reason != "" {
 		s.deny_(ip, reason, name)
+		tap.Deny(reason)
 		s.log(ip, start, name, protos, reason, 0, 0)
 		return
 	}
@@ -295,11 +313,13 @@ func (s *server) handle(client net.Conn) {
 		// else it is.
 		c.NTSKENotNTS.Add(1)
 		s.deny_(ip, "alpn_not_offered", strings.Join(protos, ","))
+		tap.Deny("alpn_not_offered")
 		s.log(ip, start, name, protos, "alpn_not_offered", 0, 0)
 		return
 	}
 	if !s.nameAllowed(name) {
 		s.deny_(ip, "server_name_not_allowed", name)
+		tap.Deny("server_name_not_allowed")
 		s.log(ip, start, name, protos, "server_name_not_allowed", 0, 0)
 		return
 	}
@@ -308,6 +328,7 @@ func (s *server) handle(client net.Conn) {
 		c.NTSKEUpstreamFailed.Add(1)
 		s.host.Logs().Error.Warn("ntske could not reach a key establishment server",
 			"listener", s.cfg.Name, "error", err.Error())
+		tap.Deny("upstream_unavailable")
 		s.log(ip, start, name, protos, "upstream_unavailable", 0, 0)
 		return
 	}
@@ -315,10 +336,12 @@ func (s *server) handle(client net.Conn) {
 		_ = up.Close()
 		pool.End(ep, false, 0)
 	}()
+	up = tap.Upstream(up)
 	// The bytes already read are the start of the handshake, so they go
 	// first and unchanged: this listener never rewrites a handshake.
 	if len(peeked) > 0 {
 		if _, err := up.Write(peeked); err != nil {
+			tap.Deny("upstream_write")
 			s.log(ip, start, name, protos, "upstream_write", 0, 0)
 			return
 		}
