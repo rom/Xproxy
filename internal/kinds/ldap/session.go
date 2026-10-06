@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/authorization"
+	"github.com/rom/xproxy/internal/capture"
 	wire "github.com/rom/xproxy/internal/ldap"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/safe"
@@ -40,6 +41,10 @@ type session struct {
 	ip     netip.Addr
 	client net.Conn
 	up     net.Conn
+
+	// tap records the session for a pcapng capture, and is nil -- usable, and
+	// doing nothing -- whenever no rule wants this one, which is the usual case.
+	tap *capture.Tap
 	// secure says the connection to the client is protected.
 	secure bool
 
@@ -125,6 +130,12 @@ func (t *server) handle(c net.Conn) {
 	defer s.Counters().LDAPSessionsOpen.Add(-1)
 	se := &session{t: t, client: c, ip: netutil.AddrOf(c.RemoteAddr().String()),
 		outstanding: map[int]*exchange{}}
+	// Opened before anything can refuse the session, because a refused session is
+	// the one an operator most often wants and it never dials: after that point
+	// there is nothing left to record. A nil tap wraps nothing and writes nothing.
+	se.tap = t.host.Capture().Open("ldap", t.cfg.Name, "", c.RemoteAddr())
+	defer se.tap.Close()
+	se.client = se.tap.Client(c)
 	var pool *upstream.Pool
 	var ep *upstream.Endpoint
 	defer func() {
@@ -147,6 +158,7 @@ func (t *server) handle(c net.Conn) {
 		Kind: "ldap", Listener: t.cfg.Name, Client: c.RemoteAddr().String(),
 	}, func() { _ = c.Close() })
 	defer live.Done()
+	se.tap.Name(live.ID)
 	// Implicit TLS: LDAPS, port 636, TLS from the first octet. The other
 	// mode -- StartTLS -- is an extended operation and is handled in the
 	// request loop, because the session has to read cleartext first.
@@ -160,10 +172,14 @@ func (t *server) handle(c net.Conn) {
 			return
 		}
 		_ = tc.SetDeadline(time.Time{})
-		se.client, se.secure = tc, true
+		// The tap follows the protocol rather than the TLS records carrying it:
+		// tls.Server reads the socket directly, so nothing recorded the
+		// handshake, and from here the tap sees the plaintext inside it.
+		se.client, se.secure = se.tap.Client(tc), true
 	}
 	var err error
 	se.up, pool, ep, err = t.dialDirectory(se.ip.String())
+	se.up = se.tap.Upstream(se.up)
 	if err != nil {
 		s.Counters().LDAPUpstreamFail.Add(1)
 		t.logSession(se, start, "upstream_unavailable")

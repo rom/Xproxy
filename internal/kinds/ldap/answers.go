@@ -121,6 +121,7 @@ func (se *session) settle(m *wire.Message) {
 	success := m.Result != nil && m.Result.Code == wire.ResultSuccess
 	if success {
 		se.bound, se.boundName, se.method = dn, name, method
+		se.tap.User(name)
 	} else {
 		se.failures++
 	}

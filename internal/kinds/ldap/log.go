@@ -196,6 +196,9 @@ func (t *server) stripped(se *session, m *wire.Message, removed int) {
 
 // logSession writes the line for one session: what it did, and why it ended.
 func (t *server) logSession(se *session, start time.Time, reason string) {
+	// The one place an ldap session's outcome is known, whatever ended it, so it
+	// is where the capture learns whether this was a refusal.
+	se.tap.Deny(reason)
 	se.mu.Lock()
 	attrs := []any{"listener", t.cfg.Name, "client_ip", se.ip.String(), "tls", se.secure,
 		"requests", se.requests, "binds", se.binds, "bind_failures", se.failures,
@@ -274,6 +277,10 @@ func (se *session) handleStartTLS(m *wire.Message) (string, bool) {
 		se.cmu.Unlock()
 		return "closed", true
 	}
+	// StartTLS is an in-band upgrade, so the capture pauses over the handshake and
+	// picks the plaintext up again on the far side: the file then holds one
+	// readable stream of the protocol rather than cleartext and then ciphertext.
+	se.tap.Pause()
 	tc := tls.Server(se.client, t.tlsCfg)
 	_ = tc.SetDeadline(time.Now().Add(10 * time.Second))
 	if err := tc.HandshakeContext(context.Background()); err != nil {
@@ -283,7 +290,7 @@ func (se *session) handleStartTLS(m *wire.Message) (string, bool) {
 		return "tls_handshake", true
 	}
 	_ = tc.SetDeadline(time.Time{})
-	se.client = tc
+	se.client = se.tap.Client(tc)
 	se.cmu.Unlock()
 	se.mu.Lock()
 	// The identity does not survive the upgrade. RFC 4513 §5.1.7 says the

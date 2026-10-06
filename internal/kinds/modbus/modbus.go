@@ -41,6 +41,7 @@ import (
 	"github.com/rom/xproxy/internal/admit"
 	"github.com/rom/xproxy/internal/anomaly"
 	"github.com/rom/xproxy/internal/authorization"
+	"github.com/rom/xproxy/internal/capture"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/correlate"
 	"github.com/rom/xproxy/internal/engineering"
@@ -276,6 +277,14 @@ type session struct {
 	secure bool
 	live   *sessions.Session
 
+	// tap records the session for a pcapng capture, and is nil -- usable, and
+	// doing nothing -- whenever no rule wants this one, which is the usual case.
+	//
+	// Only the client side is wrapped, and the capture names no server: a Modbus
+	// session fans out to a device per route, so there is no one upstream
+	// connection to be the other end of the conversation.
+	tap *capture.Tap
+
 	// workers are the per-route device connections, opened on demand:
 	// one session may reach several devices when the routes send
 	// different unit identifiers to different pools.
@@ -340,6 +349,12 @@ func (t *server) handle(client net.Conn) {
 	se := &session{t: t, client: client, ip: ip, watch: newWatcher(),
 		workers: map[string]*worker{}, writes: make(chan []byte, 16),
 		pending: make(chan struct{}, t.m.Pending())}
+	// Opened before anything can refuse the session, because a refused session is
+	// the one an operator most often wants and it never dials: after that point
+	// there is nothing left to record. A nil tap wraps nothing and writes nothing.
+	se.tap = t.host.Capture().Open("modbus", t.cfg.Name, "", client.RemoteAddr())
+	defer se.tap.Close()
+	se.client = se.tap.Client(client)
 	defer func() {
 		se.stop()
 		_ = client.Close()
@@ -374,6 +389,7 @@ func (t *server) handle(client net.Conn) {
 		Kind: "modbus", Listener: t.cfg.Name, Client: client.RemoteAddr().String(),
 	}, func() { _ = client.Close() })
 	defer se.live.Done()
+	se.tap.Name(se.live.ID)
 	if t.m.TLSMode == "implicit" || (t.tlsCfg != nil && t.m.TLSMode == "") {
 		tc := tls.Server(client, t.tlsCfg)
 		_ = tc.SetDeadline(time.Now().Add(10 * time.Second))
@@ -383,7 +399,10 @@ func (t *server) handle(client net.Conn) {
 			return
 		}
 		_ = tc.SetDeadline(time.Time{})
-		se.client, se.secure = tc, true
+		// The tap follows the protocol rather than the TLS records carrying it:
+		// tls.Server reads the socket directly, so nothing recorded the
+		// handshake, and from here the tap sees the plaintext inside it.
+		se.client, se.secure = se.tap.Client(tc), true
 		if reason := se.readRole(tc.ConnectionState()); reason != "" {
 			t.host.Counters().ModbusRejected.Add(1)
 			t.deny(ip, reason, "")
@@ -1204,6 +1223,9 @@ func (t *server) traceResponse(se *session, w *worker, j *job, raw []byte, pdu *
 
 // log writes the session's access line.
 func (t *server) log(se *session, start time.Time, reason string) {
+	// The one place a modbus session's outcome is known, whatever ended it, so it
+	// is where the capture learns whether this was a refusal.
+	se.tap.Deny(reason)
 	attrs := []any{"listener", t.cfg.Name, "client_ip", se.ip.String(), "tls", se.secure,
 		"framing", t.framing.String(), "mode", t.mode(),
 		"requests", se.requests.Load(), "denied", se.denied.Load(),

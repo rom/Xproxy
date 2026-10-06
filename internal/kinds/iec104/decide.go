@@ -693,6 +693,9 @@ func detailOf(a *wire.ASDU) string {
 
 // log writes the session line: one per connection, with what it carried.
 func (t *server) log(se *session, start time.Time, reason string) {
+	// The one place an iec104 session's outcome is known, whatever ended it, so it
+	// is where the capture learns whether this was a refusal.
+	se.tap.Deny(reason)
 	attrs := []any{"listener", t.cfg.Name, "client_ip", se.ip.String(), "tls", se.secure,
 		"commands", se.commands.Load(), "denied", se.denied.Load(),
 		"duration_ms", time.Since(start).Milliseconds()}

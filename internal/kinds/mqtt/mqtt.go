@@ -17,6 +17,7 @@ import (
 
 	"github.com/rom/xproxy/internal/assets"
 	"github.com/rom/xproxy/internal/authorization"
+	"github.com/rom/xproxy/internal/capture"
 	"github.com/rom/xproxy/internal/config"
 	wire "github.com/rom/xproxy/internal/mqtt"
 	"github.com/rom/xproxy/internal/netutil"
@@ -232,6 +233,10 @@ type session struct {
 	pool   *upstream.Pool
 	ep     *upstream.Endpoint
 
+	// tap records the session for a pcapng capture, and is nil -- usable, and
+	// doing nothing -- whenever no rule wants this one, which is the usual case.
+	tap *capture.Tap
+
 	ip       netip.Addr
 	secure   bool
 	version  byte
@@ -258,6 +263,12 @@ func (t *server) handle(client net.Conn) {
 	ip := netutil.AddrOf(client.RemoteAddr().String())
 	se := &session{t: t, client: client, ip: ip,
 		subs: map[string]bool{}, refusedQoS2: map[uint16]bool{}}
+	// Opened before anything can refuse the session, because a refused session is
+	// the one an operator most often wants and it never dials: after that point
+	// there is nothing left to record. A nil tap wraps nothing and writes nothing.
+	se.tap = t.host.Capture().Open("mqtt", t.cfg.Name, "", client.RemoteAddr())
+	defer se.tap.Close()
+	se.client = se.tap.Client(client)
 	defer func() {
 		if se.up != nil {
 			_ = se.up.Close()
@@ -282,7 +293,10 @@ func (t *server) handle(client net.Conn) {
 			return
 		}
 		_ = tc.SetDeadline(time.Time{})
-		se.client = tc
+		// The tap follows the protocol rather than the TLS records carrying it:
+		// tls.Server reads the socket directly, so nothing recorded the handshake,
+		// and from here the tap sees the plaintext inside it.
+		se.client = se.tap.Client(tc)
 		se.secure = true
 	}
 	reason := se.run(start)
@@ -397,6 +411,9 @@ func (t *server) observe(se *session) {
 }
 
 func (t *server) log(se *session, start time.Time, reason string) {
+	// The one place an mqtt session's outcome is known, whatever ended it, so it
+	// is where the capture learns whether this was a refusal.
+	se.tap.Deny(reason)
 	attrs := []any{"listener", t.cfg.Name, "client_ip", se.ip.String(), "tls", se.secure,
 		"client_id", se.clientID, "username", se.username, "version", mqttVersionName(se.version),
 		"subscriptions", len(se.subs), "published", se.published.Load(),
@@ -444,6 +461,7 @@ func (se *session) run(time.Time) string {
 		return se.badPacket(err, "connect")
 	}
 	se.version, se.clientID, se.username = c.Version, c.ClientID, c.Username
+	se.tap.User(c.Username)
 	t.observe(se)
 	// The estate's own policy first, because it is the broader question:
 	// whether this identity may reach this broker at all, rather than which
@@ -584,7 +602,7 @@ func (se *session) connect() error {
 			t.host.Logs().Error.Warn("mqtt broker dial failed", "listener", t.cfg.Name, "endpoint", e.Address, "err", err.Error())
 			continue
 		}
-		se.up, se.ep = c, e
+		se.up, se.ep = se.tap.Upstream(c), e
 		break
 	}
 	if se.up == nil {

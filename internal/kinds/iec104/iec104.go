@@ -61,6 +61,7 @@ import (
 	"github.com/rom/xproxy/internal/admit"
 	"github.com/rom/xproxy/internal/anomaly"
 	"github.com/rom/xproxy/internal/authorization"
+	"github.com/rom/xproxy/internal/capture"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/correlate"
 	"github.com/rom/xproxy/internal/engineering"
@@ -310,6 +311,11 @@ type session struct {
 	client net.Conn
 	up     net.Conn
 	ip     netip.Addr
+
+	// tap records the session for a pcapng capture, and is nil -- usable, and
+	// doing nothing -- whenever no rule wants this one, which is the usual case.
+	tap *capture.Tap
+
 	secure bool
 	live   *sessions.Session
 	pool   *upstream.Pool
@@ -395,6 +401,12 @@ func (t *server) handle(client net.Conn) {
 	ip := netutil.AddrOf(client.RemoteAddr().String())
 	se := &session{t: t, id: t.nextSession.Add(1), client: client, ip: ip,
 		watch: newWatcher()}
+	// Opened before anything can refuse the session, because a refused session is
+	// the one an operator most often wants and it never dials: after that point
+	// there is nothing left to record. A nil tap wraps nothing and writes nothing.
+	se.tap = t.host.Capture().Open("iec104", t.cfg.Name, "", client.RemoteAddr())
+	defer se.tap.Close()
+	se.client = se.tap.Client(client)
 	defer func() {
 		if se.watch.anything() {
 			// The controlling station, with every substation it named; and the
@@ -459,6 +471,7 @@ func (t *server) handle(client net.Conn) {
 		Kind: "iec104", Listener: t.cfg.Name, Client: client.RemoteAddr().String(),
 	}, func() { _ = client.Close() })
 	defer se.live.Done()
+	se.tap.Name(se.live.ID)
 	if t.m.TLSMode == "implicit" || (t.tlsCfg != nil && t.m.TLSMode == "") {
 		tc := tls.Server(client, t.tlsCfg)
 		_ = tc.SetDeadline(time.Now().Add(10 * time.Second))
@@ -468,7 +481,10 @@ func (t *server) handle(client net.Conn) {
 			return
 		}
 		_ = tc.SetDeadline(time.Time{})
-		se.client, se.secure = tc, true
+		// The tap follows the protocol rather than the TLS records carrying it:
+		// tls.Server reads the socket directly, so nothing recorded the
+		// handshake, and from here the tap sees the plaintext inside it.
+		se.client, se.secure = se.tap.Client(tc), true
 	}
 	// The relay's own end of the association with this client, which is
 	// whatever the octets finally travel over.
@@ -537,7 +553,7 @@ func (se *session) dial() error {
 				"endpoint", e.Address, "error", err.Error())
 			continue
 		}
-		se.up, se.ep = c, e
+		se.up, se.ep = se.tap.Upstream(c), e
 		break
 	}
 	if se.up == nil {

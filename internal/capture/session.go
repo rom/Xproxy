@@ -212,6 +212,22 @@ func (t *Tap) Deny(reason string) {
 	t.mu.Unlock()
 }
 
+// Name replaces the identifier the tap chose with the kind's own.
+//
+// The nine kinds that register with the session table have one, and it is the
+// identifier an operator reads in `xproxyctl sessions`, in the access log and on
+// a recording file -- so a capture that reuses it can be lined up against all
+// three. The tap cannot ask for it at Open, because it is opened before anything
+// can refuse the session and the registration comes after.
+func (t *Tap) Name(id string) {
+	if t == nil || id == "" {
+		return
+	}
+	t.mu.Lock()
+	t.s.ID = id
+	t.mu.Unlock()
+}
+
 // User records the login once the protocol has named one.
 func (t *Tap) User(name string) {
 	if t == nil {
