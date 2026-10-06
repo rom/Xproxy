@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"net/netip"
 	"strings"
 
 	"github.com/rom/xproxy/internal/textsafe"
@@ -31,6 +30,7 @@ func (t *server) refused(se *session, d Decision, what string) {
 		t.wouldRefuse(se, d, what)
 		return
 	}
+	se.tap.Deny(d.Reason)
 	c := t.host.Counters()
 	c.Refuse("postgres", d.Reason)
 	t.log(se, d, what, "deny")
@@ -89,7 +89,9 @@ func (t *server) wouldRefuse(se *session, d Decision, what string) {
 // client that may not connect, a message the reader could not frame, a bound.
 // None of these is ever shadowed, because each means the relay does not know
 // what it would be forwarding.
-func (t *server) deny(ip netip.Addr, reason, detail string) {
+func (t *server) deny(se *session, reason, detail string) {
+	ip := se.ip
+	se.tap.Deny(reason)
 	c := t.host.Counters()
 	c.Refuse("postgres", reason)
 	if !t.alerts() {

@@ -3,7 +3,6 @@ package opcua
 import (
 	"context"
 	"fmt"
-	"net/netip"
 	"time"
 
 	wire "github.com/rom/xproxy/internal/opcua"
@@ -53,6 +52,7 @@ func (t *server) refused2(c *conn, d Decision, what string) {
 		t.host.Shadow().Record("opcua", t.name, d.Reason, d.Rule, what)
 		return
 	}
+	c.tap.Deny(d.Reason)
 	ct.Refuse("opcua", d.Reason)
 	if !t.alerts() {
 		return
@@ -100,7 +100,9 @@ func (t *server) attrs(c *conn, d Decision, what string) []any {
 }
 
 // deny records a refusal that is not about something the policy read.
-func (t *server) deny(ip netip.Addr, reason, detail string) {
+func (t *server) deny(c *conn, reason, detail string) {
+	ip := c.ip
+	c.tap.Deny(reason)
 	t.host.Counters().Refuse("opcua", reason)
 	if t.alerts() {
 		a := []any{"listener", t.name, "client_ip", ip.String(), "proto", "opcua",

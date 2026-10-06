@@ -14,6 +14,7 @@ import (
 	"github.com/rom/xproxy/internal/admit"
 	"github.com/rom/xproxy/internal/anomaly"
 	"github.com/rom/xproxy/internal/authorization"
+	"github.com/rom/xproxy/internal/capture"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/correlate"
 	"github.com/rom/xproxy/internal/engineering"
@@ -166,6 +167,10 @@ type conn struct {
 	client net.Conn
 	up     net.Conn
 
+	// tap records the session for a pcapng capture, and is nil -- usable, and
+	// doing nothing -- whenever no rule wants this one, which is the usual case.
+	tap *capture.Tap
+
 	cliReader *wire.Reader
 	upReader  *wire.Reader
 
@@ -312,7 +317,8 @@ func (c *conn) writeUp(b []byte) error {
 
 // admitClient runs the shared admission point: the threat lists and the estate's
 // authorization policy, before anything is read.
-func (t *server) admitClient(ip netip.Addr) string {
+func (t *server) admitClient(c *conn) string {
+	ip := c.ip
 	h := t.host
 	return admit.Client(admit.Deps{
 		Lists: h.ThreatIntel(),
@@ -339,7 +345,7 @@ func (t *server) admitClient(ip netip.Addr) string {
 			h.Counters().WouldRefuse("mms", reason)
 			h.Shadow().Record("mms", t.name, reason, rule, detail)
 		},
-		Deny: func(reason, _, detail string) { t.deny(ip, reason, detail) },
+		Deny: func(reason, _, detail string) { t.deny(c, reason, detail) },
 	})
 }
 
@@ -356,12 +362,18 @@ func (t *server) handle(nc net.Conn) {
 	ip := netutil.AddrOf(nc.RemoteAddr().String())
 	c := &conn{t: t, ip: ip, client: nc}
 	c.a = Association{IP: ip}
+	// Opened before anything can refuse the session, because a refused session is
+	// the one an operator most often wants and it never dials: after that point
+	// there is nothing left to record. A nil tap wraps nothing and writes nothing.
+	c.tap = t.host.Capture().Open("mms", t.name, "", nc.RemoteAddr())
+	defer c.tap.Close()
+	c.client = c.tap.Client(nc)
 
 	if d := t.policy.Connect(c.assoc()); !d.Allow {
 		t.refuseConn(c, d, "connect")
 		return
 	}
-	if t.admitClient(ip) != "" {
+	if t.admitClient(c) != "" {
 		return
 	}
 	if !t.admit(c) {
@@ -371,11 +383,11 @@ func (t *server) handle(nc net.Conn) {
 
 	up, err := t.dial(c)
 	if err != nil {
-		t.deny(ip, "upstream_unavailable", err.Error())
+		t.deny(c, "upstream_unavailable", err.Error())
 		return
 	}
 	defer func() { _ = up.Close() }()
-	c.up = up
+	c.up = c.tap.Upstream(up)
 	c.cliReader = wire.NewReader(c.client, t.maxFrame())
 	c.upReader = wire.NewReader(up, t.maxFrame())
 	t.observeAssociation(c)
@@ -385,7 +397,7 @@ func (t *server) handle(nc net.Conn) {
 func (t *server) admit(c *conn) bool {
 	ok, reason := t.gate.Enter(c.ip)
 	if !ok {
-		t.deny(c.ip, reason, "")
+		t.deny(c, reason, "")
 	}
 	return ok
 }
@@ -449,7 +461,7 @@ func (t *server) fromClient(c *conn) {
 		f, err := c.cliReader.Next()
 		if err != nil {
 			if !ended(err) {
-				t.deny(c.ip, "unreadable_frame", err.Error())
+				t.deny(c, "unreadable_frame", err.Error())
 			}
 			return
 		}

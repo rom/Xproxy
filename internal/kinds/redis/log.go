@@ -2,7 +2,6 @@ package redis
 
 import (
 	"context"
-	"net/netip"
 	"strings"
 
 	"github.com/rom/xproxy/internal/textsafe"
@@ -34,6 +33,7 @@ func (t *server) refused(se *session, d Decision, what string) {
 		t.host.Shadow().Record("redis", t.name, d.Reason, d.Rule, what)
 		return
 	}
+	se.tap.Deny(d.Reason)
 	c.Refuse("redis", d.Reason)
 	s := se.sess()
 	attrs := []any{"listener", t.name, "client_ip", se.ip.String(), "proto", "redis",
@@ -66,7 +66,9 @@ func (t *server) refused(se *session, d Decision, what string) {
 }
 
 // deny records a refusal that is not about something the policy read.
-func (t *server) deny(ip netip.Addr, reason, detail string) {
+func (t *server) deny(se *session, reason, detail string) {
+	ip := se.ip
+	se.tap.Deny(reason)
 	t.host.Counters().Refuse("redis", reason)
 	attrs := []any{"listener", t.name, "client_ip", ip.String(), "proto", "redis",
 		"reason", reason}

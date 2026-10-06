@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rom/xproxy/internal/capture"
 	wire "github.com/rom/xproxy/internal/tdswire"
 )
 
@@ -24,6 +25,10 @@ type session struct {
 	ip     netip.Addr
 	client net.Conn
 	up     net.Conn
+
+	// tap records the session for a pcapng capture, and is nil -- usable, and
+	// doing nothing -- whenever no rule wants this one, which is the usual case.
+	tap *capture.Tap
 
 	cliReader, srvReader *wire.Reader
 	// spid is the server process identifier from the server's own packets,

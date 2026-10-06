@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/netip"
 	"strconv"
 	"sync"
 	"time"
@@ -139,7 +138,8 @@ func (t *server) shutdown(ctx context.Context) {
 // listener, the pool and the hour and nothing else -- and a rule naming users
 // matches nobody here. The name arrives later and gets its own question, in
 // admitUser below, which is the interesting one on this kind.
-func (t *server) admitClient(ip netip.Addr) string {
+func (t *server) admitClient(se *session) string {
+	ip := se.ip
 	h := t.host
 	return admit.Client(admit.Deps{
 		Lists: h.ThreatIntel(),
@@ -155,7 +155,7 @@ func (t *server) admitClient(ip netip.Addr) string {
 		Client:   ip,
 		Target:   t.rc.Upstream,
 		Action:   authorization.ActionConnect,
-	}, t.admitGate(ip))
+	}, t.admitGate(se))
 }
 
 // admitUser is the estate's policy asked again, about the name -- and this is the
@@ -205,13 +205,13 @@ func (t *server) admitUser(se *session) string {
 			h.Counters().WouldRefuse("redis", reason)
 			h.Shadow().Record("redis", t.name, reason, rule, detail)
 		},
-		Deny: func(reason, _, detail string) { t.deny(se.ip, reason, detail) },
+		Deny: func(reason, _, detail string) { t.deny(se, reason, detail) },
 	})
 }
 
 // admitGate is what this kind lends internal/admit so a refusal made there is counted,
 // logged and banned on exactly as one this file made itself.
-func (t *server) admitGate(ip netip.Addr) admit.Gate {
+func (t *server) admitGate(se *session) admit.Gate {
 	h := t.host
 	return admit.Gate{
 		Shadowing: func() bool { return !t.enforcing() },
@@ -219,7 +219,7 @@ func (t *server) admitGate(ip netip.Addr) admit.Gate {
 			h.Counters().WouldRefuse("redis", reason)
 			h.Shadow().Record("redis", t.name, reason, rule, detail)
 		},
-		Deny: func(reason, _, detail string) { t.deny(ip, reason, detail) },
+		Deny: func(reason, _, detail string) { t.deny(se, reason, detail) },
 	}
 }
 
@@ -233,6 +233,11 @@ func (t *server) handle(c net.Conn) {
 	defer func() { _ = c.Close() }()
 	ip := netutil.AddrOf(c.RemoteAddr().String())
 	se := &session{t: t, ip: ip, client: c}
+	// Opened before anything can refuse the session, because a refused session is
+	// the one an operator most often wants and it never dials: after that point
+	// there is nothing left to record. A nil tap wraps nothing and writes nothing.
+	se.tap = t.host.Capture().Open("redis", t.name, "", c.RemoteAddr())
+	defer se.tap.Close()
 
 	// TLS from the first octet, which is the only form this protocol has: Redis
 	// defines no in-protocol upgrade, so a TLS listener is a separate port and the
@@ -242,10 +247,15 @@ func (t *server) handle(c net.Conn) {
 	// ever satisfy.
 	if t.tlsCfg != nil {
 		if err := t.upgradeClient(se); err != nil {
-			t.deny(se.ip, "tls_handshake", err.Error())
+			t.deny(se, "tls_handshake", err.Error())
 			return
 		}
 	}
+
+	// Wrapped after the handshake rather than before it, so the capture holds the
+	// protocol and not the TLS records carrying it. On a listener with no
+	// certificate this is the socket itself.
+	se.client = se.tap.Client(se.client)
 
 	if d := t.policy.Connect(se.sess()); !d.Allow {
 		t.refused(se, d, "connect")
@@ -256,7 +266,7 @@ func (t *server) handle(c net.Conn) {
 	// kind's own client list -- that is local policy about local clients, and a
 	// feed must not overrule an allow rule an operator wrote -- and before the
 	// server is dialled.
-	if t.admitClient(se.ip) != "" {
+	if t.admitClient(se) != "" {
 		return
 	}
 	if !t.admit(se) {
@@ -276,11 +286,11 @@ func (t *server) handle(c net.Conn) {
 
 	up, err := t.dial(se)
 	if err != nil {
-		t.deny(se.ip, "upstream_unavailable", err.Error())
+		t.deny(se, "upstream_unavailable", err.Error())
 		return
 	}
 	defer func() { _ = up.Close() }()
-	se.up = up
+	se.up = se.tap.Upstream(up)
 	se.observe()
 
 	se.cliReader = wire.NewReader(se.client, t.policy.MaxMessage(),
@@ -296,7 +306,7 @@ func (t *server) handle(c net.Conn) {
 func (t *server) admit(se *session) bool {
 	ok, reason := t.gate.Enter(se.ip)
 	if !ok {
-		t.deny(se.ip, reason, "")
+		t.deny(se, reason, "")
 	}
 	return ok
 }
@@ -495,7 +505,7 @@ func (t *server) fromClient(se *session) {
 				// A message that is not RESP. The relay answers the way the
 				// server would, because a client library reports a protocol
 				// error and reconnects rather than hanging.
-				t.deny(se.ip, "unreadable_command", err.Error())
+				t.deny(se, "unreadable_command", err.Error())
 				_ = se.writeClient(wire.Error("ERR", "Protocol error: "+err.Error()))
 			}
 			return

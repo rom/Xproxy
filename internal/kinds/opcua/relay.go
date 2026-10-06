@@ -16,6 +16,7 @@ import (
 	"github.com/rom/xproxy/internal/anomaly"
 	"github.com/rom/xproxy/internal/assets"
 	"github.com/rom/xproxy/internal/authorization"
+	"github.com/rom/xproxy/internal/capture"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/correlate"
 	"github.com/rom/xproxy/internal/engineering"
@@ -162,6 +163,10 @@ type conn struct {
 	ip     netip.Addr
 	client net.Conn
 	up     net.Conn
+
+	// tap records the session for a pcapng capture, and is nil -- usable, and
+	// doing nothing -- whenever no rule wants this one, which is the usual case.
+	tap *capture.Tap
 
 	cliReader *wire.Reader
 	upReader  *wire.Reader
@@ -310,7 +315,8 @@ func (c *conn) writeUp(b []byte) error {
 // It runs on the address alone, before the handshake, because that is all there is
 // at this point — the application and the user arrive several messages later, and a
 // client the lists refuse should not get to send them.
-func (t *server) admitClient(ip netip.Addr) string {
+func (t *server) admitClient(c *conn) string {
+	ip := c.ip
 	h := t.host
 	return admit.Client(admit.Deps{
 		Lists: h.ThreatIntel(),
@@ -337,7 +343,7 @@ func (t *server) admitClient(ip netip.Addr) string {
 			h.Counters().WouldRefuse("opcua", reason)
 			h.Shadow().Record("opcua", t.name, reason, rule, detail)
 		},
-		Deny: func(reason, _, detail string) { t.deny(ip, reason, detail) },
+		Deny: func(reason, _, detail string) { t.deny(c, reason, detail) },
 	})
 }
 
@@ -353,12 +359,18 @@ func (t *server) handle(nc net.Conn) {
 	c := &conn{t: t, ip: ip, client: nc,
 		fromCli: wire.NewAssembler(), fromSrv: wire.NewAssembler()}
 	c.s = Session{IP: ip}
+	// Opened before anything can refuse the session, because a refused session is
+	// the one an operator most often wants and it never dials: after that point
+	// there is nothing left to record. A nil tap wraps nothing and writes nothing.
+	c.tap = t.host.Capture().Open("opcua", t.name, "", nc.RemoteAddr())
+	defer c.tap.Close()
+	c.client = c.tap.Client(nc)
 
 	if d := t.policy.Connect(c.sess()); !d.Allow {
 		t.refuseConn(c, d, "connect")
 		return
 	}
-	if t.admitClient(ip) != "" {
+	if t.admitClient(c) != "" {
 		return
 	}
 	if !t.admit(c) {
@@ -372,7 +384,7 @@ func (t *server) handle(nc net.Conn) {
 	c.cliReader = wire.NewReader(c.client, t.maxChunk())
 	first, err := c.cliReader.Next()
 	if err != nil {
-		t.deny(ip, "no_hello", err.Error())
+		t.deny(c, "no_hello", err.Error())
 		return
 	}
 	_ = c.client.SetReadDeadline(time.Time{})
@@ -383,14 +395,14 @@ func (t *server) handle(nc net.Conn) {
 
 	up, err := t.dial(c)
 	if err != nil {
-		t.deny(ip, "upstream_unavailable", err.Error())
+		t.deny(c, "upstream_unavailable", err.Error())
 		return
 	}
 	defer func() { _ = up.Close() }()
-	c.up = up
+	c.up = c.tap.Upstream(up)
 	c.upReader = wire.NewReader(up, t.maxChunk())
 	if err := c.writeUp(first.Raw); err != nil {
-		t.deny(ip, "upstream_unavailable", err.Error())
+		t.deny(c, "upstream_unavailable", err.Error())
 		return
 	}
 	t.observe(c)
@@ -446,7 +458,7 @@ func (t *server) decideHandshake(c *conn, ch *wire.Chunk) (Decision, bool) {
 func (t *server) admit(c *conn) bool {
 	ok, reason := t.gate.Enter(c.ip)
 	if !ok {
-		t.deny(c.ip, reason, "")
+		t.deny(c, reason, "")
 	}
 	return ok
 }
@@ -511,7 +523,7 @@ func (t *server) fromClient(c *conn) {
 		ch, err := c.cliReader.Next()
 		if err != nil {
 			if !ended(err) {
-				t.deny(c.ip, "unreadable_message", err.Error())
+				t.deny(c, "unreadable_message", err.Error())
 			}
 			return
 		}

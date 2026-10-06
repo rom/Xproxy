@@ -720,7 +720,7 @@ func (se *session) serveDecoy(cr *wire.COTP) string {
 		}
 		c, err := wire.ParseCOTP(f.Payload)
 		if err != nil {
-			t.deny(se.ip, "unreadable_frame", err.Error())
+			t.deny(se, "unreadable_frame", err.Error())
 			return "unreadable_frame"
 		}
 		switch c.Type {
@@ -742,7 +742,7 @@ func (se *session) serveDecoy(cr *wire.COTP) string {
 		}
 		pdu, err := wire.ParseS7(c.Data)
 		if err != nil {
-			t.deny(se.ip, "unreadable_pdu", err.Error())
+			t.deny(se, "unreadable_pdu", err.Error())
 			return "unreadable_pdu"
 		}
 		if err := se.answerDecoy(pdu); err != nil {

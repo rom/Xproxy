@@ -126,6 +126,12 @@ func (t *server) handle(c net.Conn) {
 	defer func() { _ = c.Close() }()
 	ip := netutil.AddrOf(c.RemoteAddr().String())
 	se := &session{t: t, ip: ip, client: c, size: 4096}
+	// Opened before anything can refuse the session, because a refused session is
+	// the one an operator most often wants and it never dials: after that point
+	// there is nothing left to record. A nil tap wraps nothing and writes nothing.
+	se.tap = t.host.Capture().Open("tds", t.name, "", c.RemoteAddr())
+	defer se.tap.Close()
+	se.client = se.tap.Client(c)
 
 	if !t.admit(se) {
 		return
@@ -138,11 +144,11 @@ func (t *server) handle(c net.Conn) {
 	}
 	up, err := t.dial(se)
 	if err != nil {
-		t.deny(se.ip, "upstream_unavailable", err.Error())
+		t.deny(se, "upstream_unavailable", err.Error())
 		return
 	}
 	defer func() { _ = up.Close() }()
-	se.up = up
+	se.up = se.tap.Upstream(up)
 
 	if err := t.handshake(se, hs); err != nil {
 		return
@@ -158,7 +164,7 @@ func (t *server) handle(c net.Conn) {
 func (t *server) admit(se *session) bool {
 	ok, reason := t.gate.Enter(se.ip)
 	if !ok {
-		t.deny(se.ip, reason, "")
+		t.deny(se, reason, "")
 	}
 	return ok
 }
@@ -184,19 +190,19 @@ func (t *server) handshake(se *session, hs time.Duration) error {
 	cli := wire.NewReader(se.client, t.policy.MaxMessage())
 	first, err := cli.Next()
 	if err != nil {
-		t.deny(se.ip, "unreadable_prelogin", err.Error())
+		t.deny(se, "unreadable_prelogin", err.Error())
 		return errRefused
 	}
 	if first.Type != wire.TypePreLogin {
 		// A connection that does not begin with PRELOGIN is either speaking an
 		// older protocol or not speaking TDS. Either way the relay has nothing
 		// to negotiate and will not guess.
-		t.deny(se.ip, "no_prelogin", wire.TypeName(first.Type))
+		t.deny(se, "no_prelogin", wire.TypeName(first.Type))
 		return errRefused
 	}
 	pre, err := wire.ParsePreLogin(first.Payload)
 	if err != nil {
-		t.deny(se.ip, "unreadable_prelogin", err.Error())
+		t.deny(se, "unreadable_prelogin", err.Error())
 		return errRefused
 	}
 
@@ -215,12 +221,12 @@ func (t *server) handshake(se *session, hs time.Duration) error {
 	srv := wire.NewReader(se.up, t.policy.MaxMessage())
 	resp, err := srv.Next()
 	if err != nil {
-		t.deny(se.ip, "unreadable_upstream_prelogin", err.Error())
+		t.deny(se, "unreadable_upstream_prelogin", err.Error())
 		return errRefused
 	}
 	sp, err := wire.ParsePreLogin(resp.Payload)
 	if err != nil {
-		t.deny(se.ip, "unreadable_upstream_prelogin", err.Error())
+		t.deny(se, "unreadable_upstream_prelogin", err.Error())
 		return errRefused
 	}
 	se.spid = resp.SPID
@@ -230,7 +236,7 @@ func (t *server) handshake(se *session, hs time.Duration) error {
 	}
 	if wire.Encrypted(sp.Encryption) {
 		if err := t.upgradeUpstream(se, hs); err != nil {
-			t.deny(se.ip, "upstream_tls_handshake_failed", err.Error())
+			t.deny(se, "upstream_tls_handshake_failed", err.Error())
 			return errRefused
 		}
 	}
@@ -246,7 +252,7 @@ func (t *server) handshake(se *session, hs time.Duration) error {
 	}
 	if wire.Encrypted(answer) {
 		if err := t.upgradeClient(se, hs); err != nil {
-			t.deny(se.ip, "tls_handshake_failed", err.Error())
+			t.deny(se, "tls_handshake_failed", err.Error())
 			return errRefused
 		}
 		cli = wire.NewReader(se.client, t.policy.MaxMessage())
@@ -256,7 +262,7 @@ func (t *server) handshake(se *session, hs time.Duration) error {
 	// The login.
 	lp, err := cli.Next()
 	if err != nil {
-		t.deny(se.ip, "unreadable_login", err.Error())
+		t.deny(se, "unreadable_login", err.Error())
 		return errRefused
 	}
 	if lp.Type != wire.TypeLogin7 {
@@ -265,16 +271,17 @@ func (t *server) handshake(se *session, hs time.Duration) error {
 			se.fatal(d)
 			return errRefused
 		}
-		t.deny(se.ip, "no_login7", wire.TypeName(lp.Type))
+		t.deny(se, "no_login7", wire.TypeName(lp.Type))
 		return errRefused
 	}
 	l, err := wire.ParseLogin7(lp.Payload)
 	if err != nil {
-		t.deny(se.ip, "unreadable_login", err.Error())
+		t.deny(se, "unreadable_login", err.Error())
 		return errRefused
 	}
 	se.mu.Lock()
 	se.user, se.database, se.app = l.User, l.Database, l.AppName
+	se.tap.User(l.User)
 	se.host, se.library, se.integrated = l.Hostname, l.Library, l.Integrated
 	se.mu.Unlock()
 	se.cliReader, se.srvReader = cli, srv
@@ -305,6 +312,10 @@ func (t *server) upgradeClient(se *session, hs time.Duration) error {
 	if t.tlsCfg == nil {
 		return errors.New("tds: tls is required but the listener has no certificate")
 	}
+	// The capture follows the protocol through the upgrade rather than recording
+	// the TLS records it is now wrapped in: the handshake belongs to neither side
+	// of the capture, and the login that follows it is the thing worth having.
+	se.tap.Pause()
 	tun := newTunnel(se.client, se.spid, se.size, t.policy.MaxMessage())
 	tc := tls.Server(tun, t.tlsCfg)
 	// The handshake carries its own deadline rather than borrowing the
@@ -319,7 +330,7 @@ func (t *server) upgradeClient(se *session, hs time.Duration) error {
 	// way round.
 	tun.HandshakeDone()
 	se.cmu.Lock()
-	se.client = tc
+	se.client = se.tap.Client(tc)
 	se.cmu.Unlock()
 	se.mu.Lock()
 	se.secure = true

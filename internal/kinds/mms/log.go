@@ -3,7 +3,6 @@ package mms
 import (
 	"context"
 	"fmt"
-	"net/netip"
 	"strings"
 	"time"
 
@@ -42,7 +41,9 @@ var now = time.Now
 func (t *server) alerts() bool { return t.mc.AlertOnDeny == nil || *t.mc.AlertOnDeny }
 
 // deny records a refusal that is not about something the policy read.
-func (t *server) deny(ip netip.Addr, reason, detail string) {
+func (t *server) deny(c *conn, reason, detail string) {
+	ip := c.ip
+	c.tap.Deny(reason)
 	t.host.Counters().Refuse("mms", reason)
 	if t.alerts() {
 		a := []any{"listener", t.name, "client_ip", ip.String(), "proto", "mms",

@@ -44,6 +44,7 @@ func (t *server) refused(se *session, d Decision, what string) {
 		t.host.Shadow().Record("s7", t.name, d.Reason, d.Rule, what)
 		return
 	}
+	se.tap.Deny(d.Reason)
 	c.Refuse("s7", d.Reason)
 	if !t.alerts() {
 		return
@@ -80,7 +81,9 @@ func (t *server) refused(se *session, d Decision, what string) {
 }
 
 // deny records a refusal that is not about something the policy read.
-func (t *server) deny(ip netip.Addr, reason, detail string) {
+func (t *server) deny(se *session, reason, detail string) {
+	ip := se.ip
+	se.tap.Deny(reason)
 	t.host.Counters().Refuse("s7", reason)
 	if t.alerts() {
 		attrs := []any{"listener", t.name, "client_ip", ip.String(), "proto", "s7",

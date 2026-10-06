@@ -15,6 +15,7 @@ import (
 	"github.com/rom/xproxy/internal/anomaly"
 	"github.com/rom/xproxy/internal/assets"
 	"github.com/rom/xproxy/internal/authorization"
+	"github.com/rom/xproxy/internal/capture"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/correlate"
 	"github.com/rom/xproxy/internal/engineering"
@@ -168,6 +169,10 @@ type session struct {
 	client net.Conn
 	up     net.Conn
 
+	// tap records the session for a pcapng capture, and is nil -- usable, and
+	// doing nothing -- whenever no rule wants this one, which is the usual case.
+	tap *capture.Tap
+
 	cliReader *wire.Reader
 	upReader  *wire.Reader
 
@@ -257,7 +262,8 @@ func (se *session) writeUp(b []byte) error {
 // policy decides on the address, the listener, the pool and the hour. Which
 // functions and which data blocks that client may touch is the `s7` policy's own
 // business, because it is the thing that can say what a write to DB1 means.
-func (t *server) admitClient(ip netip.Addr) string {
+func (t *server) admitClient(se *session) string {
+	ip := se.ip
 	h := t.host
 	return admit.Client(admit.Deps{
 		Lists: h.ThreatIntel(),
@@ -284,7 +290,7 @@ func (t *server) admitClient(ip netip.Addr) string {
 			h.Counters().WouldRefuse("s7", reason)
 			h.Shadow().Record("s7", t.name, reason, rule, detail)
 		},
-		Deny: func(reason, _, detail string) { t.deny(ip, reason, detail) },
+		Deny: func(reason, _, detail string) { t.deny(se, reason, detail) },
 	})
 }
 
@@ -292,6 +298,12 @@ func (t *server) handle(c net.Conn) {
 	defer func() { _ = c.Close() }()
 	ip := netutil.AddrOf(c.RemoteAddr().String())
 	se := &session{t: t, ip: ip, client: c}
+	// Opened before anything can refuse the session, because a refused session is
+	// the one an operator most often wants and it never dials: after that point
+	// there is nothing left to record. A nil tap wraps nothing and writes nothing.
+	se.tap = t.host.Capture().Open("s7", t.name, "", c.RemoteAddr())
+	defer se.tap.Close()
+	se.client = se.tap.Client(c)
 
 	if d := t.policy.Connect(se.sess()); !d.Allow {
 		t.refused(se, d, "connect")
@@ -300,7 +312,7 @@ func (t *server) handle(c net.Conn) {
 	// The imported lists and the estate's authorisation policy, after this
 	// listener's own address lists -- those are local policy about local
 	// clients -- and before the PLC is dialled.
-	if t.admitClient(ip) != "" {
+	if t.admitClient(se) != "" {
 		return
 	}
 	if !t.admit(se) {
@@ -314,13 +326,13 @@ func (t *server) handle(c net.Conn) {
 	se.cliReader = wire.NewReader(se.client, t.maxFrame())
 	first, err := se.cliReader.Next()
 	if err != nil {
-		t.deny(ip, "no_connection_request", err.Error())
+		t.deny(se, "no_connection_request", err.Error())
 		return
 	}
 	_ = se.client.SetReadDeadline(time.Time{})
 	cr, err := wire.ParseCOTP(first.Payload)
 	if err != nil {
-		t.deny(ip, "unreadable_frame", err.Error())
+		t.deny(se, "unreadable_frame", err.Error())
 		return
 	}
 	s := se.sess()
@@ -349,14 +361,14 @@ func (t *server) handle(c net.Conn) {
 	}
 	up, err := t.dial(se)
 	if err != nil {
-		t.deny(ip, "upstream_unavailable", err.Error())
+		t.deny(se, "upstream_unavailable", err.Error())
 		return
 	}
 	defer func() { _ = up.Close() }()
-	se.up = up
+	se.up = se.tap.Upstream(up)
 	se.upReader = wire.NewReader(up, t.maxFrame())
 	if err := se.writeUp(first.Raw); err != nil {
-		t.deny(ip, "upstream_unavailable", err.Error())
+		t.deny(se, "upstream_unavailable", err.Error())
 		return
 	}
 	t.relay(se)
@@ -370,7 +382,7 @@ func (t *server) handle(c net.Conn) {
 func (t *server) admit(se *session) bool {
 	ok, reason := t.gate.Enter(se.ip)
 	if !ok {
-		t.deny(se.ip, reason, "")
+		t.deny(se, reason, "")
 	}
 	return ok
 }
@@ -442,13 +454,13 @@ func (t *server) fromClient(se *session) {
 		f, err := se.cliReader.Next()
 		if err != nil {
 			if !errors.Is(err, io.EOF) && !errors.Is(err, net.ErrClosed) {
-				t.deny(se.ip, "unreadable_frame", err.Error())
+				t.deny(se, "unreadable_frame", err.Error())
 			}
 			return
 		}
 		c, err := wire.ParseCOTP(f.Payload)
 		if err != nil {
-			t.deny(se.ip, "unreadable_frame", err.Error())
+			t.deny(se, "unreadable_frame", err.Error())
 			return
 		}
 		if !c.Known() {

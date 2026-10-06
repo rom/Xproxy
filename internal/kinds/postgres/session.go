@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/assets"
+	"github.com/rom/xproxy/internal/capture"
 	wire "github.com/rom/xproxy/internal/pgwire"
 )
 
@@ -48,6 +49,10 @@ type session struct {
 	ip     netip.Addr
 	client net.Conn
 	up     net.Conn
+
+	// tap records the session for a pcapng capture, and is nil -- usable, and
+	// doing nothing -- whenever no rule wants this one, which is the usual case.
+	tap *capture.Tap
 
 	secure   bool
 	user     string
@@ -215,6 +220,10 @@ func (se *session) upgrade(cfg *tls.Config, timeout time.Duration) error {
 	if err := se.writeClient0([]byte{wire.AllowTLS}); err != nil {
 		return err
 	}
+	// The capture follows the protocol through the upgrade rather than recording
+	// the TLS records it is now wrapped in: the handshake belongs to neither side
+	// of the capture, and the startup packet that follows it is worth having.
+	se.tap.Pause()
 	tc := tls.Server(se.client, cfg)
 	// A context rather than a deadline on the connection: a deadline would have
 	// to be cleared afterwards, and a relay that forgot would kill a live
@@ -227,7 +236,7 @@ func (se *session) upgrade(cfg *tls.Config, timeout time.Duration) error {
 	if err := tc.HandshakeContext(ctx); err != nil {
 		return err
 	}
-	se.client = tc
+	se.client = se.tap.Client(tc)
 	se.secure = true
 	return nil
 }
