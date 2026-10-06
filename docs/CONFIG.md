@@ -103,6 +103,19 @@ else: `xproxyctl listeners` shows the mode as `enforce`, `shadow`, `monitor` or
 enforcing", and a configuration that sets two of them is advised on at load,
 because turning one off then changes nothing.
 
+**Every kind bounds the work one client can start, under the name that says what
+it counts.** There are five, and the difference is the unit rather than the
+setting: `max_sessions` (with `max_sessions_per_client`) where the session is the
+protocol's own unit and outlives a connection — ssh, rdp, vnc, ftp, the database
+wire protocols; `max_connections` where the connection is the unit — modbus,
+iec104, imap, snmp over TCP; `max_clients` for a datagram peer (coap);
+`max_in_flight` for queries rather than connections (dns); and `max_tunnels` for
+the forward proxy's CONNECT tunnels. A datagram kind has no connections to bound
+at all, so `bacnet`, `ntp`, `radius` and `tftp` have `rate_limit` instead, which
+is the only ceiling there is when every packet is its own conversation. A kind
+with none of these would be a kind one client can fill, which is why it is
+checked rather than remembered.
+
 **One name, two meanings, and this is the exception to know about.** On thirteen
 kinds `monitor_only` means "evaluate and do not enforce". On [`iec104`](#iec104)
 it means the protocol's own *monitor direction*: the link carries monitoring and
