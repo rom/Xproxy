@@ -216,7 +216,8 @@ server.
 | `internal/kinds/http` (degradation) | `TestDegradationShapesTheMarked`, `TestDegradationRateIsReal`, `TestDegradationDelayHoldsTheResponse`, `TestDegradationFirstLevelWins` | An unmarked client is untouched — full speed, keep-alive intact, nothing counted — and the same client, once it has read a decoy, gets the real body on a connection the transport reports as not reusable. A 64 KiB response through a 32 KiB/s level arrives whole and takes the time the rate implies, against an unshaped control; a level with a delay holds the response and a clean request beside it is not held; and with a narrow level above a wide one the narrow one takes the request |
 | `internal/kinds/http` (handshake) | `TestHandshakeRefusesADeniedFingerprint`, `TestHandshakeRefusesAFingerprintPrefix`, `TestHandshakeRefusesABannedClient`, `TestHandshakeWithoutAPolicy` | Against a real TLS listener, with the test learning its own JA4 from the proxy that just saw it (the fingerprint table is keyed by the connection's address, which the dialer reports): the exact fingerprint on the deny list fails to negotiate, its prefix form refuses the same client, and the reason never reaches the client — a handshake alert carries no message. A client that earns a ban by reading a decoy gets no handshake on its next connection. Without a `handshake` section the hook refuses nothing and the status reports no policy |
 | `internal/kinds/http` (honeytokens) | `TestHoneytokenFindsThePlantWhereverItComesBack`, `TestHoneytokenIgnoresOrdinaryTraffic`, `TestHoneytokenContainsMatch`, `TestHoneytokenFieldNarrowing`, `TestHoneytokenWorkIsBounded`, `TestHoneytokenValuesFile`, `TestHoneytokenCountersSurviveAReload`, `TestHoneytokenEndToEnd`, `TestHoneytokenValueIsNotLogged` | The two ways a tripwire fails. It has to fire wherever the plant comes back: a bare header, a bearer token, a lower-case scheme, either half of a Basic credential, a cookie, a query parameter encoded or not, a path and a path segment. And it must not fire on anything else: a real-looking key, a prefix of the token, the token with a character appended, the token inside a longer value (for an exact plant), an ordinary page, a session cookie. Then the narrowing (`in` and `headers`), `contains` against `exact` on the same value, a values file with comments and blanks and the refusal of a value too short to be one, counters that survive a reload, and the bounds that keep a client from choosing how much work the check does. End to end: ordinary traffic untouched, the plant refused with the configured status before the origin, the client marked with the token as its route and banned by a threshold-of-one trigger, a `log` token served and counted — and no log line anywhere carrying the value, only the name |
-| `internal/capture` | `TestPad`, `TestOptionSkipsEmpty`, `TestHeaderIsAWholeFile`, `TestPacketTimestampAndTruncation`, `TestWriterReportsFailure`, `TestFlowIsAConversationADissectorAccepts`, `TestFlowSplitsAtTheMTU`, `TestFlowEmptyDirectionWritesNothing`, `TestFlowIPv6`, `TestFlowMixedFamiliesAreCoherent`, `TestChecksumRFC1071`, `TestNewDisabledIsNil`, `TestNoRulesMeansEveryExchange`, `TestRuleSelectors`, `TestAnswerSelectorsAreRetrospective`, `TestFirstMatchingRuleDecides`, `TestMaxFlowsBoundsARule`, `TestPercentSamples`, `TestInactiveCapturerWritesNothing`, `TestWindowClosesItself`, `TestSetActiveClampsToMaxDuration`, `TestCarryFromKeepsTheWindow`, `TestFileIsPrivateAndParsable`, `TestRotationAndPruning`, `TestWriteFailureIsCountedNotLogged`, `TestTruncationIsCounted`, `TestCommentSanitises`, `TestMaxBodyAndRedactReportTheConfiguration`, `TestBadRuleIsRefusedAtBuild`, `TestConcurrentWritesProduceOneWholeFile` | The pcapng files are read back by a parser written for the tests, so every assertion is about the file a pcap tool would open: block framing with the length repeated at both ends, the byte order magic, the section header and interface block that begin every file including a rotated one, microsecond timestamps, the original length of a truncated frame and the request id as a per-packet comment. The synthesised conversation is parsed as Ethernet, IP and TCP and checked as a dissector would: the handshake, data and close in order, IPv4 header and TCP checksums that verify over the pseudo-header, the IP length agreeing with the frame, sequence numbers advancing by the payload with one consumed by SYN and by FIN, a body split at the MTU that reassembles to what was written, an IPv6 conversation, a mixed-family pairing written coherently as IPv6, and RFC 1071 itself. Then the capturer: a disabled section yields a nil every method tolerates, no rules means every exchange, each selector matching and missing, the answer selectors holding the request until there is an answer, the first matching rule deciding, `max_flows` bounding a rule without over-counting, sampling, an idle capturer recording nothing, a window that closes itself, a duration clamped to `max_duration`, a reload carrying the window over unchanged, a file created `0600` under the configured prefix, rotation and pruning to `max_files`, a write failure counted rather than logged, truncation counted and marked in the comment, control characters and length bounded out of a comment, and two hundred concurrent exchanges producing one file whose every block still frames |
+| `internal/capture` | `TestPad`, `TestOptionSkipsEmpty`, `TestHeaderIsAWholeFile`, `TestPacketTimestampAndTruncation`, `TestWriterReportsFailure`, `TestFlowIsAConversationADissectorAccepts`, `TestFlowSplitsAtTheMTU`, `TestFlowEmptyDirectionWritesNothing`, `TestFlowIPv6`, `TestFlowMixedFamiliesAreCoherent`, `TestChecksumRFC1071`, `TestNewDisabledIsNil`, `TestNoRulesMeansEveryExchange`, `TestRuleSelectors`, `TestAnswerSelectorsAreRetrospective`, `TestFirstMatchingRuleDecides`, `TestMaxFlowsBoundsARule`, `TestPercentSamples`, `TestInactiveCapturerWritesNothing`, `TestWindowClosesItself`, `TestSetActiveClampsToMaxDuration`, `TestCarryFromKeepsTheWindow`, `TestFileIsPrivateAndParsable`, `TestRotationAndPruning`, `TestWriteFailureIsCountedNotLogged`, `TestTruncationIsCounted`, `TestCommentSanitises`, `TestMaxBodyAndRedactReportTheConfiguration`, `TestBadRuleIsRefusedAtBuild`, `TestConcurrentWritesProduceOneWholeFile`, `TestASessionIsWrittenWhenARuleWantsIt`, `TestTheSessionCommentNamesTheListenerAndTheLogin`, `TestANilTapIsUsable`, `TestATapRecordsBothDirectionsOfTheConnection`, `TestASessionIsBoundedByMaxBody`, `TestATapSkipsTheHandshakeOfAnInBandUpgrade`, `TestATapNamesASessionTheKindCannot` | The pcapng files are read back by a parser written for the tests, so every assertion is about the file a pcap tool would open: block framing with the length repeated at both ends, the byte order magic, the section header and interface block that begin every file including a rotated one, microsecond timestamps, the original length of a truncated frame and the request id as a per-packet comment. The synthesised conversation is parsed as Ethernet, IP and TCP and checked as a dissector would: the handshake, data and close in order, IPv4 header and TCP checksums that verify over the pseudo-header, the IP length agreeing with the frame, sequence numbers advancing by the payload with one consumed by SYN and by FIN, a body split at the MTU that reassembles to what was written, an IPv6 conversation, a mixed-family pairing written coherently as IPv6, and RFC 1071 itself. Then the capturer: a disabled section yields a nil every method tolerates, no rules means every exchange, each selector matching and missing, the answer selectors holding the request until there is an answer, the first matching rule deciding, `max_flows` bounding a rule without over-counting, sampling, an idle capturer recording nothing, a window that closes itself, a duration clamped to `max_duration`, a reload carrying the window over unchanged, a file created `0600` under the configured prefix, rotation and pruning to `max_files`, a write failure counted rather than logged, truncation counted and marked in the comment, control characters and length bounded out of a comment, and two hundred concurrent exchanges producing one file whose every block still frames. Then the session shape the non-HTTP kinds use: a session selected by listener, kind, client and `denied` and refused by any HTTP-shaped selector; a comment naming the protocol, the listener, the login and the refusal, so a file is readable with no access log beside it; a nil tap wrapping nothing and writing nothing, which is what lets a kind wrap its connections without a branch; both directions recorded from the one wrapped connection, with the directions the proxy's -- a read is traffic towards the server; `max_body_bytes` bounding a session and the file saying the stream was cut; a paused tap covering an in-band TLS handshake so the file holds one readable stream of the protocol and no byte of the handshake; and two unnamed sessions getting distinct names while a kind that has an identifier keeps it |
+| `internal/kinds/mysql` (capture), `internal/proxy` | `TestACapturedSessionHoldsTheStatementsAndTheLogin`, `TestARefusedSessionIsCapturedThoughItNeverDialled`, `TestEveryConnectionKindCanBeCaptured`, `TestTheRequestShapedKindsAreStillRequestShaped` | The wiring rather than the format, through a real listener: a relayed session whose statements, listener and login are in the file, and one refused at the concurrency gate -- which never dialled, so it has no upstream address and no byte of protocol, and is the capture `denied: true` is written for. Both fail if the client wrap or the deferred close is removed. Then the roster: every kind whose registration says it is connection-oriented opens a tap, so a kind added tomorrow fails until an operator can record a session on it; and the four kinds named as request-shaped still are, which catches the list going stale in either direction |
 | `internal/shed` | `TestInflightLevel`, `TestLatencyLevelAndDrain`, `TestReconfigureKeepsSamples` | Class thresholds against the in-flight ratio, hysteresis, latency level from windowed samples, drain after an idle window, reconfiguration |
 | `internal/challenge` | `TestFlow`, `TestVerifyInputs`, `TestPersistentKey`, `TestKeyRotation`, `TestProofDefinition`, `TestScriptSHA256MatchesGo`, `TestTiersAndDevice`, `TestCaptcha` | Page and headers, proof verification, wrong proof and wrong address refused, replay refused, cookie bound to address, expiry and tampering, exemptions, method and input validation, expired nonces, open redirect neutralised, key persistence and rotation, proof definition and form fields shared with the script; proof, captcha, legacy and device-less cookies read back with their tier and device, a forged tier refused, device parsing, the posted device landing in the cookie, devices off; against a fake provider: escalation and always modes, widget, script and policy origins per provider, rejected token, low score, unreachable provider, a pass with the secret, token and address sent, nonce single use, proofs alongside, statistics, missing and empty secrets, hostname binding refusing a token solved for another host, an allowlist overriding the request host and the check turned off |
 | `internal/waf` | `TestBlockSQLi`, `TestDetectMode`, `TestCleanRequestPasses`, `TestBodyInspectionAndReplay`, `TestBodyLimitReject`, `TestResponseInspection`, `TestCustomDirectivesAndBadRules`, `TestOnlyNeededModesCompiled`, `TestRuleStatistics`, `TestLearningProposals`, `TestLearningTableBound`, `TestQuoteTarget`, `TestCRSDirectory`, `TestCRSDirectoryErrors`, `TestProfilesWithoutCRS`, `TestCRSPlugins`, `TestJSONSchemaBlock`, `TestJSONSchemaRequired`, `TestAnomalyDetection`, `TestAnomalyTrackerBound` | CRS blocks injection in query and body, detect mode logs without denying, clean traffic produces no attributes, inspected bodies are replayed intact, 413 above the body limit, response leakage blocked and clean or oversize responses pass intact, custom SecLang rules, compile errors surface, lazy compilation per mode; per rule counters with severity, tags, ordering, top bound and reset; learning proposals below and at `min_hits` with clients, path scoping, unique ids and a global form, the rendered file, and the proposed directives compiled into a new engine stop the same request without leaking outside the path; the entry bound and dropped count; target quoting; a copy of the embedded CRS loaded from a directory blocks injection, reports its source and version, picks up an added rule file and a preferred `crs-setup.conf`, fails on a broken file; missing, file, no setup and no rules directories refused; profiles without the CRS report and learn from custom rules; plugins as loose files and as a checked out repository with a before rule reading a data file and an after rule, selection by name, a missing name and an empty directory refused; JSON body schemas: a valid body replayed, a violation denied with a problem body and attributes, malformed JSON, 413 over the limit, other paths, methods and media types untouched, detect mode logging, the violation counter, `required` refusing a missing body and a wrong media type, a missing schema file; anomaly detection over synthetic windows: baseline built from normal clients, a scanner flagged with its feature and score, block, challenge and log actions, flag expiry, reset and the disabled report; the tracker bound with dropped clients counted |
@@ -540,21 +541,22 @@ packages' tests reach in it):
 
 | Package | Coverage | Statements |
 |---------|----------|------------|
-| `internal/sesslimit` | 100 % | 28 |
-| `internal/bodybudget` | 100 % | 23 |
-| `internal/textsafe` | 100 % | 27 |
-| `internal/acceptgroup` | 100 % | 21 |
-| `internal/securitytxt` | 100 % | 136 |
-| `internal/httpx` | 100 % | 6 |
-| `internal/paths` | 100 % | 3 |
-| `internal/numrange` | 100 % | 33 |
-| `internal/bound` | 100 % | 20 |
-| `internal/safe` | 100 % | 15 |
 | `internal/otlp` | 100 % | 59 |
+| `internal/acceptgroup` | 100 % | 21 |
+| `internal/paths` | 100 % | 3 |
+| `internal/textsafe` | 100 % | 27 |
+| `internal/securitytxt` | 100 % | 136 |
+| `internal/safe` | 100 % | 15 |
+| `internal/numrange` | 100 % | 33 |
+| `internal/httpx` | 100 % | 6 |
+| `internal/bodybudget` | 100 % | 23 |
+| `internal/bound` | 100 % | 20 |
+| `internal/sesslimit` | 100 % | 28 |
 | `internal/qr` | 99 % | 279 |
 | `internal/pop3` | 99 % | 150 |
 | `internal/schedule` | 98 % | 66 |
 | `internal/deception` | 98 % | 111 |
+| `internal/shadow` | 98 % | 54 |
 | `internal/engineering` | 98 % | 96 |
 | `internal/shed` | 98 % | 92 |
 | `internal/coap` | 98 % | 351 |
@@ -564,14 +566,12 @@ packages' tests reach in it):
 | `internal/cache` | 97 % | 132 |
 | `internal/dhcp6` | 97 % | 349 |
 | `internal/limits` | 96 % | 336 |
-| `internal/shadow` | 96 % | 54 |
-| `internal/correlate` | 96 % | 149 |
+| `internal/correlate` | 96 % | 146 |
 | `internal/assets` | 96 % | 509 |
 | `internal/ntp` | 96 % | 385 |
 | `internal/router` | 96 % | 168 |
 | `internal/opcua` | 96 % | 786 |
 | `internal/radius` | 96 % | 299 |
-| `internal/capture` | 96 % | 410 |
 | `internal/config/schema/schemagen` | 96 % | 159 |
 | `internal/attack` | 96 % | 113 |
 | `internal/sessions` | 96 % | 88 |
@@ -591,24 +591,24 @@ packages' tests reach in it):
 | `internal/ntlm` | 94 % | 157 |
 | `internal/eax` | 94 % | 78 |
 | `internal/geoip` | 94 % | 296 |
+| `internal/relay` | 94 % | 62 |
 | `internal/filters/formguard` | 94 % | 139 |
 | `internal/tui` | 93 % | 764 |
 | `internal/tracing` | 93 % | 164 |
 | `internal/challenge` | 93 % | 380 |
-| `internal/netutil` | 93 % | 607 |
 | `internal/dhcp` | 93 % | 299 |
 | `internal/imap` | 93 % | 383 |
+| `internal/netutil` | 93 % | 617 |
 | `internal/filters/botscore` | 93 % | 280 |
-| `internal/admit` | 93 % | 41 |
 | `internal/ftp` | 93 % | 177 |
+| `internal/capture` | 93 % | 557 |
 | `internal/filters/headerguard` | 93 % | 54 |
 | `internal/filters/oidc` | 92 % | 482 |
 | `internal/sqlkind` | 92 % | 282 |
 | `internal/termsafe` | 92 % | 140 |
 | `internal/syslog` | 92 % | 278 |
-| `internal/upstream` | 92 % | 1287 |
 | `internal/access` | 92 % | 479 |
-| `internal/relay` | 92 % | 62 |
+| `internal/upstream` | 92 % | 1287 |
 | `internal/expr` | 92 % | 296 |
 | `internal/filters/authz` | 92 % | 159 |
 | `internal/snmp` | 92 % | 858 |
@@ -628,8 +628,8 @@ packages' tests reach in it):
 | `internal/filters/uploadguard` | 90 % | 295 |
 | `internal/icap` | 90 % | 398 |
 | `internal/filters/bodyrewrite` | 90 % | 125 |
-| `internal/mgmt` | 90 % | 1104 |
 | `internal/rdp` | 90 % | 985 |
+| `internal/mgmt` | 90 % | 1104 |
 | `internal/keysource` | 90 % | 375 |
 | `internal/ban` | 90 % | 535 |
 | `internal/filters/xmlguard` | 90 % | 121 |
@@ -637,16 +637,17 @@ packages' tests reach in it):
 | `internal/jwt` | 90 % | 896 |
 | `internal/filters/accountguard` | 90 % | 604 |
 | `internal/ingress` | 90 % | 801 |
-| `internal/kinds/http` | 90 % | 5280 |
-| `internal/cluster` | 90 % | 629 |
+| `internal/kinds/http` | 90 % | 5289 |
 | `internal/apiinv` | 90 % | 367 |
 | `internal/filters/basicauth` | 90 % | 79 |
+| `internal/cluster` | 90 % | 629 |
 | `internal/dns` | 90 % | 3620 |
 | `internal/filters/samlsp` | 90 % | 366 |
 | `internal/recenc` | 90 % | 125 |
 | `internal/tlsconf` | 90 % | 913 |
 | `internal/mysqlwire` | 90 % | 429 |
 | `internal/dtlsx` | 89 % | 285 |
+| `internal/h3` | 89 % | 173 |
 | `internal/masque` | 89 % | 145 |
 | `internal/logging` | 89 % | 975 |
 | `internal/iec104` | 89 % | 373 |
@@ -654,10 +655,10 @@ packages' tests reach in it):
 | `internal/secret` | 89 % | 133 |
 | `internal/kinds/dns` | 89 % | 316 |
 | `internal/acme` | 89 % | 430 |
-| `internal/admin` | 88 % | 1104 |
-| `internal/h3` | 88 % | 173 |
+| `internal/admin` | 89 % | 1104 |
 | `internal/sessionrec` | 88 % | 328 |
 | `internal/s7` | 88 % | 422 |
+| `internal/admit` | 88 % | 43 |
 | `internal/mqtt` | 88 % | 313 |
 | `internal/tdswire` | 88 % | 385 |
 | `internal/learn` | 88 % | 117 |
@@ -667,77 +668,77 @@ packages' tests reach in it):
 | `internal/saml/samltest` | 88 % | 131 |
 | `internal/filters/flow` | 87 % | 203 |
 | `internal/csaf` | 87 % | 653 |
-| `internal/kinds/dhcp` | 87 % | 826 |
-| `internal/kinds/s7` | 87 % | 1421 |
+| `internal/kinds/dhcp` | 87 % | 828 |
+| `internal/kinds/s7` | 87 % | 1447 |
 | `internal/bacnet` | 87 % | 575 |
 | `internal/rfb` | 86 % | 991 |
 | `internal/pgwire` | 86 % | 309 |
 | `internal/filters/grpcguard` | 86 % | 163 |
 | `internal/mitm` | 86 % | 198 |
 | `internal/intel` | 86 % | 787 |
+| `internal/kinds/mqtt` | 86 % | 853 |
 | `internal/filters/mfagate` | 86 % | 324 |
-| `internal/kinds/mqtt` | 86 % | 847 |
 | `internal/fakeshell` | 86 % | 275 |
-| `internal/kinds/ntp` | 85 % | 1357 |
-| `internal/kinds/pop3` | 85 % | 625 |
-| `internal/kinds/iec104` | 85 % | 2016 |
-| `internal/kinds/ssh` | 85 % | 1931 |
-| `internal/kinds/modbus` | 85 % | 1731 |
+| `internal/kinds/ssh` | 85 % | 1941 |
+| `internal/kinds/ntp` | 85 % | 1356 |
+| `internal/kinds/modbus` | 85 % | 1747 |
 | `internal/transparent` | 85 % | 73 |
+| `internal/kinds/iec104` | 85 % | 2041 |
 | `internal/packs` | 85 % | 411 |
-| `internal/kinds/opcua` | 84 % | 1501 |
-| `internal/kinds/mms` | 84 % | 1310 |
-| `internal/kinds/ldap` | 84 % | 935 |
+| `internal/kinds/opcua` | 85 % | 1507 |
+| `internal/kinds/mms` | 84 % | 1315 |
+| `internal/kinds/pop3` | 84 % | 641 |
 | `internal/saml` | 84 % | 883 |
-| `internal/kinds/ntske` | 84 % | 349 |
-| `internal/kinds/tftp` | 84 % | 927 |
-| `internal/kinds/tacacs` | 84 % | 879 |
+| `internal/kinds/ldap` | 84 % | 946 |
 | `internal/amqpwire` | 84 % | 822 |
+| `internal/kinds/tftp` | 84 % | 926 |
 | `internal/filters/yarascan` | 84 % | 139 |
-| `internal/proxy` | 83 % | 2628 |
+| `internal/kinds/tacacs` | 83 % | 893 |
+| `internal/proxy` | 83 % | 2646 |
 | `internal/mms` | 83 % | 869 |
 | `internal/signerd` | 83 % | 135 |
 | `internal/scim` | 83 % | 605 |
-| `internal/kinds/imap` | 82 % | 890 |
+| `internal/kinds/ntske` | 83 % | 363 |
+| `internal/config` | 82 % | 10067 |
 | `internal/listener` | 82 % | 62 |
-| `internal/config` | 82 % | 9994 |
-| `internal/kinds/coap` | 82 % | 904 |
-| `internal/kinds/kkdcp` | 82 % | 614 |
-| `internal/kinds/snmp` | 82 % | 1895 |
-| `internal/kinds/postgres` | 82 % | 975 |
+| `internal/kinds/coap` | 82 % | 906 |
+| `internal/kinds/snmp` | 82 % | 1908 |
+| `internal/kinds/imap` | 82 % | 906 |
+| `internal/kinds/kkdcp` | 82 % | 616 |
 | `internal/kerberos` | 81 % | 757 |
-| `internal/kinds/redis` | 81 % | 997 |
+| `internal/kinds/postgres` | 81 % | 985 |
 | `internal/ech` | 81 % | 139 |
+| `internal/kinds/redis` | 81 % | 1007 |
 | `internal/yara` | 81 % | 777 |
-| `internal/kinds/dhcp6` | 81 % | 895 |
-| `internal/kinds/radius` | 81 % | 763 |
-| `internal/kinds/tds` | 80 % | 682 |
+| `internal/kinds/dhcp6` | 81 % | 897 |
+| `internal/kinds/radius` | 81 % | 765 |
+| `internal/kinds/tds` | 80 % | 692 |
 | `internal/kinds/udp` | 80 % | 251 |
-| `internal/kinds/amqp` | 80 % | 1050 |
-| `internal/kinds/telnet` | 79 % | 514 |
+| `internal/kinds/amqp` | 80 % | 1060 |
+| `internal/kinds/telnet` | 79 % | 523 |
 | `internal/unixsock` | 79 % | 24 |
-| `internal/kinds/mysql` | 79 % | 1067 |
+| `internal/kinds/mysql` | 79 % | 1077 |
 | `internal/asciicast` | 79 % | 113 |
 | `internal/replay` | 79 % | 558 |
-| `internal/daemon` | 78 % | 281 |
 | `internal/simulate` | 78 % | 812 |
-| `cmd/xproxyctl` | 78 % | 2775 |
+| `internal/daemon` | 78 % | 281 |
+| `cmd/xproxyctl` | 78 % | 2791 |
 | `internal/streamscan` | 78 % | 40 |
 | `internal/telnet` | 78 % | 102 |
 | `internal/webauthn` | 77 % | 563 |
-| `internal/kinds/rdp` | 77 % | 1112 |
-| `internal/kinds/bacnet` | 76 % | 805 |
+| `internal/kinds/rdp` | 77 % | 1125 |
+| `internal/kinds/bacnet` | 76 % | 807 |
 | `internal/sftp` | 76 % | 148 |
 | `internal/kinds/forward` | 76 % | 1857 |
-| `internal/kinds/syslog` | 76 % | 335 |
-| `internal/kinds/vnc` | 75 % | 1014 |
-| `internal/kinds/tcp` | 75 % | 510 |
-| `internal/kinds/smtp` | 75 % | 509 |
-| `internal/kinds/ftp` | 74 % | 989 |
+| `internal/kinds/syslog` | 76 % | 341 |
+| `internal/kinds/vnc` | 76 % | 1023 |
+| `internal/kinds/ftp` | 75 % | 999 |
+| `internal/kinds/smtp` | 75 % | 516 |
+| `internal/kinds/tcp` | 74 % | 530 |
 | `internal/proxytest` | 71 % | 51 |
 | `internal/sandbox` | the mechanisms run in a confined child that cannot write a coverage file; the child's probes assert the effects instead (excluded from the gate and from the coverage run) | |
 | `cmd/xproxy-fleet` | 92 % from its own tests (not part of the gate) | |
-| **core packages together** | **86.1 % of 111427 statements** | |
+| **core packages together** | **86.0 % of 112011 statements** | |
 
 Not covered: the descriptor handover of socket activation (the matching
 and the refusals are tested; inheriting a real descriptor needs
