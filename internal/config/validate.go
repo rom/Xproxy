@@ -3151,9 +3151,18 @@ func (v *validator) capture(c *Capture, routes map[string]bool) {
 			"with xproxyctl capture start and off again")
 	}
 	names := map[string]bool{}
+	var sessionRules int
 	for i := range c.Rules {
 		r := &c.Rules[i]
 		q := fmt.Sprintf("%s.rules[%d]", p, i)
+		if len(r.Listeners) > 0 || len(r.Kinds) > 0 {
+			sessionRules++
+		}
+		for j, k := range r.Kinds {
+			if _, ok := listener.RoleOf(strings.ToLower(strings.TrimSpace(k))); !ok {
+				v.errf("%s.kinds[%d]: %q is not a listener kind", q, j, k)
+			}
+		}
 		if r.Name != "" {
 			if names[r.Name] {
 				v.errf("%s.name: duplicate %q", q, r.Name)
@@ -3198,6 +3207,15 @@ func (v *validator) capture(c *Capture, routes map[string]bool) {
 		if r.MaxFlows < 0 || r.MaxFlows > 10_000_000 {
 			v.errf("%s.max_flows: must be between 0 and 10000000", q)
 		}
+	}
+	// A session is payload: there is no head to keep the way an HTTP request
+	// has one, so `bodies: false` records nothing at all for a relayed or gated
+	// session. Saying so beats an operator starting a capture for a database
+	// listener and finding an empty file.
+	if sessionRules > 0 && !c.Bodies {
+		v.warnf("capture has %d rule(s) selecting sessions by listener or kind, and capture.bodies is off: "+
+			"a session is payload rather than a head, so nothing is recorded for one. Set bodies: true "+
+			"(with a redact list) to capture sessions", sessionRules)
 	}
 }
 

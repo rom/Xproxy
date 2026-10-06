@@ -30,12 +30,19 @@ type Exchange struct {
 	Start          time.Time
 	Client, Server netip.AddrPort
 	RequestID      string
-	Route          string
-	Host           string
-	Method         string
-	Path           string
-	Status         int
-	Denied         string
+	// Kind and Listener are the listener this arrived on and the protocol
+	// it speaks. They are what a rule selects on for a session that has
+	// no host, route, method or path -- which is every protocol but HTTP.
+	Kind, Listener string
+	// User is the login the protocol named, where it named one. HTTP
+	// carries identity in its headers and leaves this empty.
+	User   string
+	Route  string
+	Host   string
+	Method string
+	Path   string
+	Status int
+	Denied string
 	// Request and Response are the serialised head and, when bodies are
 	// captured, the bytes that followed it.
 	Request  []byte
@@ -44,6 +51,50 @@ type Exchange struct {
 	// body, so a reader knows the stream is short rather than that the
 	// client stopped.
 	RequestTruncated, ResponseTruncated bool
+}
+
+// subject is what a rule decides about.
+//
+// An HTTP exchange is identified by what was asked for; a relayed session has
+// none of that -- there is no host, route, method or path before a byte is read --
+// and is identified by the listener it arrived on, the protocol that listener
+// speaks, and where it came from. One struct rather than two means the selectors
+// they share (the client networks, denied, the sample, the bound) are written
+// once and behave the same either way.
+type subject struct {
+	kind, listener string
+	host, route    string
+	method, path   string
+	client         netip.Addr
+	status         int
+	reason         string
+	// session marks a subject with no HTTP identity, so a rule that
+	// selects on one is not quietly matching every session as well.
+	session bool
+}
+
+// Session is one relayed or gated session: the bytes each way as the proxy
+// parsed them, which is the view a capture on the wire cannot produce when the
+// proxy terminates TLS.
+//
+// The two directions are written as one blob each rather than interleaved, the
+// same way an HTTP request and response are. A session's order is recoverable
+// from the protocol; what a reader needs is the bytes.
+type Session struct {
+	Start          time.Time
+	Client, Server netip.AddrPort
+	// Kind is the listener kind ("mysql"), Listener its configured name.
+	Kind, Listener string
+	// ID is the session identifier the access log and the session table
+	// use, so a capture can be found from a log line and the other way.
+	ID string
+	// User is the login the protocol named, where it named one.
+	User string
+	// Denied is the refusal reason, empty when the session was allowed.
+	Denied string
+	// ToServer and ToClient are the bytes each way, bounded by max_body.
+	ToServer, ToClient                   []byte
+	ToServerTruncated, ToClientTruncated bool
 }
 
 // Stats is what the management views report.
@@ -83,6 +134,9 @@ type rule struct {
 	statuses map[int]bool
 	classes  map[int]bool
 	reasons  map[string]bool
+	// listeners and kinds select a session, which has no other identity.
+	listeners map[string]bool
+	kinds     map[string]bool
 	// denied selects by whether the proxy refused at all, independent of
 	// the reason: "capture what I turned away" is the common ask.
 	denied  bool
@@ -194,6 +248,18 @@ func compileRule(c *config.CaptureRule) (*rule, error) {
 			r.reasons[n] = true
 		}
 	}
+	if len(c.Listeners) > 0 {
+		r.listeners = map[string]bool{}
+		for _, n := range c.Listeners {
+			r.listeners[strings.TrimSpace(n)] = true
+		}
+	}
+	if len(c.Kinds) > 0 {
+		r.kinds = map[string]bool{}
+		for _, n := range c.Kinds {
+			r.kinds[strings.ToLower(strings.TrimSpace(n))] = true
+		}
+	}
 	return r, nil
 }
 
@@ -249,11 +315,30 @@ func (c *Capturer) SetActive(on bool, d time.Duration) {
 // be captured. The caller asks before it starts buffering bodies, so a
 // request nobody wants costs nothing; the selectors on the answer are
 // not decided here, because there is no answer yet.
-func (c *Capturer) Wants(host, route, method, path string, client netip.Addr) bool {
+func (c *Capturer) Wants(listener, host, route, method, path string, client netip.Addr) bool {
 	if !c.Active() {
 		return false
 	}
-	if c.match(host, route, method, path, client, 0, "", true) == nil {
+	s := subject{kind: "http", listener: listener, host: host, route: route,
+		method: method, path: path, client: client}
+	if c.match(s, true) == nil {
+		c.skipped.Add(1)
+		return false
+	}
+	return true
+}
+
+// WantsSession is Wants for a protocol that has no host, route, method or path:
+// the listener it arrived on, what that listener speaks, and where it came from
+// are everything that is true of a session before a byte is read.
+//
+// A nil Capturer is the usual case -- no capture section at all -- so it answers
+// rather than panicking, which is what lets a kind ask without first checking.
+func (c *Capturer) WantsSession(kind, listener string, client netip.Addr) bool {
+	if c == nil || !c.Active() {
+		return false
+	}
+	if c.match(subject{kind: kind, listener: listener, client: client, session: true}, true) == nil {
 		c.skipped.Add(1)
 		return false
 	}
@@ -264,16 +349,33 @@ func (c *Capturer) Wants(host, route, method, path string, client netip.Addr) bo
 // answer is known, pre is set and the selectors that need one are left
 // out rather than guessed at: a rule for "the 403s" has to hold the
 // request until there is a status to compare.
-func (c *Capturer) match(host, route, method, path string, client netip.Addr, status int, reason string, pre bool) *rule {
+func (c *Capturer) match(s subject, pre bool) *rule {
 	for _, r := range c.rules {
-		if r.selects(host, route, method, path, client, status, reason, pre) {
+		if r.selects(s, pre) {
 			return r
 		}
 	}
 	return nil
 }
 
-func (r *rule) selects(host, route, method, path string, client netip.Addr, status int, reason string, pre bool) bool {
+func (r *rule) selects(s subject, pre bool) bool {
+	// The two selectors every subject can answer.
+	if r.listeners != nil && !r.listeners[s.listener] {
+		return false
+	}
+	if r.kinds != nil && !r.kinds[strings.ToLower(s.kind)] {
+		return false
+	}
+	// A rule written about what was asked for -- a host, a route, a method, a
+	// path -- is a rule about an HTTP exchange. A session has none of those,
+	// and treating "no host" as "any host" would make such a rule capture
+	// every session on the estate as well as the requests it was written for.
+	if s.session && (r.routes != nil || r.methods != nil || len(r.hosts) > 0 ||
+		len(r.suffixes) > 0 || len(r.prefixes) > 0 || r.statuses != nil || r.classes != nil) {
+		return false
+	}
+	host, route, method, path := s.host, s.route, s.method, s.path
+	client, status, reason := s.client, s.status, s.reason
 	if r.routes != nil && !r.routes[route] {
 		return false
 	}
@@ -376,7 +478,13 @@ func (c *Capturer) Write(e *Exchange) {
 	if !c.Active() {
 		return
 	}
-	r := c.match(e.Host, e.Route, e.Method, e.Path, e.Client.Addr(), e.Status, e.Denied, false)
+	kind := e.Kind
+	if kind == "" {
+		kind = "http"
+	}
+	r := c.match(subject{kind: kind, listener: e.Listener, host: e.Host, route: e.Route,
+		method: e.Method, path: e.Path, client: e.Client.Addr(), status: e.Status,
+		reason: e.Denied}, false)
 	if r == nil {
 		c.skipped.Add(1)
 		return
@@ -435,6 +543,21 @@ func comment(e *Exchange) string {
 	var b strings.Builder
 	b.WriteString("request_id=")
 	b.WriteString(sanitise(e.RequestID))
+	// The protocol and the listener, for a capture that is not HTTP: a reader
+	// opening the file months later has no access log beside it, and "which of
+	// my twenty listeners was this" is the first question.
+	if e.Kind != "" && e.Kind != "http" {
+		b.WriteString(" kind=")
+		b.WriteString(sanitise(e.Kind))
+	}
+	if e.Listener != "" {
+		b.WriteString(" listener=")
+		b.WriteString(sanitise(e.Listener))
+	}
+	if e.User != "" {
+		b.WriteString(" user=")
+		b.WriteString(sanitise(e.User))
+	}
 	if e.Route != "" {
 		b.WriteString(" route=")
 		b.WriteString(sanitise(e.Route))

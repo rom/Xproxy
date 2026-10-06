@@ -75,7 +75,7 @@ func TestNewDisabledIsNil(t *testing.T) {
 
 func TestNoRulesMeansEveryExchange(t *testing.T) {
 	cp := newTestCapturer(t, testConfig(t))
-	if !cp.Wants("any.example", "whatever", "GET", "/anything", netip.MustParseAddr("192.0.2.1")) {
+	if !cp.Wants("edge", "any.example", "whatever", "GET", "/anything", netip.MustParseAddr("192.0.2.1")) {
 		t.Error("a section with no rules refused an exchange; it should capture all of them")
 	}
 }
@@ -115,7 +115,7 @@ func TestRuleSelectors(t *testing.T) {
 			if !ip.IsValid() {
 				ip = client
 			}
-			if got := cp.Wants(tc.host, tc.route, tc.meth, tc.path, ip); got != tc.want {
+			if got := cp.Wants("edge", tc.host, tc.route, tc.meth, tc.path, ip); got != tc.want {
 				t.Errorf("Wants(host=%q route=%q method=%q path=%q ip=%s) = %v, want %v",
 					tc.host, tc.route, tc.meth, tc.path, ip, got, tc.want)
 			}
@@ -147,7 +147,7 @@ func TestAnswerSelectorsAreRetrospective(t *testing.T) {
 			cp := newTestCapturer(t, testConfig(t, tc.rule))
 			// The request has to be held: the selector cannot be
 			// decided until the proxy has answered.
-			if !cp.Wants("h", "r", "GET", "/", netip.MustParseAddr("198.51.100.7")) {
+			if !cp.Wants("edge", "h", "r", "GET", "/", netip.MustParseAddr("198.51.100.7")) {
 				t.Fatal("the request was turned down before there was an answer to select on")
 			}
 			cp.Write(exchange("h", "r", "GET", "/", tc.status, tc.denied))
@@ -212,7 +212,7 @@ func TestPercentSamples(t *testing.T) {
 func TestInactiveCapturerWritesNothing(t *testing.T) {
 	cp := newTestCapturer(t, testConfig(t))
 	cp.SetActive(false, 0)
-	if cp.Wants("h", "r", "GET", "/", netip.MustParseAddr("198.51.100.7")) {
+	if cp.Wants("edge", "h", "r", "GET", "/", netip.MustParseAddr("198.51.100.7")) {
 		t.Error("an idle capturer wants an exchange")
 	}
 	cp.Write(exchange("h", "r", "GET", "/", 200, ""))

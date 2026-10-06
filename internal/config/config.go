@@ -11070,6 +11070,17 @@ type CaptureRule struct {
 	Reasons []string `yaml:"reasons"`
 	// Denied selects every refusal, whatever the reason.
 	Denied bool `yaml:"denied"`
+	// Listeners are listener names, and Kinds listener kinds. They are
+	// how a rule selects a session on a protocol that has no hosts,
+	// routes, methods or paths: everything but the HTTP listeners.
+	//
+	// An HTTP exchange is identified by what was asked for; a relayed
+	// session is identified by which listener it arrived on and which
+	// protocol that listener speaks, because there is nothing else that
+	// is true of it before a byte is read. Both lists also apply to HTTP
+	// exchanges, where the listener is the one the request arrived on.
+	Listeners []string `yaml:"listeners"`
+	Kinds     []string `yaml:"kinds"`
 	// Percent samples the exchanges this rule would take. Default 100.
 	Percent int `yaml:"percent"`
 	// MaxFlows bounds how many exchanges this rule ever writes, so a
