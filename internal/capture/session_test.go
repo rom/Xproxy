@@ -126,7 +126,7 @@ func TestTheSessionCommentNamesTheListenerAndTheLogin(t *testing.T) {
 // which is what lets a kind wrap its connections without a branch.
 func TestANilTapIsUsable(t *testing.T) {
 	var cp *Capturer
-	tap := cp.Open("mysql", "db", "sess", netip.MustParseAddrPort("198.51.100.7:1"))
+	tap := cp.Open("mysql", "db", "sess", net.TCPAddrFromAddrPort(netip.MustParseAddrPort("198.51.100.7:1")))
 	if tap != nil {
 		t.Fatal("a nil capturer opened a tap")
 	}
@@ -139,7 +139,7 @@ func TestANilTapIsUsable(t *testing.T) {
 		t.Error("a nil tap wrapped the upstream")
 	}
 	tap.User("nobody")
-	tap.Close("")
+	tap.Close()
 }
 
 // And when it is recording, what passed through the connection is what the file
@@ -154,7 +154,7 @@ func TestATapRecordsBothDirectionsOfTheConnection(t *testing.T) {
 	cfg := testConfig(t, config.CaptureRule{Kinds: []string{"redis"}})
 	cfg.Bodies = true
 	cp := newTestCapturer(t, cfg)
-	tap := cp.Open("redis", "cache", "sess-9", netip.MustParseAddrPort("198.51.100.7:5555"))
+	tap := cp.Open("redis", "cache", "sess-9", net.TCPAddrFromAddrPort(netip.MustParseAddrPort("198.51.100.7:5555")))
 	if tap == nil {
 		t.Fatal("no tap for a session the rule names")
 	}
@@ -188,7 +188,7 @@ func TestATapRecordsBothDirectionsOfTheConnection(t *testing.T) {
 	<-done
 
 	tap.User("app")
-	tap.Close("")
+	tap.Close()
 	cp.Flush()
 	out := files(t, cfg.Directory)
 	for _, want := range []string{"GET key", "+OK", "user=app", "listener=cache", "kind=redis"} {
@@ -209,7 +209,7 @@ func TestASessionIsBoundedByMaxBody(t *testing.T) {
 	cfg.Bodies = true
 	cfg.MaxBodyBytes = 8
 	cp := newTestCapturer(t, cfg)
-	tap := cp.Open("mysql", "db", "sess", netip.MustParseAddrPort("198.51.100.7:1"))
+	tap := cp.Open("mysql", "db", "sess", net.TCPAddrFromAddrPort(netip.MustParseAddrPort("198.51.100.7:1")))
 	if tap == nil {
 		t.Fatal("no tap")
 	}
@@ -225,7 +225,7 @@ func TestASessionIsBoundedByMaxBody(t *testing.T) {
 		}
 		read += n
 	}
-	tap.Close("")
+	tap.Close()
 	cp.Flush()
 	if got := cp.Stats().Truncated; got != 1 {
 		t.Errorf("truncated = %d, want 1", got)
@@ -249,4 +249,84 @@ func printable(s string) string {
 		out = append(out, r)
 	}
 	return string(out)
+}
+
+// A protocol that upgrades in band -- MySQL's CLIENT_SSL, STARTTLS, FTP's AUTH
+// TLS -- would otherwise record its first two packets in the clear and then the
+// TLS records of everything after, which is the one shape nothing can read. Pause
+// covers the handshake, and the next Client picks the plaintext up again, so what
+// the file holds is one continuous stream of the protocol.
+func TestATapSkipsTheHandshakeOfAnInBandUpgrade(t *testing.T) {
+	cfg := testConfig(t, config.CaptureRule{Kinds: []string{"mysql"}})
+	cfg.Bodies = true
+	cp := newTestCapturer(t, cfg)
+	tap := cp.Open("mysql", "db", "", net.TCPAddrFromAddrPort(netip.MustParseAddrPort("198.51.100.7:1")))
+	if tap == nil {
+		t.Fatal("no tap for a session the rule names")
+	}
+	proxySide, clientSide := net.Pipe()
+	t.Cleanup(func() { _ = proxySide.Close(); _ = clientSide.Close() })
+
+	read := func(c net.Conn, send string) {
+		t.Helper()
+		go func() { _, _ = clientSide.Write([]byte(send)) }()
+		buf := make([]byte, len(send))
+		for n := 0; n < len(send); {
+			m, err := c.Read(buf[n:])
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			n += m
+		}
+	}
+
+	// Before the upgrade: the short login, in the clear.
+	wrapped := tap.Client(proxySide)
+	read(wrapped, "login-ssl")
+	// The handshake itself still passes through the same wrapper, which is why
+	// stopping it has to be a flag rather than unwrapping.
+	tap.Pause()
+	read(wrapped, "~ciphertext~")
+	// And the upgraded connection, whose plaintext is the rest of the protocol.
+	// A real kind passes the tls.Conn here; what matters is that it is a
+	// different connection object layered over the one above.
+	read(tap.Client(wrapped), "SELECT 1")
+
+	tap.Close()
+	cp.Flush()
+	out := files(t, cfg.Directory)
+	for _, want := range []string{"login-ssl", "SELECT 1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the capture does not hold %q, which was in the clear", want)
+		}
+	}
+	if strings.Contains(out, "ciphertext") {
+		t.Error("the capture holds the bytes of the TLS handshake")
+	}
+}
+
+// Only the nine kinds that register with the session table have an identifier of
+// their own. The other twenty-seven pass none, and a file holding several of their
+// sessions has to still say which packet belongs to which, so the tap names them.
+func TestATapNamesASessionTheKindCannot(t *testing.T) {
+	cfg := testConfig(t, config.CaptureRule{Kinds: []string{"redis"}})
+	cfg.Bodies = true
+	cp := newTestCapturer(t, cfg)
+	client := net.TCPAddrFromAddrPort(netip.MustParseAddrPort("198.51.100.7:5555"))
+	first, second := cp.Open("redis", "cache", "", client), cp.Open("redis", "cache", "", client)
+	if first == nil || second == nil {
+		t.Fatal("no tap for a session the rule names")
+	}
+	if first.s.ID == "" || second.s.ID == "" {
+		t.Fatal("an unnamed session stayed unnamed")
+	}
+	if first.s.ID == second.s.ID {
+		t.Errorf("two sessions share the name %q", first.s.ID)
+	}
+	// And a kind that does have one keeps it, because that is the identifier the
+	// session table and the access log already carry.
+	if got := cp.Open("redis", "cache", "abc123", client); got.s.ID != "abc123" {
+		t.Errorf("the tap renamed the session %q", got.s.ID)
+	}
 }

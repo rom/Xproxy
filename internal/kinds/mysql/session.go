@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rom/xproxy/internal/capture"
 	wire "github.com/rom/xproxy/internal/mysqlwire"
 )
 
@@ -26,6 +27,10 @@ type session struct {
 	ip     netip.Addr
 	client net.Conn
 	up     net.Conn
+
+	// tap records the session for a pcapng capture, and is nil -- usable, and
+	// doing nothing -- whenever no rule wants this one, which is the usual case.
+	tap *capture.Tap
 
 	cliReader, srvReader *wire.Reader
 
@@ -155,13 +160,17 @@ func (se *session) upgrade(cfg *tls.Config, short wire.Packet, hs time.Duration)
 
 	se.cmu.Lock()
 	defer se.cmu.Unlock()
+	// The capture follows the protocol through the upgrade rather than recording
+	// the TLS records it is now wrapped in: the handshake belongs to neither side
+	// of the capture, and the login that follows it is the thing worth having.
+	se.tap.Pause()
 	tc := tls.Server(se.client, cfg)
 	cctx, ccancel := handshakeContext(hs)
 	defer ccancel()
 	if err := tc.HandshakeContext(cctx); err != nil {
 		return err
 	}
-	se.client = tc
+	se.client = se.tap.Client(tc)
 	se.mu.Lock()
 	se.secure = true
 	se.mu.Unlock()

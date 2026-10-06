@@ -1,6 +1,8 @@
 package capture
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"net"
 	"net/netip"
 	"sync"
@@ -67,7 +69,7 @@ func (c *Capturer) WriteSession(s *Session) {
 // Tap are both usable and do nothing, which is what lets a kind write
 //
 //	tap := host.Capture().Open("mysql", listener, id, client)
-//	defer tap.Close(reason)
+//	defer tap.Close()
 //	conn = tap.Client(conn)
 //
 // without a branch for the ordinary case where nothing is recording.
@@ -77,12 +79,19 @@ type Tap struct {
 	s  Session
 	// to and from keep the first max bytes each way.
 	to, from *boundedBuf
+	// paused is set while an in-band TLS handshake runs over a connection this
+	// tap is already wrapping (see Pause).
+	paused bool
 }
 
 // Open returns a Tap when a rule wants this session, and nil otherwise. Nil is
 // the common answer: no capture section, not recording, or no rule interested.
-func (c *Capturer) Open(kind, listener, id string, client netip.AddrPort) *Tap {
-	if c == nil || !c.WantsSession(kind, listener, client.Addr()) {
+//
+// client is the connection's remote address rather than a parsed one, because
+// that is what every kind has in hand at the moment it accepts.
+func (c *Capturer) Open(kind, listener, id string, client net.Addr) *Tap {
+	cl := addrPort(client)
+	if c == nil || !c.WantsSession(kind, listener, cl.Addr()) {
 		return nil
 	}
 	n := c.MaxBody()
@@ -95,12 +104,45 @@ func (c *Capturer) Open(kind, listener, id string, client netip.AddrPort) *Tap {
 		c.skipped.Add(1)
 		return nil
 	}
+	if id == "" {
+		// Most kinds have no session identifier of their own -- only the nine
+		// that register with the session table do -- and a capture holding
+		// several sessions is unreadable without one. So the tap names the
+		// session when the kind cannot.
+		id = newID()
+	}
 	return &Tap{
 		c:    c,
-		s:    Session{Start: time.Now(), Client: client, Kind: kind, Listener: listener, ID: id},
+		s:    Session{Start: time.Now(), Client: cl, Kind: kind, Listener: listener, ID: id},
 		to:   &boundedBuf{max: n},
 		from: &boundedBuf{max: n},
 	}
+}
+
+// newID is eight random bytes as hex, the same shape the session table uses, so
+// that a kind which has an identifier and one which does not read alike. Random
+// rather than sequential because it appears in a file an operator may share.
+func newID() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// Only a broken kernel CSPRNG gets here, and a capture is not worth
+		// failing a session over: the start time still separates two sessions.
+		return "unnamed"
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// addrPort is a net.Addr as a comparable address, or the zero value when it is
+// not an IP address at all -- a Unix socket, or a kind's own stub.
+func addrPort(a net.Addr) netip.AddrPort {
+	if a == nil {
+		return netip.AddrPort{}
+	}
+	p, err := netip.ParseAddrPort(a.String())
+	if err != nil {
+		return netip.AddrPort{}
+	}
+	return netip.AddrPortFrom(p.Addr().Unmap(), p.Port())
 }
 
 // Client wraps the client's connection: what is read from it goes to the server,
@@ -109,7 +151,28 @@ func (t *Tap) Client(c net.Conn) net.Conn {
 	if t == nil {
 		return c
 	}
-	return &tapped{Conn: c, read: t.to, wrote: t.from, mu: &t.mu}
+	t.mu.Lock()
+	t.paused = false
+	t.mu.Unlock()
+	return &tapped{t: t, Conn: c, read: t.to, wrote: t.from}
+}
+
+// Pause stops recording until the next Client.
+//
+// It is what a protocol that upgrades in band -- MySQL's CLIENT_SSL, Postgres's
+// SSLRequest, STARTTLS, FTP's AUTH TLS -- calls before the handshake, so that the
+// capture holds the protocol the proxy reads and not the TLS records it arrives
+// in. The wrapper already in place keeps serving the handshake, it just stops
+// copying; Client on the upgraded connection resumes, and the bytes of the
+// handshake itself belong to neither. Without it a capture of an upgraded session
+// would be two readable packets followed by ciphertext.
+func (t *Tap) Pause() {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	t.paused = true
+	t.mu.Unlock()
 }
 
 // Upstream wraps the server's connection and records its address, which is not
@@ -118,9 +181,9 @@ func (t *Tap) Upstream(c net.Conn) net.Conn {
 	if t == nil {
 		return c
 	}
-	if a, err := netip.ParseAddrPort(c.RemoteAddr().String()); err == nil {
+	if a := addrPort(c.RemoteAddr()); a.IsValid() {
 		t.mu.Lock()
-		t.s.Server = netip.AddrPortFrom(a.Addr().Unmap(), a.Port())
+		t.s.Server = a
 		t.mu.Unlock()
 	}
 	// The same two buffers, from the other end: what this connection reads came
@@ -128,6 +191,25 @@ func (t *Tap) Upstream(c net.Conn) net.Conn {
 	// conns would double every byte, so only the client side records -- this one
 	// exists for the address and for a kind that has no client conn to wrap.
 	return c
+}
+
+// Deny records why the session was turned away, if it has not been turned away
+// already.
+//
+// The first reason rather than the last, because it is the one that ended the
+// session; anything after it is a consequence. It lives here rather than in each
+// kind's own session state because every kind needs it and none needs it for
+// anything else: a kind calls this from the one or two funnels its refusals
+// already go through, and has no field to add.
+func (t *Tap) Deny(reason string) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	if t.s.Denied == "" {
+		t.s.Denied = reason
+	}
+	t.mu.Unlock()
 }
 
 // User records the login once the protocol has named one.
@@ -140,15 +222,15 @@ func (t *Tap) User(name string) {
 	t.mu.Unlock()
 }
 
-// Close writes the session. reason is the refusal, or empty when the session was
-// allowed, and it is the selector an operator capturing "what I turned away" uses.
-func (t *Tap) Close(reason string) {
+// Close writes the session, whether it was allowed or refused: `denied: true` is
+// the rule an operator writes most often, so a refusal is a capture rather than
+// the absence of one.
+func (t *Tap) Close() {
 	if t == nil {
 		return
 	}
 	t.mu.Lock()
 	s := t.s
-	s.Denied = reason
 	s.ToServer, s.ToServerTruncated = t.to.bytes()
 	s.ToClient, s.ToClientTruncated = t.from.bytes()
 	t.mu.Unlock()
@@ -158,16 +240,18 @@ func (t *Tap) Close(reason string) {
 // tapped copies what passes through a connection into two bounded buffers.
 type tapped struct {
 	net.Conn
+	t           *Tap
 	read, wrote *boundedBuf
-	mu          *sync.Mutex
 }
 
 func (t *tapped) Read(p []byte) (int, error) {
 	n, err := t.Conn.Read(p)
 	if n > 0 {
-		t.mu.Lock()
-		t.read.add(p[:n])
-		t.mu.Unlock()
+		t.t.mu.Lock()
+		if !t.t.paused {
+			t.read.add(p[:n])
+		}
+		t.t.mu.Unlock()
 	}
 	return n, err
 }
@@ -175,9 +259,11 @@ func (t *tapped) Read(p []byte) (int, error) {
 func (t *tapped) Write(p []byte) (int, error) {
 	n, err := t.Conn.Write(p)
 	if n > 0 {
-		t.mu.Lock()
-		t.wrote.add(p[:n])
-		t.mu.Unlock()
+		t.t.mu.Lock()
+		if !t.t.paused {
+			t.wrote.add(p[:n])
+		}
+		t.t.mu.Unlock()
 	}
 	return n, err
 }
