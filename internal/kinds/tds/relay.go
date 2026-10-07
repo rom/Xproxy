@@ -576,6 +576,7 @@ func (t *server) decideStatements(se *session, text, what string) (ok, fatal boo
 		se.statements++
 		d := t.policy.Statement(se.sess(), st, text)
 		if d.Allow {
+			t.logOp(se, string(st.Kind), "allow")
 			continue
 		}
 		se.denied++

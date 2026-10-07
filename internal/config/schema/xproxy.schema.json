@@ -9355,6 +9355,10 @@
       "description": "TFTPListener is a kind: tftp listener: a TFTP relay in front of the servers that move firmware, configurations and boot images around an estate. There is nothing to authenticate with in this protocol, so the whole of the policy is the address it came from, the direction of the transfer, the path it asked for and the size of what comes back. MySQLListener is the settings of a kind: mysql listener: a relay in front of a MySQL or MariaDB server. PostgreSQL's dangerous operations are statements, so a statement policy reaches them all. MySQL's are **commands** -- one octet each, with no SQL involved -- and that is why this section has an `allow_commands` list where the postgres one does not. COM_SHUTDOWN is one octet and stops the server; the three replication commands are a copy of every change to every database; COM_CREATE_DB and COM_DROP_DB predate the DDL statements and bypass any statement policy entirely. The other MySQL-specific move is `deny_capabilities`, which *strips* bits from the server's greeting rather than refusing the connection. A client that never sees CLIENT_LOCAL_FILES offered cannot negotiate it, so the server can never ask that client for a file -- and the application still works. Refusing instead would mean everything on the segment breaks until somebody reconfigures a driver, which is how a security control gets turned off.",
       "type": "object",
       "properties": {
+        "alert_on_deny": {
+          "description": "AlertOnDeny writes a security event for every refusal. Default true. Turning it off keeps the counters, the access log and the automatic ban, and loses the security event alone, which is a decision to make deliberately on a listener whose refusals are routine.",
+          "type": "boolean"
+        },
         "allow_auth": {
           "description": "AllowAuth is the allow list of authentication plugins, named as the server names them: caching_sha2_password, mysql_native_password, sha256_password, mysql_clear_password, mysql_old_password. Empty allows any that is not weak.",
           "type": "array",
@@ -9477,6 +9481,10 @@
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "log_requests": {
+          "description": "LogRequests writes an access line for every command and statement this relay forwards, carrying the command name and the statement *kind* and never the statement text -- the same rule the refusal record follows, and for the same reason: a WHERE clause names the row and an INSERT carries the value, and this log is read by more people than the database is. Default false, because a busy database is a great many lines a second. It is the audit trail a DBA is asked for after an incident, and without it the only record this relay keeps is of what it refused -- which answers \"what did we stop\" and not \"what did they run\".",
+          "type": "boolean"
         },
         "max_message_bytes": {
           "description": "MaxMessageBytes bounds one reassembled message. Default 1 MiB. The protocol has no bound at all: a sender may chain 16 MiB packets for ever.",
@@ -11365,6 +11373,10 @@
       "description": "PostgresListener is the settings of a kind: postgres listener: a relay in front of a PostgreSQL server that reads the frontend/backend protocol. A database proxy must not pretend to be a SQL firewall. Knowing which tables a statement touches means parsing SQL properly -- every alias, subquery, CTE, view, function body and search_path interaction -- and a relay that got that 95% right would have a policy with a hole in exactly the place somebody is looking. Restricting a role's tables is the database's own job, with GRANT. What a relay can do is everything that happens before the database has an opinion, and two things it does better than the database: refuse the encryption downgrade that libpq's default sslmode accepts silently, and refuse the authentication methods that put a reusable credential on the wire. Plus one thing the database cannot do at all: decide by the *shape* of a statement, as an allow list of kinds where anything unclassifiable is refused.",
       "type": "object",
       "properties": {
+        "alert_on_deny": {
+          "description": "AlertOnDeny writes a security event for every refusal. Default true. Turning it off keeps the counters, the access log and the automatic ban, and loses the security event alone, which is a decision to make deliberately on a listener whose refusals are routine.",
+          "type": "boolean"
+        },
         "allow_applications": {
           "description": "AllowApplications matches the application_name startup parameter, with a trailing * allowed. It is chosen by the client and is not a credential; it is useful for telling a migration tool from a reporting dashboard when both connect as the same role, which is the ordinary state of affairs.",
           "type": "array",
@@ -11479,6 +11491,10 @@
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "log_requests": {
+          "description": "LogRequests writes an access line for every statement and message this relay forwards, carrying the message type and the statement *kind* and never the statement text -- the same rule the refusal record follows, and for the same reason: a WHERE clause names the row and an INSERT carries the value, and this log is read by more people than the database is. Default false, because a busy database is a great many lines a second. It is the audit trail a DBA is asked for after an incident, and without it the only record this relay keeps is of what it refused -- which answers \"what did we stop\" and not \"what did they run\".",
+          "type": "boolean"
         },
         "max_message_bytes": {
           "description": "MaxMessageBytes bounds one protocol message. Default 1 MiB. The protocol's own limit is the 4-byte length field, which is two gigabytes.",
@@ -12329,6 +12345,10 @@
       "description": "RedisListener is the settings of a kind: redis listener: a relay in front of a Redis or Valkey server. This is the protocol with the least structure and the most dangerous default posture in the project. A command is an array of opaque byte strings; there is no schema, no statement grammar, and nothing to classify by shape the way a SQL statement can be. What there is instead is a command name, and on this protocol the distance between \"administrative\" and \"remote code execution\" is one command: CONFIG SET dir /var/spool/cron + CONFIG SET dbfilename root + SAVE writes a file of the attacker's choosing wherever the server can write. Pointed at a cron directory or an authorized_keys it is a shell, and it has been used that way for a decade against instances exposed with no password because the default configuration had none. So this kind's policy is an allow list of commands defaulting to what an application does to a cache, a set that is refused even in monitor mode, and a key prefix policy -- which is the closest this protocol has to the database-and-table boundary the SQL kinds leave to GRANT, and which only works because the wire package knows where each command's keys are and says so when it does not.",
       "type": "object",
       "properties": {
+        "alert_on_deny": {
+          "description": "AlertOnDeny writes a security event for every refusal. Default true. Turning it off keeps the counters, the access log and the automatic ban, and loses the security event alone, which is a decision to make deliberately on a listener whose refusals are routine.",
+          "type": "boolean"
+        },
         "allow_clients": {
           "description": "AllowClients and DenyClients are the networks a client may connect from. Deny is evaluated first.",
           "type": "array",
@@ -12432,6 +12452,10 @@
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "log_requests": {
+          "description": "LogRequests writes an access line for every command this relay forwards, carrying the command name and how many keys it named, and never the keys themselves or the values -- the same rule the refusal record follows, and for the same reason: a key names the record and the value is the data, and this log is read by more people than the cache is. Default false, because a cache answers a great many commands a second. It is the audit trail an operator is asked for after an incident, and without it the only record this relay keeps is of what it refused -- which answers \"what did we stop\" and not \"what did they run\".",
+          "type": "boolean"
         },
         "max_bulk_bytes": {
           "description": "MaxBulkBytes bounds one argument, which for a SET is the value. Default 1 MiB. A value above max_message_bytes is brought down to it.",
@@ -16309,6 +16333,10 @@
       "description": "TDSListener is the settings of a kind: tds listener: a relay in front of a Microsoft SQL Server, or anything else speaking TDS. Three things make this protocol different from the other two database kinds. The encryption negotiation happens in a PRELOGIN message whose ENCRYPTION option is one octet, unsigned, and answered by the server. `off` means \"I would rather not\" and is what a great deal of deployed software sends; `not_supported` means \"I cannot\" and is what anything on the path rewrites the server's answer to, because a client that asked for `off` and hears `not_supported` proceeds in the clear without complaint. This is PostgreSQL's SSLRequest octet and MySQL's CLIENT_SSL bit for the third time, and it gets the same answer: the relay negotiates with each side itself rather than forwarding what it read. The password in a LOGIN7 is not encrypted. It is XOR 0xA5 with the nibbles swapped -- an encoding, with no key -- so `require_tls` here is not hardening, it is the difference between a password on the wire and no password on the wire. There is no equivalent of choosing a stronger authentication method, because there is no stronger one short of integrated security. And the statement an application runs does not arrive as a statement. Every client library that uses parameters sends `sp_executesql` with the SQL in a parameter, so the procedure policy and the statement policy are the same policy here: the relay reads the statement out of the call and classifies it.",
       "type": "object",
       "properties": {
+        "alert_on_deny": {
+          "description": "AlertOnDeny writes a security event for every refusal. Default true. Turning it off keeps the counters, the access log and the automatic ban, and loses the security event alone, which is a decision to make deliberately on a listener whose refusals are routine.",
+          "type": "boolean"
+        },
         "allow_apps": {
           "description": "AllowApps matches the client's APPNAME, with a trailing * allowed. Like MySQL's program_name it is chosen by the client and is not a credential; it tells a reporting dashboard from a migration tool when both connect as the same login.",
           "type": "array",
@@ -16418,6 +16446,10 @@
           "description": "Go duration such as 500ms, 10s, 5m or 1h; empty or omitted means the default",
           "type": "string",
           "pattern": "^(|-?([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+)$"
+        },
+        "log_requests": {
+          "description": "LogRequests writes an access line for every batch and statement this relay forwards, carrying the statement *kind* and never the statement text -- the same rule the refusal record follows, and for the same reason: a WHERE clause names the row and an INSERT carries the value, and this log is read by more people than the database is. Default false, because a busy database is a great many lines a second. It is the audit trail a DBA is asked for after an incident, and without it the only record this relay keeps is of what it refused -- which answers \"what did we stop\" and not \"what did they run\".",
+          "type": "boolean"
         },
         "max_message_bytes": {
           "description": "MaxMessageBytes bounds one reassembled message. Default 4 MiB. The protocol has no bound: a sender may chain 64 KiB packets for ever, and only the EOM status bit ends a message.",

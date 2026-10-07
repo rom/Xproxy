@@ -531,6 +531,9 @@ func (t *server) decide(se *session, p wire.Packet) (ok, fatal bool) {
 		return false, true
 	}
 	d := t.policy.Command(se.sess(), cmd)
+	if d.Allow {
+		t.logOp(se, wire.CommandName(cmd), "allow")
+	}
 	if !d.Allow {
 		t.refused(se, d, wire.CommandName(cmd))
 		if t.enforcing() || d.Hard {
@@ -606,6 +609,7 @@ func (t *server) decideStatements(se *session, text string, seq byte) (ok, fatal
 		se.statements++
 		d := t.policy.Statement(se.sess(), st, text)
 		if d.Allow {
+			t.logOp(se, string(st.Kind), "allow")
 			continue
 		}
 		se.denied++

@@ -1447,6 +1447,22 @@ type MySQLListener struct {
 	// DenyResponse is error (the default: an error packet the client's own
 	// library reports) or drop.
 	DenyResponse string `yaml:"deny_response"`
+	// LogRequests writes an access line for every command and statement this
+	// relay forwards, carrying the command name and the statement *kind* and
+	// never the statement text -- the same rule the refusal record follows, and
+	// for the same reason: a WHERE clause names the row and an INSERT carries the
+	// value, and this log is read by more people than the database is.
+	//
+	// Default false, because a busy database is a great many lines a second. It
+	// is the audit trail a DBA is asked for after an incident, and without it the
+	// only record this relay keeps is of what it refused -- which answers "what
+	// did we stop" and not "what did they run".
+	LogRequests bool `yaml:"log_requests"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	// Turning it off keeps the counters, the access log and the automatic ban,
+	// and loses the security event alone, which is a decision to make
+	// deliberately on a listener whose refusals are routine.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
 	// MonitorOnly evaluates and enforces nothing, except the hard decisions:
 	// the client list, the TLS requirement, the authentication plugins, a
 	// command or statement the relay could not read, a replication command, a
@@ -1704,6 +1720,22 @@ type RedisListener struct {
 	// DenyResponse is error (the default: a -NOPERM error reply the client's own
 	// library reports) or drop.
 	DenyResponse string `yaml:"deny_response"`
+	// LogRequests writes an access line for every command this relay forwards,
+	// carrying the command name and how many keys it named, and never the keys
+	// themselves or the values -- the same rule the refusal record follows, and
+	// for the same reason: a key names the record and the value is the data, and
+	// this log is read by more people than the cache is.
+	//
+	// Default false, because a cache answers a great many commands a second. It
+	// is the audit trail an operator is asked for after an incident, and without
+	// it the only record this relay keeps is of what it refused -- which answers
+	// "what did we stop" and not "what did they run".
+	LogRequests bool `yaml:"log_requests"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	// Turning it off keeps the counters, the access log and the automatic ban,
+	// and loses the security event alone, which is a decision to make
+	// deliberately on a listener whose refusals are routine.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
 	// MonitorOnly evaluates and enforces nothing, except the hard decisions: the
 	// client list, the TLS requirement, a command before authentication, a
 	// message the relay could not read, and the commands in the dangerous set --
@@ -2665,6 +2697,22 @@ type TDSListener struct {
 	// library reports, with the number SQL Server uses for a permission
 	// refusal) or drop.
 	DenyResponse string `yaml:"deny_response"`
+	// LogRequests writes an access line for every batch and statement this relay
+	// forwards, carrying the statement *kind* and never the statement text --
+	// the same rule the refusal record follows, and for the same reason: a WHERE
+	// clause names the row and an INSERT carries the value, and this log is read
+	// by more people than the database is.
+	//
+	// Default false, because a busy database is a great many lines a second. It
+	// is the audit trail a DBA is asked for after an incident, and without it the
+	// only record this relay keeps is of what it refused -- which answers "what
+	// did we stop" and not "what did they run".
+	LogRequests bool `yaml:"log_requests"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	// Turning it off keeps the counters, the access log and the automatic ban,
+	// and loses the security event alone, which is a decision to make
+	// deliberately on a listener whose refusals are routine.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
 	// MonitorOnly evaluates and enforces nothing, except the hard decisions:
 	// the client list, the TLS requirement, a cleartext password, an
 	// unnameable login, a message or statement the relay could not read, and
@@ -2856,6 +2904,22 @@ type PostgresListener struct {
 	// DenyResponse is error (the default: an ErrorResponse the client's own
 	// library reports) or drop (close without a word).
 	DenyResponse string `yaml:"deny_response"`
+	// LogRequests writes an access line for every statement and message this
+	// relay forwards, carrying the message type and the statement *kind* and
+	// never the statement text -- the same rule the refusal record follows, and
+	// for the same reason: a WHERE clause names the row and an INSERT carries the
+	// value, and this log is read by more people than the database is.
+	//
+	// Default false, because a busy database is a great many lines a second. It
+	// is the audit trail a DBA is asked for after an incident, and without it the
+	// only record this relay keeps is of what it refused -- which answers "what
+	// did we stop" and not "what did they run".
+	LogRequests bool `yaml:"log_requests"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	// Turning it off keeps the counters, the access log and the automatic ban,
+	// and loses the security event alone, which is a decision to make
+	// deliberately on a listener whose refusals are routine.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
 	// MonitorOnly evaluates the policy and enforces nothing, except the
 	// decisions marked hard: the client list, the TLS requirement, the
 	// authentication methods, a statement the classifier could not read, a

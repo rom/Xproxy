@@ -142,3 +142,19 @@ func (t *server) log(se *session, d Decision, what, action string) {
 }
 
 func argsOf(a []any) []any { return a }
+
+// allowed writes the access line for a statement this relay forwarded.
+//
+// Off unless log_requests asks for it, because a busy database is a great many
+// lines a second. The refusal line above is written either way: a refusal is rare
+// and it is the one line nobody would choose to lose.
+//
+// It carries the statement kind rather than the text, for the reason the refusal
+// record gives: the kind is what the policy decided about, and the text is the
+// data.
+func (t *server) allowed(se *session, what string) {
+	if !t.pc.LogRequests {
+		return
+	}
+	t.log(se, Decision{Allow: true}, what, "allow")
+}

@@ -533,6 +533,9 @@ func (t *server) fromClient(se *session) {
 // decide applies the policy to one command.
 func (t *server) decide(se *session, c *wire.Command) (ok, fatal bool) {
 	d := t.policy.Command(se.sess(), c)
+	if d.Allow {
+		t.logOp(se, c.String(), len(c.Args), "allow")
+	}
 	if !d.Allow {
 		if d.Reason == "key_position_unknown" {
 			t.keyPositionUnknown(se, c.String())

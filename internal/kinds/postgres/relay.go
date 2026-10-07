@@ -96,7 +96,12 @@ func (t *server) enforcement() config.Enforcement {
 	return e
 }
 
-func (t *server) alerts() bool { return true }
+// alerts says whether a refusal on this listener is worth a security event.
+//
+// It was a stub returning true until the listener had the setting. The counters,
+// the access line and the ban observation do not go through here: this is the
+// record alone.
+func (t *server) alerts() bool { return t.pc.AlertOnDeny == nil || *t.pc.AlertOnDeny }
 
 func (t *server) serve() {
 	for {
@@ -665,6 +670,7 @@ func (t *server) decideOne(se *session, st wire.Statement, text string) (ok, fat
 	se.statements++
 	d := t.policy.Statement(se.sess(), st, text)
 	if d.Allow {
+		t.allowed(se, string(st.Kind))
 		return true, false
 	}
 	se.denied++
