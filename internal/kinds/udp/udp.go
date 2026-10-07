@@ -432,12 +432,24 @@ func (s *server) finish(se *session, reason string) {
 // whoever the source claimed to be.
 func (s *server) deny(client netip.AddrPort, reason string) {
 	s.engine.Counters().Refuse("udp", reason)
-	s.engine.Logs().SecurityEvent(context.Background(), "deny", "udp_denied",
-		"listener", s.cfg.Name, "proto", "udp", "client_ip", client.Addr().String(), "detail", reason)
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
 	if bl := s.engine.Bans(); bl != nil && client.Addr().IsValid() {
 		bl.Observe(client.Addr(), "udp_denied")
 	}
+
+	if !s.alerts() {
+		return
+	}
+	s.engine.Logs().SecurityEvent(context.Background(), "deny", "udp_denied",
+		"listener", s.cfg.Name, "proto", "udp", "client_ip", client.Addr().String(), "detail", reason)
 }
+
+// alerts says whether a refusal on this listener is worth a security event.
+//
+// The counters and the ban observation do not go through here: this is the record
+// alone, which is what alert_on_deny is named for.
+func (s *server) alerts() bool { return s.udp.AlertOnDeny == nil || *s.udp.AlertOnDeny }
 
 // admitClient is the two questions this listener asks about a client that has no
 // identity: do the imported lists know this address, and does the estate's

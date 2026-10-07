@@ -60,11 +60,16 @@ func (se *session) decideDevices(data rdp.SendData) ([]byte, bool, string) {
 	}
 	if len(refused) > 0 {
 		t.engine.Counters().RDPDevicesRefused.Add(uint64(len(refused))) //nolint:gosec // bounded by the device list
-		t.engine.Logs().SecurityEvent(context.Background(), "deny", "rdp_device_refused",
-			"listener", t.cfg.Name, "client_ip", se.ip.String(),
-			"user", textsafe.Clip64(se.user), "target", se.target,
-			"refused", strings.Join(refused, ","))
+		// The recording is marked whatever alert_on_deny says: the session is
+		// still running and whoever replays it has to see which devices the
+		// desktop was never offered.
 		se.rec.Mark("xproxy: refused " + strings.Join(refused, ", "))
+		if t.alerts() {
+			t.engine.Logs().SecurityEvent(context.Background(), "deny", "rdp_device_refused",
+				"listener", t.cfg.Name, "client_ip", se.ip.String(),
+				"user", textsafe.Clip64(se.user), "target", se.target,
+				"refused", strings.Join(refused, ","))
+		}
 	}
 	out, err := rdp.EncodeDeviceAnnounce(kept)
 	if err != nil {

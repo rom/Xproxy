@@ -571,15 +571,28 @@ func (t *server) allowed(ip netip.Addr) bool {
 
 func (t *server) deny(ip netip.Addr, what, detail string) {
 	t.engine.Counters().Refuse("ssh", what)
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
+	if bl := t.engine.Bans(); bl != nil && ip.IsValid() {
+		bl.Observe(ip, "ssh_denied")
+	}
+
+	if !t.alerts() {
+		return
+	}
 	attrs := []any{"listener", t.cfg.Name, "client_ip", ip.String(), "proto", "ssh"}
 	if detail != "" {
 		attrs = append(attrs, "detail", detail)
 	}
 	t.engine.Logs().SecurityEvent(context.Background(), "deny", "ssh_"+what, attrs...)
-	if bl := t.engine.Bans(); bl != nil && ip.IsValid() {
-		bl.Observe(ip, "ssh_denied")
-	}
 }
+
+// alerts says whether a refusal on this listener is worth a security event.
+//
+// The counters, the access line, the session recording and the ban observation do
+// not go through here: this is the record alone, which is what alert_on_deny is
+// named for.
+func (t *server) alerts() bool { return t.h.AlertOnDeny == nil || *t.h.AlertOnDeny }
 
 // shadowed records a policy refusal a listener in shadow mode does not
 // enforce, and says whether it was recorded rather than refused.

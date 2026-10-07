@@ -369,6 +369,10 @@ func newServer(host proxy.Host, lc config.Listener, udp net.PacketConn, tcp net.
 	// names into the ban list. It belongs to this listener, so one
 	// listener's flood does not quieten another's records.
 	var unverified bound.Notice
+	// alerts says whether a refusal on this listener is worth a security event.
+	// The counters and the ban observation do not go through it: this is the record
+	// alone, which is what alert_on_deny is named for.
+	alerts := lc.DNS.AlertOnDeny == nil || *lc.DNS.AlertOnDeny
 	// event is the security-event path, lifted out of the hooks literal because
 	// the admission point below has to get exactly the same treatment of an
 	// unverified source: a refusal recorded against an address anybody could have
@@ -386,10 +390,16 @@ func newServer(host proxy.Host, lc config.Listener, udp net.PacketConn, tcp net.
 				append([]any{"reason", reason}, attrs...)...)
 			return
 		}
-		host.Logs().SecurityEvent(context.Background(), "deny", reason, append([]any{"client_ip", client.String()}, attrs...)...)
+		// The ban ladder hears about this before alert_on_deny can silence the
+		// record below: turning the log down is not a decision to stop responding.
 		if bl := host.Bans(); bl != nil {
 			bl.Observe(client, reason)
 		}
+
+		if !alerts {
+			return
+		}
+		host.Logs().SecurityEvent(context.Background(), "deny", reason, append([]any{"client_ip", client.String()}, attrs...)...)
 	}
 	hooks := wire.Hooks{
 		Access: func(attrs ...any) { host.Logs().Access.Info("dns", attrs...) },

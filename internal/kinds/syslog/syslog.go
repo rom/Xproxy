@@ -538,15 +538,27 @@ func (t *server) rewrite(m *wire.Message, from netip.Addr) {
 func (t *server) refuse(ip netip.Addr, what, detail string) {
 	t.host.Counters().SyslogRefused.Add(1)
 	t.host.Counters().Refuse("syslog", what)
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
+	if bl := t.host.Bans(); bl != nil && ip.IsValid() {
+		bl.Observe(ip, "syslog_denied")
+	}
+
+	if !t.alerts() {
+		return
+	}
 	attrs := []any{"listener", t.cfg.Name, "client_ip", ip.String(), "proto", "syslog"}
 	if detail != "" {
 		attrs = append(attrs, "detail", detail)
 	}
 	t.host.Logs().SecurityEvent(context.Background(), "deny", "syslog_"+what, attrs...)
-	if bl := t.host.Bans(); bl != nil && ip.IsValid() {
-		bl.Observe(ip, "syslog_denied")
-	}
 }
+
+// alerts says whether a refusal on this listener is worth a security event.
+//
+// The counters and the ban observation do not go through here: this is the record
+// alone, which is what alert_on_deny is named for.
+func (t *server) alerts() bool { return t.l.AlertOnDeny == nil || *t.l.AlertOnDeny }
 
 // forward writes queued records to the collector, keeping one
 // connection open and rebuilding it when it fails. Everything it sends

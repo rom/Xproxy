@@ -328,15 +328,27 @@ func (t *server) deny(se *session, what, detail string) {
 	ip := se.ip
 	se.tap.Deny(what)
 	t.host.Counters().Refuse("mqtt", what)
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
+	if bl := t.host.Bans(); bl != nil && ip.IsValid() {
+		bl.Observe(ip, "mqtt_denied")
+	}
+
+	if !t.alerts() {
+		return
+	}
 	attrs := []any{"listener", t.cfg.Name, "client_ip", ip.String(), "proto", "mqtt"}
 	if detail != "" {
 		attrs = append(attrs, "detail", detail)
 	}
 	t.host.Logs().SecurityEvent(context.Background(), "deny", "mqtt_"+what, attrs...)
-	if bl := t.host.Bans(); bl != nil && ip.IsValid() {
-		bl.Observe(ip, "mqtt_denied")
-	}
 }
+
+// alerts says whether a refusal on this listener is worth a security event.
+//
+// The counters and the ban observation do not go through here: this is the record
+// alone, which is what alert_on_deny is named for.
+func (t *server) alerts() bool { return t.m.AlertOnDeny == nil || *t.m.AlertOnDeny }
 
 // shadowed records a policy refusal a listener in shadow mode does not
 // enforce, and says whether it was recorded rather than refused.

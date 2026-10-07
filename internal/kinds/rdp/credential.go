@@ -111,9 +111,10 @@ func (se *session) wantsFactor() bool {
 func (se *session) factorFailed(why string) {
 	t := se.t
 	t.engine.Counters().RDPMFAFailed.Add(1)
-	t.deny(se, "rdp_mfa_failed", textsafe.Clip64(se.user)+" "+why)
-	t.engine.Logs().SecurityEvent(context.Background(), "deny", "rdp_mfa_failed",
-		"listener", t.cfg.Name, "client_ip", se.ip.String(),
+	// One record, through the funnel. This wrote a second event of its own
+	// alongside it, which alert_on_deny could not silence and which the ban
+	// ladder never saw.
+	t.deny(se, "rdp_mfa_failed", textsafe.Clip64(se.user)+" "+why,
 		"user", textsafe.Clip64(se.user), "reason", why)
 }
 

@@ -141,13 +141,19 @@ func (se *session) overLimit(svc *icap.Service, path string) string {
 func (se *session) reportBlocked(svc *icap.Service, path, reason string) {
 	t := se.t
 	t.engine.Counters().SFTPScanBlocked.Add(1)
+	// The ban ladder hears about this before alert_on_deny can silence the record
+	// below: turning the log down is not a decision to stop responding.
+	if bl := t.engine.Bans(); bl != nil && se.ip.IsValid() {
+		bl.Observe(se.ip, "sftp_icap")
+	}
+
+	if !t.alerts() {
+		return
+	}
 	t.engine.Logs().SecurityEvent(context.Background(), "deny", "sftp_icap_blocked",
 		"listener", t.cfg.Name, "client_ip", se.ip.String(), "user", textsafe.Clip64(se.user),
 		"principal", se.principal, "path", textsafe.Clip256(path),
 		"service", svc.Name(), "reason", reason)
-	if bl := t.engine.Bans(); bl != nil && se.ip.IsValid() {
-		bl.Observe(se.ip, "sftp_icap")
-	}
 }
 
 // scanNote is what the access log says about a held file at its close.

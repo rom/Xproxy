@@ -124,8 +124,10 @@ func (se *session) factorPrompt() string {
 func (se *session) mfaFail(why string) {
 	t := se.t
 	t.engine.Counters().FTPMFAFailed.Add(1)
-	t.deny(se, "ftp_mfa_failed", textsafe.Clip64(se.user)+" "+why)
-	t.engine.Logs().SecurityEvent(context.Background(), "deny", "ftp_mfa_failed",
-		"listener", t.cfg.Name, "client_ip", se.ip.String(),
+	// One record, through the funnel. This wrote a second event of its own
+	// alongside it, which alert_on_deny could not silence and which the ban
+	// ladder never saw -- and it passed "ftp_mfa_failed" as the funnel's `what`,
+	// where the prefix is added, so the funnel's copy read ftp_ftp_mfa_failed.
+	t.deny(se, "mfa_failed", textsafe.Clip64(se.user)+" "+why,
 		"user", textsafe.Clip64(se.user), "reason", why)
 }

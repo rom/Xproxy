@@ -698,9 +698,16 @@ func (s *server) openBackends() error {
 			// The egress list is what stops a pool whose name resolves
 			// somewhere new from quietly becoming a new destination.
 			s.host.Counters().Refuse("ntp", "server_not_allowed")
-			s.host.Logs().SecurityEvent(context.Background(), "deny", "ntp_denied",
-				"listener", s.cfg.Name, "proto", "ntp", "detail", "server_not_allowed",
-				"server", ap.String())
+			// This refuses an upstream, not a client, and it is still the
+			// listener's refusal: dhcp6 puts the same server_not_allowed
+			// through its gated funnel. Silencing the record leaves the
+			// endpoint unused, the counter raised, and -- if the list
+			// refuses them all -- a listener that does not start.
+			if s.n.Alerts() {
+				s.host.Logs().SecurityEvent(context.Background(), "deny", "ntp_denied",
+					"listener", s.cfg.Name, "proto", "ntp", "detail", "server_not_allowed",
+					"server", ap.String())
+			}
 			continue
 		}
 		conn, err := net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(ap))

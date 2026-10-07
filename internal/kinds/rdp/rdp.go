@@ -252,17 +252,36 @@ func (t *server) shutdown(ctx context.Context) {
 // The capture asks about the refusal rather than how the session ended: a session
 // that ran and then closed on a timeout was not turned away, so recording it from
 // the access log would make a `denied: true` rule select most of the listener.
-func (t *server) deny(se *session, what, detail string) {
+//
+// extra carries the attributes a caller has that this funnel does not know about --
+// the user a factor failed for, the reason it gave. They belong on this record
+// rather than on a second one of the caller's own: a refusal logged twice is a
+// refusal alert_on_deny can only half silence, and the half it cannot reach is the
+// one written from the site nobody remembers.
+func (t *server) deny(se *session, what, detail string, extra ...any) {
 	ip := se.ip
 	se.tap.Deny(what)
 	t.engine.Counters().Refuse("rdp", what)
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
 	if bl := t.engine.Bans(); bl != nil && ip.IsValid() {
 		bl.Observe(ip, "rdp_denied")
 	}
+
+	if !t.alerts() {
+		return
+	}
 	t.engine.Logs().SecurityEvent(context.Background(), "deny", "rdp_denied",
-		"listener", t.cfg.Name, "client_ip", ip.String(), "what", what,
-		"detail", textsafe.Clip256(detail))
+		append([]any{"listener", t.cfg.Name, "client_ip", ip.String(), "what", what,
+			"detail", textsafe.Clip256(detail)}, extra...)...)
 }
+
+// alerts says whether a refusal on this listener is worth a security event.
+//
+// The counters, the access line, the session recording and the ban observation do
+// not go through here: this is the record alone, which is what alert_on_deny is
+// named for.
+func (t *server) alerts() bool { return t.v.AlertOnDeny == nil || *t.v.AlertOnDeny }
 
 // shadowed records a policy refusal a listener in shadow mode does not
 // enforce, and says whether it was recorded rather than refused.

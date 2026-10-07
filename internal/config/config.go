@@ -6265,6 +6265,11 @@ type SyslogListener struct {
 	// Default 4096. When it is full the relay drops and counts rather
 	// than blocking every sender behind one slow collector.
 	Queue int `yaml:"queue"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	// Turning it off keeps the counters, the access log and the automatic ban,
+	// and loses the security event alone, which is a decision to make
+	// deliberately on a listener whose refusals are routine.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
 }
 
 // SyslogRedaction replaces what matches a pattern in a message.
@@ -6399,6 +6404,11 @@ type FTPListener struct {
 	// access ledger: one somebody asked for, somebody else approved, and
 	// that ends by itself. Needs the access section. See docs/CONFIG.md.
 	RequireGrant bool `yaml:"require_grant"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	// Turning it off keeps the counters, the access log, the session recording and
+	// the automatic ban, and loses the security event alone, which is a decision
+	// to make deliberately on a listener whose refusals are routine.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
 }
 
 // TransferICAP scans the files a session moves (RFC 3507), for the
@@ -6492,6 +6502,11 @@ type TelnetListener struct {
 	// listener was going to refuse answered by a fabricated shell, or a
 	// whole listener that is one. See TelnetDeception.
 	Deception *TelnetDeception `yaml:"deception"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	// Turning it off keeps the counters, the access log, the session recording and
+	// the automatic ban, and loses the security event alone, which is a decision
+	// to make deliberately on a listener whose refusals are routine.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
 }
 
 // TelnetDeception answers as a device that is not there.
@@ -6697,6 +6712,11 @@ type VNCListener struct {
 	ProxyProtocol bool `yaml:"proxy_protocol"`
 	// AllowClients restricts clients to these CIDRs.
 	AllowClients []string `yaml:"allow_clients"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	// Turning it off keeps the counters, the access log, the session recording and
+	// the automatic ban, and loses the security event alone, which is a decision
+	// to make deliberately on a listener whose refusals are routine.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
 }
 
 // VNCBounds bound the pixel stream: what the desktop may declare, and
@@ -6835,6 +6855,11 @@ type RDPListener struct {
 	ProxyProtocol bool `yaml:"proxy_protocol"`
 	// AllowClients restricts clients to these CIDRs.
 	AllowClients []string `yaml:"allow_clients"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	// Turning it off keeps the counters, the access log, the session recording and
+	// the automatic ban, and loses the security event alone, which is a decision
+	// to make deliberately on a listener whose refusals are routine.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
 }
 
 // RDPChannelPolicy decides which static virtual channels a session
@@ -7126,6 +7151,11 @@ type SSHListener struct {
 	ProxyProtocol bool `yaml:"proxy_protocol"`
 	// AllowClients restricts clients to these CIDRs.
 	AllowClients []string `yaml:"allow_clients"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	// Turning it off keeps the counters, the access log, the session recording and
+	// the automatic ban, and loses the security event alone, which is a decision
+	// to make deliberately on a listener whose refusals are routine.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
 }
 
 // SessionRecording records an interactive session to a file that can be
@@ -7434,6 +7464,11 @@ type MQTTListener struct {
 	AllowClients []string `yaml:"allow_clients"`
 	// Learn records what crosses this listener and writes a proposed policy.
 	Learn *MQTTLearn `yaml:"learn"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	// Turning it off keeps the counters, the access log and the automatic ban,
+	// and loses the security event alone, which is a decision to make
+	// deliberately on a listener whose refusals are routine.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
 }
 
 // MQTTLearn is an mqtt listener's learning mode.
@@ -7634,6 +7669,11 @@ type SMTPListener struct {
 	// XCLIENT command (a Postfix extension) after EHLO, when the
 	// upstream advertises it.
 	XClient bool `yaml:"xclient"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	// Turning it off keeps the counters, the access log and the automatic ban,
+	// and loses the security event alone, which is a decision to make
+	// deliberately on a listener whose refusals are routine.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
 }
 
 // DNSListener is a forwarding DNS proxy on the listener address over UDP
@@ -7758,6 +7798,11 @@ type DNSListener struct {
 	// subnet chooses what the next thousand are told. Forward it only
 	// where the clients of this listener are one network.
 	ECS string `yaml:"ecs"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	// Turning it off keeps the counters, the access log and the automatic ban,
+	// and loses the security event alone, which is a decision to make
+	// deliberately on a listener whose refusals are routine.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
 }
 
 // DNSDeception answers as a DNS resolver that is not there.
@@ -8798,6 +8843,11 @@ type UDPListener struct {
 	// address this or rate_limit is what stops the listener being
 	// somebody else's amplifier.
 	AllowClients []string `yaml:"allow_clients"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	// Turning it off keeps the counters, the access log and the automatic ban,
+	// and loses the security event alone, which is a decision to make
+	// deliberately on a listener whose refusals are routine.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
 }
 
 // UDPRateLimit bounds datagrams per second from one source address.
