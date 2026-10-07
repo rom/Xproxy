@@ -147,7 +147,7 @@ func kindFiles(t *testing.T, kind string) []string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var out []string
+	out := make([]string, 0, len(entries))
 	for _, e := range entries {
 		n := e.Name()
 		if e.IsDir() || !strings.HasSuffix(n, ".go") || strings.HasSuffix(n, "_test.go") {
