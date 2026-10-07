@@ -6,6 +6,48 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Fixed (`alert_on_deny` reaches every kind, and every refusal on it)
+
+The setting that silences a refusal's security event was on twenty-four kinds and
+is now on all thirty-six: `dns`, `syslog`, `udp`, `mqtt`, `smtp`, `ftp`, `telnet`,
+`vnc`, `rdp`, `ssh`, `tcp` and `forward` took it. It is the setting an estate wants
+on a listener whose refusals are routine -- an egress proxy where a browser
+reaching for a destination the policy does not carry is an ordinary afternoon --
+and those twelve included every kind that fits that description.
+
+**Turning the record down was turning the ban off.** On fifteen of the kinds that
+already had the setting, the ban-ladder observation sat *after* the security event
+in the same refusal funnel, behind the same early return. So `alert_on_deny:
+false` -- documented as losing the event and nothing else -- also stopped repeated
+refusals from ever banning the address. The observation now precedes the gate at
+every one of the sixteen sites, and a sweep over the kind sources fails if a new
+one puts it back the other way round.
+
+**A refused factor was recorded twice.** On `ftp`, `telnet`, `vnc` and `rdp` the
+MFA failure called the gated refusal funnel *and* wrote a second event of its own,
+which neither the gate nor the ban ladder reached. One record now, with the user
+and the reason the duplicate carried. `ftp`'s copy also passed its `what` already
+prefixed into a funnel that adds the prefix, so the funnel's half of the pair read
+`ftp_ftp_mfa_failed`; the surviving record reads `ftp_mfa_failed`, which is what
+this document already said it was.
+
+Seven more refusals were written from outside any funnel and so could not be
+silenced either: an ICAP verdict on an FTP transfer or an SFTP write, a refused
+RDP static or dynamic channel, a refused redirected device, a desktop that named
+no I/O channel, and an NTP upstream the egress list refuses. Each is gated where
+it stands, with its counters, recording marks and ban observations in front of the
+gate.
+
+`deny_response` and `log_requests` were examined across every kind in the same
+pass and are **not** gaps: both are protocol-shaped, and
+[CONFIG.md](CONFIG.md#what-a-refusal-leaves-behind) now says which kinds carry
+each and why the others cannot. `deny_response` needs a protocol with more than
+one way to say no and a session that survives being told; on the sixteen kinds
+without it there is either nothing to answer with (`tcp`, `udp`, `syslog`), the
+refusal is itself the end of the session (the access gateways), one answer is
+already the right one (`coap`, `mqtt`, `smtp`, `ftp`, `forward`), or the control
+exists under the protocol's own word (`dns`'s `block_action`, `ntp`'s `kod`).
+
 ### Added (the pcapng capture reaches the twenty-five kinds that carry sessions)
 
 The capture subsystem has recorded HTTP exchanges since it was built, and nothing
