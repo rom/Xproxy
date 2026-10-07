@@ -41,6 +41,12 @@ func (t *server) refused(ip netip.Addr, op wire.Op, pa wire.Path, mode string, d
 	}
 	c.TFTPDenied.Add(1)
 	t.logRequest(ip, op, pa, mode, d, "deny")
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
+	if bl := t.host.Bans(); bl != nil && ip.IsValid() {
+		bl.Observe(ip, "tftp_denied")
+	}
+
 	if !t.alerts() {
 		return
 	}
@@ -56,15 +62,18 @@ func (t *server) refused(ip netip.Addr, op wire.Op, pa wire.Path, mode string, d
 		attrs = append(attrs, "detail", d.Detail)
 	}
 	t.host.Logs().SecurityEvent(context.Background(), "deny", "tftp_"+d.Reason, attrs...)
-	if bl := t.host.Bans(); bl != nil && ip.IsValid() {
-		bl.Observe(ip, "tftp_denied")
-	}
 }
 
 // deny records a refusal that is not about a request the policy read: a client
 // that may not send, a malformed packet, a bound, a datagram from an address
 // that has no part in a transfer. None of these is shadowed.
 func (t *server) deny(ip netip.Addr, what, detail string) {
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
+	if bl := t.host.Bans(); bl != nil && ip.IsValid() {
+		bl.Observe(ip, "tftp_denied")
+	}
+
 	if !t.alerts() {
 		return
 	}
@@ -77,9 +86,6 @@ func (t *server) deny(ip netip.Addr, what, detail string) {
 		attrs = append(attrs, "detail", detail)
 	}
 	t.host.Logs().SecurityEvent(context.Background(), "deny", name, attrs...)
-	if bl := t.host.Bans(); bl != nil && ip.IsValid() {
-		bl.Observe(ip, "tftp_denied")
-	}
 }
 
 // isPathReason says whether a refusal was about the shape or the place of the

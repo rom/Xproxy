@@ -56,6 +56,12 @@ func (se *session) enforcedRefusal(m *wire.Message, d Decision) {
 	bound, secure := se.boundName, se.secure
 	se.mu.Unlock()
 	t.logRequest(se, m, d, "deny")
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
+	if bl := t.host.Bans(); bl != nil && se.ip.IsValid() {
+		bl.Observe(se.ip, "ldap_denied")
+	}
+
 	if !t.alerts() {
 		return
 	}
@@ -71,9 +77,6 @@ func (se *session) enforcedRefusal(m *wire.Message, d Decision) {
 		attrs = append(attrs, "detail", d.Detail)
 	}
 	t.host.Logs().SecurityEvent(context.Background(), "deny", d.Reason, attrs...)
-	if bl := t.host.Bans(); bl != nil && se.ip.IsValid() {
-		bl.Observe(se.ip, "ldap_denied")
-	}
 }
 
 // deny records a refusal that is not about a request the policy read: a
@@ -88,6 +91,12 @@ func (se *session) enforcedRefusal(m *wire.Message, d Decision) {
 func (t *server) deny(se *session, what, detail string) {
 	ip := se.ip
 	se.tap.Deny(what)
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
+	if bl := t.host.Bans(); bl != nil && ip.IsValid() {
+		bl.Observe(ip, "ldap_denied")
+	}
+
 	if !t.alerts() {
 		return
 	}
@@ -100,9 +109,6 @@ func (t *server) deny(se *session, what, detail string) {
 		attrs = append(attrs, "detail", detail)
 	}
 	t.host.Logs().SecurityEvent(context.Background(), "deny", name, attrs...)
-	if bl := t.host.Bans(); bl != nil && ip.IsValid() {
-		bl.Observe(ip, "ldap_denied")
-	}
 }
 
 // detailOf is one short line describing a request, for the shadow ledger's

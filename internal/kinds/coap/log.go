@@ -47,6 +47,12 @@ func (s *server) refused(ip netip.Addr, m *wire.Message, d Decision, side string
 	c.Refuse("coap", d.Reason)
 	c.CoAPDenied.Add(1)
 	s.logMessage(ip, m, d, side, "deny", false, who)
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
+	if bl := s.host.Bans(); bl != nil && ip.IsValid() && !ip.IsUnspecified() {
+		bl.Observe(ip, "coap_denied")
+	}
+
 	if !s.alerts() {
 		return
 	}
@@ -63,15 +69,18 @@ func (s *server) refused(ip netip.Addr, m *wire.Message, d Decision, side string
 		attrs = append(attrs, "answered", d.Answer.String())
 	}
 	s.host.Logs().SecurityEvent(context.Background(), "deny", "coap_"+d.Reason, attrs...)
-	if bl := s.host.Bans(); bl != nil && ip.IsValid() && !ip.IsUnspecified() {
-		bl.Observe(ip, "coap_denied")
-	}
 }
 
 // deny records a refusal that is not about a message the policy read: a client
 // outside the address list, a malformed message, a bound, an answer from an
 // address that is not a device. None of these is shadowed.
 func (s *server) deny(ip netip.Addr, what, detail string) {
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
+	if bl := s.host.Bans(); bl != nil && ip.IsValid() && !ip.IsUnspecified() {
+		bl.Observe(ip, "coap_denied")
+	}
+
 	if !s.alerts() {
 		return
 	}
@@ -84,9 +93,6 @@ func (s *server) deny(ip netip.Addr, what, detail string) {
 		attrs = append(attrs, "detail", textsafe.Clip256(detail))
 	}
 	s.host.Logs().SecurityEvent(context.Background(), "deny", name, attrs...)
-	if bl := s.host.Bans(); bl != nil && ip.IsValid() && !ip.IsUnspecified() {
-		bl.Observe(ip, "coap_denied")
-	}
 }
 
 // logSession writes one line per established DTLS session: who the peer

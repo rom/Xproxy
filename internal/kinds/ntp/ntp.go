@@ -1146,6 +1146,12 @@ func (s *server) deny(peer netip.AddrPort, reason, detail string) {
 // paths that have already counted the refusal: a refusal counted twice is
 // a refusal an operator cannot count.
 func (s *server) denyLog(peer netip.AddrPort, reason, detail string) {
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
+	if bl := s.host.Bans(); bl != nil && peer.Addr().IsValid() {
+		bl.Observe(peer.Addr(), "ntp_denied")
+	}
+
 	if !s.n.Alerts() {
 		return
 	}
@@ -1155,9 +1161,6 @@ func (s *server) denyLog(peer netip.AddrPort, reason, detail string) {
 		attrs = append(attrs, "reason_detail", detail)
 	}
 	s.host.Logs().SecurityEvent(context.Background(), "deny", "ntp_denied", attrs...)
-	if bl := s.host.Bans(); bl != nil && peer.Addr().IsValid() {
-		bl.Observe(peer.Addr(), "ntp_denied")
-	}
 }
 
 // refuse is a policy refusal of a client's packet: counted, logged with
@@ -1182,6 +1185,12 @@ func (s *server) refuse(client netip.AddrPort, d Decision, raw []byte, pkt *wire
 // packet: "a client was refused" is not an audit trail and "version 3
 // from 10.0.0.9, mode client, stratum 2, reason version_not_allowed" is.
 func (s *server) audit(client netip.AddrPort, d Decision, pkt *wire.Packet, kind string) {
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
+	if bl := s.host.Bans(); bl != nil && client.Addr().IsValid() && kind == "deny" {
+		bl.Observe(client.Addr(), "ntp_denied")
+	}
+
 	if !s.n.Alerts() {
 		return
 	}
@@ -1198,9 +1207,6 @@ func (s *server) audit(client netip.AddrPort, d Decision, pkt *wire.Packet, kind
 		attrs = append(attrs, "key_id", pkt.KeyID)
 	}
 	s.host.Logs().SecurityEvent(context.Background(), kind, "ntp_denied", attrs...)
-	if bl := s.host.Bans(); bl != nil && client.Addr().IsValid() && kind == "deny" {
-		bl.Observe(client.Addr(), "ntp_denied")
-	}
 }
 
 // logPacket writes the per-packet access line, which is what an estate

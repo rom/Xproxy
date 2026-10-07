@@ -477,6 +477,12 @@ func (s *server) dial(client netip.Addr) (net.Conn, *upstream.Endpoint, *upstrea
 func (s *server) deny_(ip netip.Addr, reason, detail string) {
 	s.host.Counters().NTSKERefused.Add(1)
 	s.host.Counters().Refuse("ntske", reason)
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
+	if bl := s.host.Bans(); bl != nil && ip.IsValid() {
+		bl.Observe(ip, "ntske_denied")
+	}
+
 	if !s.k.Alerts() {
 		return
 	}
@@ -485,9 +491,6 @@ func (s *server) deny_(ip netip.Addr, reason, detail string) {
 		attrs = append(attrs, "reason_detail", detail)
 	}
 	s.host.Logs().SecurityEvent(context.Background(), "deny", "ntske_denied", attrs...)
-	if bl := s.host.Bans(); bl != nil && ip.IsValid() {
-		bl.Observe(ip, "ntske_denied")
-	}
 }
 
 func (s *server) log(ip netip.Addr, start time.Time, name string, protos []string, end string, in, out int64) {

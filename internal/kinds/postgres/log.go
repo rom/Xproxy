@@ -34,6 +34,12 @@ func (t *server) refused(se *session, d Decision, what string) {
 	c := t.host.Counters()
 	c.Refuse("postgres", d.Reason)
 	t.log(se, d, what, "deny")
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
+	if bl := t.host.Bans(); bl != nil && se.ip.IsValid() {
+		bl.Observe(se.ip, "postgres_denied")
+	}
+
 	if !t.alerts() {
 		return
 	}
@@ -64,9 +70,6 @@ func (t *server) refused(se *session, d Decision, what string) {
 		attrs = append(attrs, "detail", textsafe.Clip64(d.Detail))
 	}
 	t.host.Logs().SecurityEvent(context.Background(), "deny", "postgres_"+d.Reason, attrs...)
-	if bl := t.host.Bans(); bl != nil && se.ip.IsValid() {
-		bl.Observe(se.ip, "postgres_denied")
-	}
 }
 
 // wouldRefuse records a decision that is not being enforced, for a caller that
@@ -94,6 +97,12 @@ func (t *server) deny(se *session, reason, detail string) {
 	se.tap.Deny(reason)
 	c := t.host.Counters()
 	c.Refuse("postgres", reason)
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
+	if bl := t.host.Bans(); bl != nil && ip.IsValid() {
+		bl.Observe(ip, "postgres_denied")
+	}
+
 	if !t.alerts() {
 		return
 	}
@@ -103,9 +112,6 @@ func (t *server) deny(se *session, reason, detail string) {
 		attrs = append(attrs, "detail", textsafe.Clip64(detail))
 	}
 	t.host.Logs().SecurityEvent(context.Background(), "deny", "postgres_"+reason, attrs...)
-	if bl := t.host.Bans(); bl != nil && ip.IsValid() {
-		bl.Observe(ip, "postgres_denied")
-	}
 }
 
 // log writes the access record.

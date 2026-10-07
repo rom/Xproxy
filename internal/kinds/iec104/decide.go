@@ -541,6 +541,12 @@ func (t *server) logFailover(se *session, prev netip.Addr) {
 func (t *server) refuse(se *session, frame *wire.Frame, d Decision) {
 	se.tap.Deny(d.Reason)
 	t.host.Counters().Refuse("iec104", d.Reason)
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
+	if bl := t.host.Bans(); bl != nil && se.ip.IsValid() {
+		bl.Observe(se.ip, "iec104_denied")
+	}
+
 	if !t.alerts() {
 		return
 	}
@@ -550,9 +556,6 @@ func (t *server) refuse(se *session, frame *wire.Frame, d Decision) {
 		attrs = append(attrs, "rule", d.Rule)
 	}
 	t.host.Logs().SecurityEvent(context.Background(), "deny", d.Reason, attrs...)
-	if bl := t.host.Bans(); bl != nil && se.ip.IsValid() {
-		bl.Observe(se.ip, "iec104_denied")
-	}
 }
 
 // deny records a refusal that is not about an ASDU: a client that may not
@@ -572,6 +575,12 @@ func (t *server) deny(se *session, what, detail string) {
 	// this kind's refusals saw the protocol decisions and none of the ones made
 	// before a controlling station had said anything at all.
 	t.host.Counters().Refuse("iec104", what)
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
+	if bl := t.host.Bans(); bl != nil && ip.IsValid() {
+		bl.Observe(ip, "iec104_denied")
+	}
+
 	if !t.alerts() {
 		return
 	}
@@ -584,9 +593,6 @@ func (t *server) deny(se *session, what, detail string) {
 		name = "iec104_" + name
 	}
 	t.host.Logs().SecurityEvent(context.Background(), "deny", name, attrs...)
-	if bl := t.host.Bans(); bl != nil && ip.IsValid() {
-		bl.Observe(ip, "iec104_denied")
-	}
 }
 
 // alert records something worth telling an operator about that is not a refusal:

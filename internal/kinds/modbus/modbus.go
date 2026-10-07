@@ -1077,6 +1077,12 @@ func (t *server) deny(se *session, what, detail string) {
 	se.tap.Deny(what)
 	t.host.Counters().ModbusRefused.Add(1)
 	t.host.Counters().Refuse("modbus", what)
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
+	if bl := t.host.Bans(); bl != nil && ip.IsValid() {
+		bl.Observe(ip, "modbus_denied")
+	}
+
 	if !t.m.Alerts() {
 		return
 	}
@@ -1085,9 +1091,6 @@ func (t *server) deny(se *session, what, detail string) {
 		attrs = append(attrs, "detail", detail)
 	}
 	t.host.Logs().SecurityEvent(context.Background(), "deny", "modbus_"+what, attrs...)
-	if bl := t.host.Bans(); bl != nil && ip.IsValid() {
-		bl.Observe(ip, "modbus_denied")
-	}
 }
 
 // quarantine reports the bounded refusal without turning it into evidence for
@@ -1131,13 +1134,16 @@ func (t *server) alert(ip netip.Addr, what, detail string) {
 func (t *server) refuse(se *session, frame *wire.Frame, pdu *wire.PDU, d Decision) {
 	se.tap.Deny(d.Reason)
 	t.host.Counters().Refuse("modbus", d.Reason)
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
+	if bl := t.host.Bans(); bl != nil && se.ip.IsValid() {
+		bl.Observe(se.ip, "modbus_denied")
+	}
+
 	if !t.m.Alerts() {
 		return
 	}
 	t.audit(se, frame, pdu, d, "deny")
-	if bl := t.host.Bans(); bl != nil && se.ip.IsValid() {
-		bl.Observe(se.ip, "modbus_denied")
-	}
 }
 
 // subAttrs adds the sub-function to a log line, where the frame has one.

@@ -43,6 +43,12 @@ func (s *server) refused(ip netip.Addr, m *wire.Message, d Decision, side string
 	c.Refuse("dhcp6", d.Reason)
 	c.DHCP6Denied.Add(1)
 	s.logMessage(ip, m, d, side, "deny")
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
+	if bl := s.host.Bans(); bl != nil && ip.IsValid() && !ip.IsUnspecified() {
+		bl.Observe(ip, "dhcp6_denied")
+	}
+
 	if !s.alerts() {
 		return
 	}
@@ -56,15 +62,18 @@ func (s *server) refused(ip netip.Addr, m *wire.Message, d Decision, side string
 		attrs = append(attrs, "detail", textsafe.Clip256(d.Detail))
 	}
 	s.host.Logs().SecurityEvent(context.Background(), "deny", "dhcp6_"+d.Reason, attrs...)
-	if bl := s.host.Bans(); bl != nil && ip.IsValid() && !ip.IsUnspecified() {
-		bl.Observe(ip, "dhcp6_denied")
-	}
 }
 
 // deny records a refusal that is not about a message the policy read: a client
 // outside the address list, a malformed message, a bound, a reply from an
 // address that is not a server. None of these is shadowed.
 func (s *server) deny(ip netip.Addr, what, detail string) {
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
+	if bl := s.host.Bans(); bl != nil && ip.IsValid() && !ip.IsUnspecified() {
+		bl.Observe(ip, "dhcp6_denied")
+	}
+
 	if !s.alerts() {
 		return
 	}
@@ -77,9 +86,6 @@ func (s *server) deny(ip netip.Addr, what, detail string) {
 		attrs = append(attrs, "detail", textsafe.Clip256(detail))
 	}
 	s.host.Logs().SecurityEvent(context.Background(), "deny", name, attrs...)
-	if bl := s.host.Bans(); bl != nil && ip.IsValid() && !ip.IsUnspecified() {
-		bl.Observe(ip, "dhcp6_denied")
-	}
 }
 
 // logMessage writes the access line for one message.

@@ -41,6 +41,12 @@ func (t *server) refused(se *session, d Decision, what string) {
 	}
 	se.tap.Deny(d.Reason)
 	c.Refuse("amqp", d.Reason)
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
+	if bl := t.host.Bans(); bl != nil && se.ip.IsValid() {
+		bl.Observe(se.ip, "amqp_denied")
+	}
+
 	if !t.alerts() {
 		return
 	}
@@ -74,9 +80,6 @@ func (t *server) refused(se *session, d Decision, what string) {
 		attrs = append(attrs, "detail", textsafe.Clip64(d.Detail))
 	}
 	t.host.Logs().SecurityEvent(context.Background(), "deny", "amqp_"+d.Reason, attrs...)
-	if bl := t.host.Bans(); bl != nil && se.ip.IsValid() {
-		bl.Observe(se.ip, "amqp_denied")
-	}
 }
 
 // deny records a refusal that is not about something the policy read.

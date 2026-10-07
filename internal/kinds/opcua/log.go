@@ -54,14 +54,17 @@ func (t *server) refused2(c *conn, d Decision, what string) {
 	}
 	c.tap.Deny(d.Reason)
 	ct.Refuse("opcua", d.Reason)
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
+	if bl := t.host.Bans(); bl != nil && c.ip.IsValid() {
+		bl.Observe(c.ip, "opcua_denied")
+	}
+
 	if !t.alerts() {
 		return
 	}
 	t.host.Logs().SecurityEvent(context.Background(), "deny", "opcua_"+d.Reason,
 		t.attrs(c, d, what)...)
-	if bl := t.host.Bans(); bl != nil && c.ip.IsValid() {
-		bl.Observe(c.ip, "opcua_denied")
-	}
 }
 
 // attrs builds the log attributes for one refusal.
