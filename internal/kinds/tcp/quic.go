@@ -315,9 +315,11 @@ func (q *quicRelay) finish(f *quicFlow, reason string) {
 	if reason != "" {
 		attrs = append(attrs, "closed", reason)
 		if reason == "no_route" {
-			s.Logs().SecurityEvent(context.Background(), "deny", "tcp_no_route", attrs...)
 			if bl := s.Bans(); bl != nil {
 				bl.Observe(f.client.Addr(), "tcp_no_route")
+			}
+			if q.t.alerts() {
+				s.Logs().SecurityEvent(context.Background(), "deny", "tcp_no_route", attrs...)
 			}
 		}
 	}

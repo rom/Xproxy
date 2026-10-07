@@ -95,12 +95,18 @@ func (t *server) intercepted(client net.Conn, ip netip.Addr, start time.Time, sn
 // sends its traffic is exactly what the policy is there to stop.
 func (t *server) deny(ip netip.Addr, dst netip.AddrPort) {
 	t.engine.Counters().Refuse("tcp", "destination_not_allowed")
-	t.engine.Logs().SecurityEvent(context.Background(), "deny", "tcp_no_route",
-		"listener", t.cfg.Name, "proto", "tcp", "client_ip", ip.String(),
-		"destination", dst.String(), "detail", "destination_not_allowed")
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
 	if bl := t.engine.Bans(); bl != nil && ip.IsValid() {
 		bl.Observe(ip, "tcp_no_route")
 	}
+
+	if !t.alerts() {
+		return
+	}
+	t.engine.Logs().SecurityEvent(context.Background(), "deny", "tcp_no_route",
+		"listener", t.cfg.Name, "proto", "tcp", "client_ip", ip.String(),
+		"destination", dst.String(), "detail", "destination_not_allowed")
 }
 
 // ownAddrs are the addresses this listener is bound to, for the loop

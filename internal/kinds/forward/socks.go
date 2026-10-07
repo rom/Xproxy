@@ -313,10 +313,14 @@ func (f *forwardServer) socksConnect(c net.Conn, p *forwardPolicy, ip netip.Addr
 		_ = socksReply(c, socksDenyCode(reason), netip.AddrPort{})
 		h.Counters().ForwardDenied.Add(1)
 		h.Counters().Refuse("forward", reason)
-		h.Logs().SecurityEvent(context.Background(), "deny", "forward_"+reason,
-			"listener", f.name, "protocol", "socks5", "client_ip", ip.String(), "user", user, "destination", dest)
+		// The ban ladder hears about this before alert_on_deny can silence the
+		// record: turning the log down is not a decision to stop responding.
 		if bl := h.Bans(); bl != nil {
 			bl.Observe(ip, "forward_denied")
+		}
+		if f.alerts() {
+			h.Logs().SecurityEvent(context.Background(), "deny", "forward_"+reason,
+				"listener", f.name, "protocol", "socks5", "client_ip", ip.String(), "user", user, "destination", dest)
 		}
 		f.logSOCKS(ip, user, dest, 0, 0, start, reason)
 		return
@@ -673,11 +677,15 @@ func (a *socksAssoc) toDestination(msg []byte, _ netip.AddrPort) (int64, bool) {
 		a.f.host.Counters().ForwardDenied.Add(1)
 		a.f.host.Counters().ForwardUDPDropped.Add(1)
 		a.f.host.Counters().Refuse("forward", reason)
-		a.f.host.Logs().SecurityEvent(ctx, "deny", "forward_"+reason,
-			"listener", a.f.name, "protocol", "socks5-udp", "client_ip", a.client.String(),
-			"user", a.user, "destination", net.JoinHostPort(host, strconv.Itoa(port)))
+		// The ban ladder hears about this before alert_on_deny can silence the
+		// record: turning the log down is not a decision to stop responding.
 		if bl := a.f.host.Bans(); bl != nil {
 			bl.Observe(a.client, "forward_denied")
+		}
+		if a.f.alerts() {
+			a.f.host.Logs().SecurityEvent(ctx, "deny", "forward_"+reason,
+				"listener", a.f.name, "protocol", "socks5-udp", "client_ip", a.client.String(),
+				"user", a.user, "destination", net.JoinHostPort(host, strconv.Itoa(port)))
 		}
 		return 0, false
 	}

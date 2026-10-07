@@ -3544,6 +3544,10 @@
       "description": "DNSListener is a forwarding DNS proxy on the listener address over UDP and TCP: a bounded cache, a block policy and forwarding to upstream resolvers with fresh transaction ids and source ports. The policy, upstreams and cache bounds reload; the address needs a restart.",
       "type": "object",
       "properties": {
+        "alert_on_deny": {
+          "description": "AlertOnDeny writes a security event for every refusal. Default true. Turning it off keeps the counters, the access log and the automatic ban, and loses the security event alone, which is a decision to make deliberately on a listener whose refusals are routine.",
+          "type": "boolean"
+        },
         "allow_clients": {
           "description": "AllowClients restricts clients to these CIDRs (others get REFUSED). Empty allows any client.",
           "type": "array",
@@ -4328,6 +4332,10 @@
       "description": "FTPListener is a protocol-aware FTP proxy. The proxy is an FTP server to the client and an FTP client to the target, and it mediates the data connection as well as the control one. The data connection is the reason this cannot be a layer 4 listener. Every transfer happens on a second connection whose address one side announces to the other, in the body of a reply. A proxy that forwards that reply has told the client to go round it: the file then travels between the client and the target with nothing in the middle, and the control connection it did read is a list of instructions for a transfer it never saw. So the addresses are rewritten, and the proxy is one end of both connections. The other reason is that FTP is old enough to have an attack named after it. A client can name any address in PORT, and a proxy that obeys is a port scanner and a relay for anyone who can log in — the bounce attack of CERT CA-1997-27. Active mode is therefore off by default, and when it is on the announced address has to be the client's own.",
       "type": "object",
       "properties": {
+        "alert_on_deny": {
+          "description": "AlertOnDeny writes a security event for every refusal. Default true. Turning it off keeps the counters, the access log, the session recording and the automatic ban, and loses the security event alone, which is a decision to make deliberately on a listener whose refusals are routine.",
+          "type": "boolean"
+        },
         "allow_active": {
           "description": "AllowActive accepts PORT and EPRT. Default false. With it on, the address announced must be the client's own, which is the only form of active mode that is not a way to make the proxy connect somewhere on request.",
           "type": "boolean"
@@ -4738,6 +4746,10 @@
       "description": "ForwardListener is an explicit forward proxy: clients send CONNECT host:port for tunnels (TLS stays end to end) or absolute http:// URIs for plain requests. Destinations are policy checked by name, resolved address and port; private and loopback addresses are refused unless allow_private is set, and the checked address is the one dialled.",
       "type": "object",
       "properties": {
+        "alert_on_deny": {
+          "description": "AlertOnDeny writes a security event for every refusal. Default true. Turning it off keeps the counters, the access log and the automatic ban, and loses the security event alone, which is a decision to make deliberately on a listener whose refusals are routine -- which on an egress proxy they are: a browser reaching for a destination the policy does not carry is an ordinary afternoon.",
+          "type": "boolean"
+        },
         "allow": {
           "description": "Allow restricts destinations to these names (exact or *.suffix), addresses or CIDRs. Empty allows any destination not denied.",
           "type": "array",
@@ -8226,6 +8238,10 @@
         "action": {
           "description": "Action on a refused PUBLISH or SUBSCRIBE: disconnect (the default) ends the session, drop refuses the one packet and acknowledges it so the session continues.",
           "type": "string"
+        },
+        "alert_on_deny": {
+          "description": "AlertOnDeny writes a security event for every refusal. Default true. Turning it off keeps the counters, the access log and the automatic ban, and loses the security event alone, which is a decision to make deliberately on a listener whose refusals are routine.",
+          "type": "boolean"
         },
         "allow_clients": {
           "description": "AllowClients restricts clients to these CIDRs.",
@@ -12021,6 +12037,10 @@
       "description": "RDPListener is a Remote Desktop gateway: the proxy terminates the connection sequence on both legs, which is what lets it decide the security protocol, rewrite the virtual channel list, check a second factor against the credential in flight, substitute the credential that opens the desktop, and record what the session showed. The channel list is the important one. Every redirection RDP has -- drives, printers, serial and parallel ports, smart cards, the clipboard, audio -- rides a virtual channel, and nothing can be used that was not both announced and granted. A gateway that rewrites the list decides what a session is able to do, before it does it.",
       "type": "object",
       "properties": {
+        "alert_on_deny": {
+          "description": "AlertOnDeny writes a security event for every refusal. Default true. Turning it off keeps the counters, the access log, the session recording and the automatic ban, and loses the security event alone, which is a decision to make deliberately on a listener whose refusals are routine.",
+          "type": "boolean"
+        },
         "allow_clients": {
           "description": "AllowClients restricts clients to these CIDRs.",
           "type": "array",
@@ -14127,6 +14147,10 @@
       "description": "SMTPListener is a protocol-aware SMTP proxy: it speaks the session to the client, speaks a second one to the upstream, and decides for itself where each command and each message ends. That is the point of it. A layer 4 splice would carry the same bytes, but the client and the mail server would each parse them on their own, and every SMTP smuggling bug there has ever been lives in the gap between two such parses. It terminates STARTTLS (RFC 3207) for the client and may start its own to the upstream, so the hop the proxy makes is never the plaintext one by accident.",
       "type": "object",
       "properties": {
+        "alert_on_deny": {
+          "description": "AlertOnDeny writes a security event for every refusal. Default true. Turning it off keeps the counters, the access log and the automatic ban, and loses the security event alone, which is a decision to make deliberately on a listener whose refusals are routine.",
+          "type": "boolean"
+        },
         "allow_clients": {
           "description": "AllowClients restricts clients to these CIDRs. Empty allows all, which is right for inbound mail and wrong for submission.",
           "type": "array",
@@ -14968,6 +14992,10 @@
       "description": "SSHListener is an SSH bastion: the proxy is an SSH server to the client and an SSH client to the target, with its own host key, its own authentication and its own credential onwards. The two connections are the point. A jump host that forwards the stream cannot see which channel is a shell and which is a port forward, so the only policy it can hold is \"may connect\". Here every channel and every request inside the session is a decision: a service account can be given sftp to one directory and nothing else, and a port forward to a database is a rule rather than an assumption. It also means the target never sees the client's key. The client authenticates to the proxy; the proxy authenticates to the target with a credential the client never holds, so a key that leaves the estate is not a key that opens a server in it.",
       "type": "object",
       "properties": {
+        "alert_on_deny": {
+          "description": "AlertOnDeny writes a security event for every refusal. Default true. Turning it off keeps the counters, the access log, the session recording and the automatic ban, and loses the security event alone, which is a decision to make deliberately on a listener whose refusals are routine.",
+          "type": "boolean"
+        },
         "allow_channels": {
           "description": "AllowChannels are the channel types a client may open: session, direct-tcpip (local port forwarding), direct-streamlocal (unix socket forwarding). Default [session].",
           "type": "array",
@@ -15791,6 +15819,10 @@
       "description": "SyslogListener is a syslog relay that reads what it forwards. A relay that forwards syslog without reading it is a pipe. The reason to read it is that almost every field is written by the sender and believed by the collector: the host name, the facility, the severity, the time. A message claiming to be auth.emerg from another machine costs nothing to send, and a message carrying a newline in its text becomes two records in any collector that frames on newlines — the second one saying whatever the sender wanted a record to say. So every message is parsed, and every message is re-emitted as RFC 5424 in one framing, whatever arrived. One dialect out is what makes the record a collector stores the record the relay decided about.",
       "type": "object",
       "properties": {
+        "alert_on_deny": {
+          "description": "AlertOnDeny writes a security event for every refusal. Default true. Turning it off keeps the counters, the access log and the automatic ban, and loses the security event alone, which is a decision to make deliberately on a listener whose refusals are routine.",
+          "type": "boolean"
+        },
         "allow_facilities": {
           "description": "AllowFacilities and DenySeverities filter by what the message claims to be. Empty allows everything.",
           "type": "array",
@@ -16232,6 +16264,10 @@
       "description": "TCPListener routes raw connections to upstream pools. TLS connections are routed by the server name of the ClientHello (peeked, never terminated); other connections and unmatched names go to the default upstream when one is set and are closed otherwise.",
       "type": "object",
       "properties": {
+        "alert_on_deny": {
+          "description": "AlertOnDeny writes a security event for every refusal. Default true. Turning it off keeps the counters, the access log and the automatic ban, and loses the security event alone, which is a decision to make deliberately on a listener whose refusals are routine.",
+          "type": "boolean"
+        },
         "allow_destinations": {
           "description": "AllowDestinations are the CIDRs an original destination may be in, and DestinationPorts the ports; empty ports allow any.",
           "type": "array",
@@ -17023,6 +17059,10 @@
       "description": "TelnetListener is a telnet gateway: the proxy is a telnet server to the client and a telnet client to the target, reading the NVT protocol of RFC 854 in both directions. The reason it is not a tcp listener: telnet's options are commands escaped into the byte stream, so a proxy that does not parse them cannot tell a window size from the characters a person typed. Every control this listener has needs that parse -- a session recording that holds what was seen rather than what was negotiated, an option policy, and a second factor asked for before the target is dialled at all. Telnet carries everything in clear. Wrapping the listener in TLS (the tls section, as telnets does on 992) is the only thing that changes that, and validation says so when it is left off.",
       "type": "object",
       "properties": {
+        "alert_on_deny": {
+          "description": "AlertOnDeny writes a security event for every refusal. Default true. Turning it off keeps the counters, the access log, the session recording and the automatic ban, and loses the security event alone, which is a decision to make deliberately on a listener whose refusals are routine.",
+          "type": "boolean"
+        },
         "allow_clients": {
           "description": "AllowClients restricts clients to these CIDRs.",
           "type": "array",
@@ -17334,6 +17374,10 @@
       "description": "UDPListener is a generic datagram relay: the symmetric primitive to kind: tcp for services whose protocol this proxy does not parse. A datagram has no connection, so the relay keeps a session table instead. The first datagram from a client address picks an endpoint through the pool's balancer and opens a connected socket towards it; every later datagram from that address goes to the same endpoint, and what the endpoint sends back goes to that address. The session ends when it has been idle, when it hits a bound, or at shutdown. Nothing in the payload is read: a kind: udp listener is a router and a set of bounds, not a parser. The thing to get right about a UDP relay is that it is a reflector. Anyone can put anybody's address in a datagram's source, so an open relay answers a victim with traffic the victim never asked for, at whatever gain the service behind it provides. That is why allow_clients and rate_limit exist here and why validation insists on one of them for a listener on a public address. The session table is bounded for the same reason: spoofed sources must not be able to fill it, which is what max_sessions_per_ip is for.",
       "type": "object",
       "properties": {
+        "alert_on_deny": {
+          "description": "AlertOnDeny writes a security event for every refusal. Default true. Turning it off keeps the counters, the access log and the automatic ban, and loses the security event alone, which is a decision to make deliberately on a listener whose refusals are routine.",
+          "type": "boolean"
+        },
         "allow_clients": {
           "description": "AllowClients restricts clients to these CIDRs. On a public address this or rate_limit is what stops the listener being somebody else's amplifier.",
           "type": "array",
@@ -17706,6 +17750,10 @@
       "description": "VNCListener is a VNC gateway: the proxy is an RFB server to the client and an RFB client to the target, terminating the handshake of RFC 6143 on both legs. The reason it is not a tcp listener: RFB's whole policy surface is in the handshake. Which security type is used, whether the session is encrypted and how, what the desktop is called -- all of it is negotiated in the first few hundred bytes, and a proxy that does not sit in that negotiation cannot decide any of it, nor record what follows.",
       "type": "object",
       "properties": {
+        "alert_on_deny": {
+          "description": "AlertOnDeny writes a security event for every refusal. Default true. Turning it off keeps the counters, the access log, the session recording and the automatic ban, and loses the security event alone, which is a decision to make deliberately on a listener whose refusals are routine.",
+          "type": "boolean"
+        },
         "allow_clients": {
           "description": "AllowClients restricts clients to these CIDRs.",
           "type": "array",

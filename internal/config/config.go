@@ -8370,6 +8370,13 @@ type ForwardListener struct {
 	// no name at all -- which is what Encrypted Client Hello looks like
 	// from here -- is not a mismatch and is never refused by this.
 	SNI string `yaml:"sni"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	// Turning it off keeps the counters, the access log and the automatic ban,
+	// and loses the security event alone, which is a decision to make
+	// deliberately on a listener whose refusals are routine -- which on an
+	// egress proxy they are: a browser reaching for a destination the policy
+	// does not carry is an ordinary afternoon.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
 }
 
 // ForwardCategory is a named set of destinations.
@@ -8782,6 +8789,11 @@ type TCPListener struct {
 	// apply to QUIC flows: those are encrypted, and a rule over
 	// ciphertext matches nothing.
 	YARA *YARAPolicy `yaml:"yara"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	// Turning it off keeps the counters, the access log and the automatic ban,
+	// and loses the security event alone, which is a decision to make
+	// deliberately on a listener whose refusals are routine.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
 }
 
 // UDPListener is a generic datagram relay: the symmetric primitive to

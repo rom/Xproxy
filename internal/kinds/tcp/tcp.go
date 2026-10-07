@@ -382,14 +382,32 @@ func (t *server) admitClient(ip netip.Addr, upstreamName string) string {
 		},
 		Deny: func(reason, rule, detail string) {
 			e.Counters().Refuse("tcp", reason)
-			e.Logs().SecurityEvent(context.Background(), "deny", "tcp_"+reason,
-				"listener", t.cfg.Name, "proto", "tcp", "client_ip", ip.String(),
-				"rule", rule, "detail", detail)
+			// The ban ladder hears about this before alert_on_deny can
+			// silence the record below: turning the log down is not a
+			// decision to stop responding.
 			if bl := e.Bans(); bl != nil && ip.IsValid() {
 				bl.Observe(ip, "tcp_denied")
 			}
+
+			if !t.alerts() {
+				return
+			}
+			e.Logs().SecurityEvent(context.Background(), "deny", "tcp_"+reason,
+				"listener", t.cfg.Name, "proto", "tcp", "client_ip", ip.String(),
+				"rule", rule, "detail", detail)
 		},
 	})
+}
+
+// alerts says whether a refusal on this listener is worth a security event.
+//
+// The counters, the access line and the ban observation do not go through here:
+// this is the record alone, which is what alert_on_deny is named for. A listener
+// relaying streams it does not parse refuses on a handful of grounds -- a client
+// the lists hold out, a destination outside the policy, a server name with no
+// route -- and on a port facing the internet the last of those is constant.
+func (t *server) alerts() bool {
+	return t.cfg.TCP == nil || t.cfg.TCP.AlertOnDeny == nil || *t.cfg.TCP.AlertOnDeny
 }
 
 func (t *server) finish(client net.Conn, ip netip.Addr, start time.Time, sni, up, endpoint, reason string, in, out int64) {
@@ -399,9 +417,11 @@ func (t *server) finish(client net.Conn, ip netip.Addr, start time.Time, sni, up
 	if reason != "" {
 		attrs = append(attrs, "closed", reason)
 		if reason == "no_route" {
-			t.engine.Logs().SecurityEvent(context.Background(), "deny", "tcp_no_route", append([]any{"proto", "tcp"}, attrs...)...)
 			if bl := t.engine.Bans(); bl != nil {
 				bl.Observe(ip, "tcp_no_route")
+			}
+			if t.alerts() {
+				t.engine.Logs().SecurityEvent(context.Background(), "deny", "tcp_no_route", append([]any{"proto", "tcp"}, attrs...)...)
 			}
 		}
 	}
