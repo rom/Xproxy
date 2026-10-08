@@ -12,36 +12,28 @@ type env struct {
 // expr is a condition.
 type expr interface {
 	eval(e *env) bool
-	// names are the patterns this expression reads, so the scanner
-	// knows which it must keep counting.
-	names(add func(string))
 }
 
 type boolLit bool
 
-func (b boolLit) eval(*env) bool   { return bool(b) }
-func (boolLit) names(func(string)) {}
+func (b boolLit) eval(*env) bool { return bool(b) }
 
 type notExpr struct{ x expr }
 
-func (n notExpr) eval(e *env) bool       { return !n.x.eval(e) }
-func (n notExpr) names(add func(string)) { n.x.names(add) }
+func (n notExpr) eval(e *env) bool { return !n.x.eval(e) }
 
 type andExpr struct{ a, b expr }
 
-func (x andExpr) eval(e *env) bool       { return x.a.eval(e) && x.b.eval(e) }
-func (x andExpr) names(add func(string)) { x.a.names(add); x.b.names(add) }
+func (x andExpr) eval(e *env) bool { return x.a.eval(e) && x.b.eval(e) }
 
 type orExpr struct{ a, b expr }
 
-func (x orExpr) eval(e *env) bool       { return x.a.eval(e) || x.b.eval(e) }
-func (x orExpr) names(add func(string)) { x.a.names(add); x.b.names(add) }
+func (x orExpr) eval(e *env) bool { return x.a.eval(e) || x.b.eval(e) }
 
 // stringExpr is "$a": true when the pattern occurred at least once.
 type stringExpr struct{ name string }
 
-func (s stringExpr) eval(e *env) bool       { return e.counts[s.name] > 0 }
-func (s stringExpr) names(add func(string)) { add(s.name) }
+func (s stringExpr) eval(e *env) bool { return e.counts[s.name] > 0 }
 
 // countExpr is "#a <op> n".
 type countExpr struct {
@@ -53,7 +45,6 @@ type countExpr struct {
 func (c countExpr) eval(e *env) bool {
 	return compare(int64(e.counts["$"+c.name]), c.op, c.n)
 }
-func (c countExpr) names(add func(string)) { add("$" + c.name) }
 
 // sizeExpr is "filesize <op> n". In a stream filesize is the bytes seen
 // so far, which is the only honest answer: there is no end to measure
@@ -64,7 +55,6 @@ type sizeExpr struct {
 }
 
 func (s sizeExpr) eval(e *env) bool { return compare(e.filesize, s.op, s.n) }
-func (sizeExpr) names(func(string)) {}
 
 // ofExpr is "N of <set>", where N is a count, "any" (1) or "all".
 type ofExpr struct {
@@ -84,12 +74,6 @@ func (o ofExpr) eval(e *env) bool {
 		return got == int64(len(o.items)) && len(o.items) > 0
 	}
 	return got >= o.n
-}
-
-func (o ofExpr) names(add func(string)) {
-	for _, n := range o.items {
-		add(n)
-	}
 }
 
 func compare(a int64, op string, b int64) bool {
@@ -184,15 +168,18 @@ func (p *parser) primary(r *Rule) (expr, error) {
 		}
 		return x, nil
 	case p.tok.kind == tokIdentifier && strings.HasPrefix(p.tok.text, "$"):
+		// Refused before the token is consumed, as the "#" case below
+		// does: p.errf reports the line of the current token, so
+		// advancing first named the line after the mistake.
 		name := p.tok.text
-		if err := p.advance(); err != nil {
-			return nil, err
-		}
 		if strings.Contains(name, "*") {
 			return nil, p.errf("%q: a wildcard belongs in a set, as in \"any of (%s)\"", name, name)
 		}
 		if !hasPattern(r, name) {
 			return nil, p.errf("%s is not defined in this rule", name)
+		}
+		if err := p.advance(); err != nil {
+			return nil, err
 		}
 		return stringExpr{name}, nil
 	case p.tok.kind == tokIdentifier && strings.HasPrefix(p.tok.text, "#"):
@@ -378,6 +365,11 @@ func dedupe(in []string) []string {
 // numberOf handles "N of ..." where the parser has already read N.
 func (p *parser) numberOf(r *Rule, n int64) (expr, error) {
 	if n < 0 {
+		// The lexer now refuses the literals that could arrive here
+		// negative, so this is belt and braces. It stays because the
+		// fault it guards is a fail-open: ofExpr asks whether the count
+		// is at least n, and a negative n is satisfied before a single
+		// byte has gone past.
 		return nil, p.errf("a negative count is not a condition")
 	}
 	return p.ofSet(r, false, n)

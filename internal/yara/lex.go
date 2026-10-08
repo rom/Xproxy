@@ -18,6 +18,7 @@ package yara
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"unicode"
 )
@@ -74,7 +75,14 @@ func (l *lexer) next() (token, error) {
 		// knows which, so it asks for a hex string explicitly.
 		l.pos++
 		return token{kind: tokPunct, text: "{", line: l.line}, nil
-	case c == '$' || c == '#' || c == '@' || c == '!':
+	case c == '$' || c == '#' || c == '@' ||
+		// "!" is the sigil of YARA's string-length operator, !a, which
+		// this package refuses in a condition. It is also the first
+		// byte of "!=", and taking it as a sigil here made that
+		// operator unreachable: "#a != 0" lexed as the identifier "!"
+		// followed by "= 0" and never got as far as the comparison the
+		// parser and compare() both already supported.
+		(c == '!' && !strings.HasPrefix(l.src[l.pos:], "!=")):
 		return l.lexIdentifier()
 	case isDigit(c):
 		return l.lexNumber()
@@ -224,19 +232,33 @@ func (l *lexer) lexNumber() (token, error) {
 	}
 	text := l.src[start:l.pos]
 	mult := int64(1)
+	unit := ""
+	// Only the two bytes after the digits can be a size suffix. This
+	// read the rest of the file and upper-cased it, three times, for
+	// every number in it.
+	two := ""
+	if l.pos+2 <= len(l.src) {
+		two = strings.ToUpper(l.src[l.pos : l.pos+2])
+	}
 	for _, suffix := range []struct {
 		s string
 		m int64
 	}{{"KB", 1 << 10}, {"MB", 1 << 20}, {"GB", 1 << 30}} {
-		if strings.HasPrefix(strings.ToUpper(l.src[l.pos:]), suffix.s) {
-			mult = suffix.m
+		if two == suffix.s {
+			mult, unit = suffix.m, l.src[l.pos:l.pos+2]
 			l.pos += 2
 			break
 		}
 	}
 	n, err := parseInt(text)
 	if err != nil {
-		return token{}, l.errf("%q is not a number", text)
+		return token{}, l.errf("%q is not a number: %v", text, err)
+	}
+	if n > math.MaxInt64/mult {
+		// The suffix overflows where the digits did not, and a size
+		// bound that wrapped is one no stream is ever on the wrong side
+		// of. Refuse it here rather than hand the parser a negative.
+		return token{}, l.errf("%s%s does not fit in a 64-bit integer", text, unit)
 	}
 	return token{kind: tokNumber, text: text, num: n * mult, line: l.line}, nil
 }
@@ -309,22 +331,35 @@ func hexVal(c byte) (byte, bool) {
 }
 
 func parseInt(s string) (int64, error) {
-	var n int64
+	digits, base := s, int64(10)
 	if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
-		for _, c := range []byte(s[2:]) {
-			v, ok := hexVal(c)
-			if !ok {
+		digits, base = s[2:], 16
+	}
+	if digits == "" {
+		// "0x" with no digits after it read as zero, so "filesize < 0x"
+		// compiled into a bound no stream is ever under: a rule that can
+		// never fire and never says so. A typo in a rule file deserves a
+		// refusal at load, which is where this package puts everything
+		// else it cannot honour.
+		return 0, fmt.Errorf("%q has no digits", s)
+	}
+	var n int64
+	for _, c := range []byte(digits) {
+		v, ok := hexVal(c)
+		if !ok || int64(v) >= base {
+			if base == 16 {
 				return 0, fmt.Errorf("bad hex digit %q", string(c))
 			}
-			n = n*16 + int64(v)
-		}
-		return n, nil
-	}
-	for _, c := range []byte(s) {
-		if !isDigit(c) {
 			return 0, fmt.Errorf("bad digit %q", string(c))
 		}
-		n = n*10 + int64(c-'0')
+		if n > (math.MaxInt64-int64(v))/base {
+			// The same fault from the other end: a literal past the top
+			// of int64 wrapped to a negative count, and "#a > <that>" is
+			// then true for every stream while "filesize < <that>" is
+			// true for none. Neither is what the rule says.
+			return 0, fmt.Errorf("%q does not fit in a 64-bit integer", s)
+		}
+		n = n*base + int64(v)
 	}
 	return n, nil
 }
