@@ -214,7 +214,11 @@ func berContent(v int64) []byte {
 		v >>= 8
 	}
 	if len(b) == 0 {
-		return []byte{0}
+		// The loop stops when what is left is all sign bits, so an empty b
+		// means v was -1: zero already returned above. The content octets of
+		// -1 are one 0xFF, and returning 0 here would encode it as zero --
+		// a different integer, and in an error code a different refusal.
+		return []byte{0xFF}
 	}
 	if !neg && b[0]&0x80 != 0 {
 		b = append([]byte{0}, b...)
