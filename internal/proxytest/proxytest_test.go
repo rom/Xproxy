@@ -101,3 +101,39 @@ func TestTryStartBuildsWithoutBinding(t *testing.T) {
 		t.Errorf("%d addresses before Start", n)
 	}
 }
+
+// Get is the fifth call, and the only one that speaks to a started
+// server. Two things about it are worth pinning: it does not follow a
+// redirect, because a test asserting on a 301 would otherwise see the
+// page it points at; and "Host" sets the request's host rather than a
+// header, which is the field net/http refuses to take from the header
+// map and the one every host-routing test depends on.
+func TestGetDoesNotFollowRedirectsAndSetsTheHost(t *testing.T) {
+	const redirecting = `
+version: 1
+server:
+  listeners:
+    - {name: edge, address: "127.0.0.1:0"}
+logging: {access: {enabled: false}}
+routes:
+  - name: moved
+    hosts: [shop.test]
+    paths: [/old]
+    redirect: {to: "https://shop.test/new", status: 301}
+`
+	s := proxytest.Start(t, redirecting)
+	base := "http://" + proxytest.Addr(t, s, "edge")
+	resp, body := proxytest.Get(t, base+"/old", "Host", "shop.test", "X-Trace", "1")
+	if resp.StatusCode != http.StatusMovedPermanently {
+		t.Fatalf("answered %d %q, want the redirect itself", resp.StatusCode, strings.TrimSpace(body))
+	}
+	if got := resp.Header.Get("Location"); got != "https://shop.test/new" {
+		t.Errorf("Location = %q", got)
+	}
+	// Without the Host the route does not match, which is what says the
+	// header was applied to the request and not to the header map.
+	resp, _ = proxytest.Get(t, base+"/old")
+	if resp.StatusCode == http.StatusMovedPermanently {
+		t.Error("the redirect answered a request for another host")
+	}
+}

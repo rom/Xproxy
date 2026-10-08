@@ -168,3 +168,59 @@ func TestEveryRoleNamesItsDaemonAndBack(t *testing.T) {
 		t.Error("a program nobody ships resolved to a role")
 	}
 }
+
+// The roster read from both ends: every kind a role owns, and every
+// role that carries a kind's code.
+//
+// These two are what a message about a misplaced listener is built from
+// ("kind %q is served by %s, not by this daemon"), so what matters is
+// that they agree with Owner and with each other: a kind is owned by
+// exactly one role, and the role that owns it is the first of the ones
+// that serve it.
+func TestOwnedByAndServedByAgreeWithTheRoster(t *testing.T) {
+	owned := map[string]Role{}
+	for _, r := range Roles() {
+		ks := OwnedBy(r)
+		if !sort.StringsAreSorted(ks) {
+			t.Errorf("OwnedBy(%s) is not sorted: %v", r, ks)
+		}
+		for _, k := range ks {
+			if was, dup := owned[k]; dup {
+				t.Errorf("kind %q is owned by %s and %s", k, was, r)
+			}
+			owned[k] = r
+			if got, ok := RoleOf(k); !ok || got != r {
+				t.Errorf("RoleOf(%q) = %s, %v, want %s", k, got, ok, r)
+			}
+		}
+	}
+	for _, k := range Kinds() {
+		if _, ok := owned[k]; !ok {
+			t.Errorf("kind %q is owned by nobody", k)
+		}
+		served := ServedBy(k)
+		if len(served) == 0 {
+			t.Fatalf("kind %q is served by nobody", k)
+		}
+		if served[0] != owned[k] {
+			t.Errorf("kind %q: ServedBy says %s first, OwnedBy says %s", k, served[0], owned[k])
+		}
+		if len(served) != len(Daemons(k)) || Shared(k) != (len(served) > 1) {
+			t.Errorf("kind %q: ServedBy %v disagrees with Daemons %v / Shared %v", k, served, Daemons(k), Shared(k))
+		}
+		// The returned slice is the caller's: writing to it must not
+		// reach the roster the next caller reads.
+		served[0] = "scribbled"
+		if ServedBy(k)[0] != owned[k] {
+			t.Fatalf("ServedBy handed out the roster's own slice for %q", k)
+		}
+	}
+	if got := OwnedBy(Role("xnothing")); len(got) != 0 {
+		t.Errorf("OwnedBy of a role nobody has = %v", got)
+	}
+	// A role with no case in Daemon falls back to its own name, which is
+	// what keeps a message about an unknown role readable.
+	if got := Role("future").Daemon(); got != "future" {
+		t.Errorf("Daemon of an unknown role = %q", got)
+	}
+}
