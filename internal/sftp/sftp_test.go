@@ -193,3 +193,108 @@ func FuzzParseRequest(f *testing.F) {
 		}
 	})
 }
+
+// Every request type has the name an operator writes in a policy, and one this
+// proxy has no name for still has a name in the record.
+//
+// This table is the vocabulary of the deny list: a policy says `remove` and
+// `symlink`, and the mapping from the wire's byte to that word is what makes
+// the policy mean anything. A type outside it reads as `type 42` rather than
+// disappearing -- an extension nobody configured is exactly what is worth
+// seeing in a log.
+func TestEveryRequestTypeHasItsPolicyName(t *testing.T) {
+	for _, c := range []struct {
+		typ  byte
+		want string
+	}{
+		{sftp.INIT, "init"}, {sftp.OPEN, "open"}, {sftp.CLOSE, "close"},
+		{sftp.READ, "read"}, {sftp.WRITE, "write"}, {sftp.LSTAT, "lstat"},
+		{sftp.FSTAT, "fstat"}, {sftp.SETSTAT, "setstat"}, {sftp.FSETSTAT, "fsetstat"},
+		{sftp.OPENDIR, "opendir"}, {sftp.READDIR, "readdir"}, {sftp.REMOVE, "remove"},
+		{sftp.MKDIR, "mkdir"}, {sftp.RMDIR, "rmdir"}, {sftp.REALPATH, "realpath"},
+		{sftp.STAT, "stat"}, {sftp.RENAME, "rename"}, {sftp.READLINK, "readlink"},
+		{sftp.SYMLINK, "symlink"},
+	} {
+		if got := sftp.TypeName(c.typ); got != c.want {
+			t.Errorf("TypeName(%d) = %q, want %q", c.typ, got, c.want)
+		}
+		// A packet names itself the same way, which is what the deny list
+		// is matched against.
+		if got := (sftp.Packet{Type: c.typ}).Name(); got != c.want {
+			t.Errorf("Packet{%d}.Name() = %q, want %q", c.typ, got, c.want)
+		}
+	}
+	for _, typ := range []byte{sftp.EXTENDED, sftp.EXTENDEDREPLY, 42, 0} {
+		if got := sftp.TypeName(typ); !strings.HasPrefix(got, "type ") {
+			t.Errorf("TypeName(%d) = %q, want it to name the number", typ, got)
+		}
+	}
+}
+
+// StatusID is how a proxy tells its own answers from the client's, so a packet
+// too short to carry an id must read as zero rather than as whatever follows
+// in memory -- and a packet that is not a STATUS at all must not be read for
+// one.
+func TestStatusIDIsOnlyReadFromAStatusThatCarriesOne(t *testing.T) {
+	id, code := uint32(0x11223344), uint32(4)
+	p := sftp.StatusPacket(id, code, "permission denied")
+	if got := sftp.StatusID(p); got != id {
+		t.Errorf("StatusID = %#x, want %#x", got, id)
+	}
+	for _, c := range []struct {
+		name string
+		p    sftp.Packet
+	}{
+		{"not a status", sftp.Packet{Type: sftp.DATA, Body: p.Body}},
+		{"truncated to three bytes", sftp.Packet{Type: sftp.STATUS, Body: p.Body[:3]}},
+		{"no body at all", sftp.Packet{Type: sftp.STATUS}},
+	} {
+		if got := sftp.StatusID(c.p); got != 0 {
+			t.Errorf("%s: StatusID = %#x, want 0", c.name, got)
+		}
+	}
+}
+
+// The handle reply is the one packet from the server a proxy has to read: a
+// WRITE names a handle, and without this the proxy cannot connect that handle
+// to the path it decided about. So a reply it cannot read has to be an error
+// rather than an empty handle, which would silently match every write.
+func TestAHandleReplyThatCannotBeReadIsAnError(t *testing.T) {
+	good := sftp.Packet{Type: sftp.HANDLE,
+		Body: append(binary.BigEndian.AppendUint32(nil, 7), str("h1")...)}
+	id, h, err := sftp.ParseHandleReply(good)
+	if err != nil || id != 7 || h != "h1" {
+		t.Fatalf("ParseHandleReply = %d, %q, %v", id, h, err)
+	}
+	for _, c := range []struct {
+		name string
+		p    sftp.Packet
+	}{
+		{"another packet type", sftp.Packet{Type: sftp.STATUS, Body: good.Body}},
+		{"no id", sftp.Packet{Type: sftp.HANDLE}},
+		{"an id and no handle", sftp.Packet{Type: sftp.HANDLE,
+			Body: binary.BigEndian.AppendUint32(nil, 7)}},
+		{"a handle length longer than the body", sftp.Packet{Type: sftp.HANDLE,
+			Body: append(binary.BigEndian.AppendUint32(nil, 7),
+				binary.BigEndian.AppendUint32(nil, 64)...)}},
+	} {
+		if _, h, err := sftp.ParseHandleReply(c.p); err == nil {
+			t.Errorf("%s: no error, handle %q", c.name, h)
+		}
+	}
+}
+
+// Clone is the contract a reader relies on: a packet's bytes are not kept past
+// the packet, and a proxy holding writes to replay them at a close keeps them
+// for a long time. So a clone must not alias.
+func TestCloneDoesNotAliasTheBody(t *testing.T) {
+	p := sftp.Packet{Type: sftp.WRITE, Body: []byte("payload")}
+	c := p.Clone()
+	p.Body[0] = 'X'
+	if c.Body[0] != 'p' {
+		t.Errorf("the clone followed the original: %q", c.Body)
+	}
+	if c.Type != p.Type {
+		t.Errorf("type = %d, want %d", c.Type, p.Type)
+	}
+}
