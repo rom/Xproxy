@@ -3,6 +3,7 @@ package asciicast_test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -209,5 +210,142 @@ func TestHeaderDefaults(t *testing.T) {
 	hdr, _ := lines(t, buf.Bytes())
 	if hdr["width"] != float64(80) || hdr["height"] != float64(24) {
 		t.Fatalf("header = %v", hdr)
+	}
+}
+
+// A resize and a marker are the two things a recording says that the session
+// did not print: the geometry changed, and the recorder had something to add --
+// that the session was cut at a bound, for instance. A player needs the first
+// to stop clipping what follows, and whoever replays the file needs the second
+// to know the recording is not the whole story.
+func TestResizeAndMarkerAreTheirOwnEvents(t *testing.T) {
+	var buf bytes.Buffer
+	w, err := asciicast.NewWriter(&buf, asciicast.Header{Width: 80, Height: 24})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Resized(132, 43); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Mark("xproxy: cut at the byte bound"); err != nil {
+		t.Fatal(err)
+	}
+	// Neither a size that makes no sense nor an empty note is written: a
+	// zero-column terminal is a bug in the caller, and an empty marker is
+	// a line that says nothing.
+	for _, c := range []struct{ cols, rows int }{{0, 24}, {80, 0}, {-1, -1}} {
+		if err := w.Resized(c.cols, c.rows); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Mark(""); err != nil {
+		t.Fatal(err)
+	}
+	_, events := lines(t, buf.Bytes())
+	if len(events) != 2 {
+		t.Fatalf("%d events, want 2:\n%s", len(events), buf.String())
+	}
+	if events[0][1] != "r" || events[0][2] != "132x43" {
+		t.Errorf("resize event = %v", events[0])
+	}
+	if events[1][1] != "m" || events[1][2] != "xproxy: cut at the byte bound" {
+		t.Errorf("marker event = %v", events[1])
+	}
+}
+
+// A nil writer is what a session with no recording configured holds, and every
+// path writes to it without testing first.
+func TestANilWriterTakesEverything(t *testing.T) {
+	var w *asciicast.Writer
+	if err := w.Event(asciicast.Output, []byte("x")); err != nil {
+		t.Error(err)
+	}
+	if err := w.Resized(80, 24); err != nil {
+		t.Error(err)
+	}
+	if err := w.Mark("note"); err != nil {
+		t.Error(err)
+	}
+	if err := w.Flush(); err != nil {
+		t.Error(err)
+	}
+}
+
+// failingWriter accepts the header and then fails, which is the disk filling up
+// or the file being closed under the recorder.
+type failingWriter struct {
+	n     int
+	after int
+}
+
+func (f *failingWriter) Write(b []byte) (int, error) {
+	f.n++
+	if f.n > f.after {
+		return 0, errors.New("no space left on device")
+	}
+	return len(b), nil
+}
+
+// The first write failure is kept and returned to every later call, rather than
+// each one trying again: a recording whose disk has filled is not going to
+// start working, and a session must not be held up once per keystroke finding
+// that out. What matters for the session is that the error is reported and the
+// session itself carries on -- the recording is evidence, not the service.
+func TestAWriteFailureIsStickyAcrossEveryPath(t *testing.T) {
+	f := &failingWriter{after: 1} // the header goes, nothing after it does
+	w, err := asciicast.NewWriter(f, asciicast.Header{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := w.Event(asciicast.Output, []byte("printed"))
+	if first == nil {
+		t.Fatal("a failing writer accepted an event")
+	}
+	for _, c := range []struct {
+		name string
+		call func() error
+	}{
+		{"event", func() error { return w.Event(asciicast.Output, []byte("more")) }},
+		{"resize", func() error { return w.Resized(100, 40) }},
+		{"marker", func() error { return w.Mark("note") }},
+		{"flush", func() error { return w.Flush() }},
+	} {
+		if err := c.call(); err == nil {
+			t.Errorf("%s: a second call after a failure succeeded", c.name)
+		} else if err.Error() != first.Error() {
+			t.Errorf("%s: error = %v, want the first one (%v)", c.name, err, first)
+		}
+	}
+}
+
+// A header the writer cannot even write is a recording that never starts, and
+// the caller is told at once rather than finding out on the first keystroke.
+func TestAHeaderThatCannotBeWrittenIsAnError(t *testing.T) {
+	if _, err := asciicast.NewWriter(&failingWriter{after: 0}, asciicast.Header{}); err == nil {
+		t.Error("a writer that refuses the header returned a recorder")
+	}
+}
+
+// Flush writes the half character a stream ended in the middle of, and after
+// that there is nothing left to flush: a second call is not a second line.
+func TestFlushIsIdempotent(t *testing.T) {
+	var buf bytes.Buffer
+	w, err := asciicast.NewWriter(&buf, asciicast.Header{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The first two bytes of a three-byte character: held back as carry.
+	if err := w.Event(asciicast.Output, []byte{0xe2, 0x82}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	after := buf.Len()
+	if err := w.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if buf.Len() != after {
+		t.Errorf("a second flush wrote %d more bytes", buf.Len()-after)
 	}
 }

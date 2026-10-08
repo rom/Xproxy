@@ -11,6 +11,7 @@ import (
 
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/listener"
+	"github.com/rom/xproxy/internal/testutil"
 )
 
 // The rest of a daemon's start: the branches that only happen when
@@ -427,5 +428,120 @@ func TestRunPrintsItsVersionAndLeaves(t *testing.T) {
 	})
 	if !strings.HasPrefix(out, "xrelay ") {
 		t.Errorf("-version printed %q", out)
+	}
+}
+
+// The rest of the failed starts, which share one property worth stating once:
+// each of these subsystems is opened after the configuration has loaded and
+// before READY, so a failure in any of them must take the start down rather
+// than leave a process serving traffic with less than the operator configured.
+// A daemon that came up without its log streams, without its exporter or
+// without its fleet agent would be a daemon whose operator believes they are
+// there.
+
+// TestLogsThatCannotBeOpenedAreAFailedStart: the streams are the first thing
+// opened and the only place a later failure could be reported, so a daemon
+// that could not open them has nowhere to say anything and must not start.
+// Nothing is in the log here by definition -- the exit code is the whole
+// assertion.
+func TestLogsThatCannotBeOpenedAreAFailedStart(t *testing.T) {
+	dir := t.TempDir()
+	// A file where the directory should be: the open fails with ENOTDIR,
+	// which is a path in the configuration naming the wrong thing.
+	blocker := filepath.Join(dir, "not-a-directory")
+	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := write(t, dir, "xproxy.yaml", `
+version: 1
+server:
+  listeners: [{name: main, address: "127.0.0.1:0"}]
+sandbox: {enabled: false}
+logging: {directory: `+filepath.Join(blocker, "logs")+`, access: {enabled: false}}
+upstreams: [{name: u, endpoints: [{address: "127.0.0.1:1"}]}]
+routes: [{name: r, upstream: u}]
+`)
+	if code := run(listener.RoleEdge, []string{"-config", path, "-allow-root"}, make(chan os.Signal), nil); code != 1 {
+		t.Errorf("exit code %d, want 1", code)
+	}
+}
+
+// TestAnExporterThatCannotBeBuiltIsAFailedStart: the OTLP exporter is the
+// operator's own view of the proxy leaving the host. A CA file that is not
+// there means the exporter would have to either skip verification or send
+// nothing, and both are worse than a start that stops and says so.
+func TestAnExporterThatCannotBeBuiltIsAFailedStart(t *testing.T) {
+	dir := t.TempDir()
+	// A file that exists, so the configuration loads, and is not a
+	// certificate, so building the exporter's trust store fails. The
+	// distinction matters: a path that is simply absent is caught at load,
+	// and this is the later failure, after the data plane is already bound.
+	ca := filepath.Join(dir, "not-a-certificate.pem")
+	if err := os.WriteFile(ca, []byte("this is not PEM\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := write(t, dir, "xproxy.yaml", `
+version: 1
+server:
+  listeners: [{name: main, address: "127.0.0.1:0"}]
+sandbox: {enabled: false}
+management: {socket: `+filepath.Join(dir, "m.sock")+`}
+logging: {directory: `+filepath.Join(dir, "logs")+`, access: {enabled: false}}
+metrics:
+  otlp:
+    endpoint: "https://127.0.0.1:4318/v1/metrics"
+    ca_file: `+ca+`
+upstreams: [{name: u, endpoints: [{address: "127.0.0.1:1"}]}]
+routes: [{name: r, upstream: u}]
+`)
+	if code := run(listener.RoleEdge, []string{"-config", path, "-allow-root"}, make(chan os.Signal), nil); code != 1 {
+		t.Errorf("exit code %d, want 1", code)
+	}
+	if errs := logFile(t, dir, "error"); !strings.Contains(errs, "otlp exporter failed") {
+		t.Errorf("the failure is not in the error log:\n%s", errs)
+	}
+}
+
+// TestAFleetAgentThatCannotBeBuiltIsAFailedStart: the agent is how a node is
+// managed and how it reports what it is running. One that failed quietly would
+// leave a node absent from the fleet's own view of itself, which is the view an
+// operator uses to decide the estate is configured as they think.
+//
+// The arrangement here is a fleet.dir that is not the configuration file's own
+// directory, which the agent refuses because a bundle written anywhere else is
+// a bundle the daemon would never read back.
+func TestAFleetAgentThatCannotBeBuiltIsAFailedStart(t *testing.T) {
+	dir := t.TempDir()
+	ca := testutil.WriteCA(t, dir)
+	cert, key := ca.Issue(t, dir, "node-1")
+	caFile := ca.WriteKey(t, dir)
+	// A bundle directory that is not the configuration file's own: the
+	// agent refuses it because a bundle written anywhere else is a bundle
+	// this daemon would never read back. The directory exists, so the
+	// configuration loads and the refusal is the agent's own.
+	elsewhere := filepath.Join(dir, "elsewhere")
+	if err := os.MkdirAll(elsewhere, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := write(t, dir, "xproxy.yaml", `
+version: 1
+server:
+  listeners: [{name: main, address: "127.0.0.1:0"}]
+sandbox: {enabled: false}
+management: {socket: `+filepath.Join(dir, "m.sock")+`}
+logging: {directory: `+filepath.Join(dir, "logs")+`, access: {enabled: false}}
+fleet:
+  controller: "https://127.0.0.1:9443"
+  node_id: node-1
+  dir: `+elsewhere+`
+  tls: {cert_file: `+cert+`, key_file: `+key+`, ca_file: `+caFile+`}
+upstreams: [{name: u, endpoints: [{address: "127.0.0.1:1"}]}]
+routes: [{name: r, upstream: u}]
+`)
+	if code := run(listener.RoleEdge, []string{"-config", path, "-allow-root"}, make(chan os.Signal), nil); code != 1 {
+		t.Errorf("exit code %d, want 1", code)
+	}
+	if errs := logFile(t, dir, "error"); !strings.Contains(errs, "fleet agent failed") {
+		t.Errorf("the failure is not in the error log:\n%s", errs)
 	}
 }

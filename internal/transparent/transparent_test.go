@@ -1,8 +1,10 @@
 package transparent
 
 import (
+	"errors"
 	"net"
 	"net/netip"
+	"path/filepath"
 	"testing"
 )
 
@@ -104,5 +106,74 @@ func TestDestinationOfAnOrdinaryConnectionIsTheLocalAddress(t *testing.T) {
 	// check: an intercepting listener handed this would dial itself.
 	if err := Loop(dst, []netip.AddrPort{want}); err == nil {
 		t.Fatal("the listener's own address was not recognised as a loop")
+	}
+}
+
+// A connection that is not a TCP socket has no original destination, and says
+// so rather than guessing one.
+//
+// Destination falls back to the socket's own local address because that is
+// what TPROXY leaves there. On anything that is not a TCP socket there is no
+// such address to read, and the answer has to be the error: a zero AddrPort
+// returned as though it were a destination would be dialled as 0.0.0.0:0, or
+// worse, pass the loop check and be relayed somewhere.
+func TestAConnectionThatIsNotTCPHasNoOriginalDestination(t *testing.T) {
+	// A pipe: no address of any kind.
+	a, b := net.Pipe()
+	defer func() { _ = a.Close(); _ = b.Close() }()
+	if dst, err := Destination(a); !errors.Is(err, ErrNoOriginalDestination) {
+		t.Errorf("a pipe: %s, %v, want ErrNoOriginalDestination", dst, err)
+	}
+
+	// A Unix socket: an address, but not one with a port in it.
+	sock := filepath.Join(t.TempDir(), "s.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			close(accepted)
+			return
+		}
+		accepted <- c
+	}()
+	client, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = client.Close() }()
+	server := <-accepted
+	if server == nil {
+		t.Fatal("accept failed")
+	}
+	defer func() { _ = server.Close() }()
+	if dst, err := Destination(server); !errors.Is(err, ErrNoOriginalDestination) {
+		t.Errorf("a Unix socket: %s, %v, want ErrNoOriginalDestination", dst, err)
+	}
+}
+
+// addrlessConn is a TCP connection whose local address carries no address at
+// all, which is what a socket reports between bind and the kernel filling it
+// in, and what a stub in a test naturally produces.
+type addrlessConn struct{ net.Conn }
+
+func (addrlessConn) LocalAddr() net.Addr { return &net.TCPAddr{} }
+
+// A TCP address with nothing in it is not a destination.
+//
+// The fallback reads the socket's own local address, and a *net.TCPAddr with no
+// IP and no port converts to an AddrPort that is invalid rather than an error.
+// Returning it would hand the relay 0.0.0.0:0 to dial -- and, worse, a zero
+// address passes the loop check, so the connection would be relayed to
+// whatever that resolves to instead of being refused.
+func TestALocalAddressWithNothingInItIsNotADestination(t *testing.T) {
+	a, b := net.Pipe()
+	defer func() { _ = a.Close(); _ = b.Close() }()
+	if dst, err := Destination(addrlessConn{a}); !errors.Is(err, ErrNoOriginalDestination) {
+		t.Errorf("Destination = %s, %v, want ErrNoOriginalDestination", dst, err)
 	}
 }

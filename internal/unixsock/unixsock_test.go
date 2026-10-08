@@ -1,6 +1,8 @@
 package unixsock_test
 
 import (
+	"errors"
+	"io/fs"
 	"net"
 	"os"
 	"path/filepath"
@@ -98,5 +100,30 @@ func TestListenUnlinksOnClose(t *testing.T) {
 	_ = ln.Close()
 	if _, err := os.Lstat(p); !os.IsNotExist(err) {
 		t.Fatalf("the socket survived Close: %v", err)
+	}
+}
+
+// TestListenRefusesNoPath: a daemon configured with no socket path asks for
+// one bound nowhere, and a listener on "" would be a management interface
+// nobody can reach and nobody can see is missing.
+func TestListenRefusesNoPath(t *testing.T) {
+	if _, err := unixsock.Listen("", 0o600); err == nil || !strings.Contains(err.Error(), "no path") {
+		t.Fatalf("an empty path: %v", err)
+	}
+}
+
+// TestListenReportsABindThatCannotHappen: the bind's own error is returned
+// rather than turned into something of this package's, because what the
+// operator needs is the reason the kernel gave -- here a parent directory
+// that is not there, which is a path in the configuration that does not exist.
+func TestListenReportsABindThatCannotHappen(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "no-such-directory", "s.sock")
+	ln, err := unixsock.Listen(p, 0o600)
+	if err == nil {
+		_ = ln.Close()
+		t.Fatal("binding under a directory that does not exist succeeded")
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("error = %v, want one that says the path is not there", err)
 	}
 }

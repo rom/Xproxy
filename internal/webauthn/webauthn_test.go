@@ -1,6 +1,7 @@
 package webauthn
 
 import (
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
@@ -714,4 +715,184 @@ func mapOf(k, v []byte) []byte {
 	out := []byte{0xa1}
 	out = append(out, k...)
 	return append(out, v...)
+}
+
+// coseKeyFor is the public half of an arbitrary EC key, as an authenticator on
+// that curve would report it.
+func coseKeyFor(k *ecdsa.PrivateKey, alg, crv int64, size int) []byte {
+	x := k.X.FillBytes(make([]byte, size))
+	y := k.Y.FillBytes(make([]byte, size))
+	var b []byte
+	b = append(b, 0xa5)
+	b = append(b, encInt(coseKty)...)
+	b = append(b, encInt(ktyEC2)...)
+	b = append(b, encInt(coseAlg)...)
+	b = append(b, encInt(alg)...)
+	b = append(b, encInt(coseCrv)...)
+	b = append(b, encInt(crv)...)
+	b = append(b, encInt(coseXE)...)
+	b = append(b, encBytes(x)...)
+	b = append(b, encInt(coseY)...)
+	b = append(b, encBytes(y)...)
+	return b
+}
+
+// A curve is only accepted with the algorithm that goes with it, and the
+// digest follows the algorithm rather than a default.
+//
+// This pairing is the security property: an authenticator that offered a P-256
+// point under ES512 would be asking the verifier to hash with SHA-512 and
+// verify on a curve whose order is far smaller, and a verifier that took the
+// algorithm's word for the curve would be checking a signature over a digest
+// the key cannot have made. So the two are checked against each other, and a
+// mismatch is refused before any key is stored.
+func TestACurveIsOnlyAcceptedWithItsOwnAlgorithm(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		crv  int64
+		alg  int64
+		size int
+		cur  elliptic.Curve
+		hash crypto.Hash
+	}{
+		{"P-256 with ES256", 1, algES256, 32, elliptic.P256(), crypto.SHA256},
+		{"P-384 with ES384", 2, algES384, 48, elliptic.P384(), crypto.SHA384},
+		{"P-521 with ES512", 3, algES512, 66, elliptic.P521(), crypto.SHA512},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			k, err := ecdsa.GenerateKey(c.cur, rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			key, err := parseCOSEKey(coseKeyFor(k, c.alg, c.crv, c.size))
+			if err != nil {
+				t.Fatalf("a matched curve and algorithm: %v", err)
+			}
+			if got := key.hashFor(); got != c.hash {
+				t.Errorf("hash = %v, want %v", got, c.hash)
+			}
+			// And the pair verifies a real signature over that digest.
+			signed := []byte("the authenticator data and the client data hash")
+			hh := c.hash.New()
+			hh.Write(signed)
+			sig, err := ecdsa.SignASN1(rand.Reader, k, hh.Sum(nil))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := key.verify(signed, sig); err != nil {
+				t.Errorf("a signature this key made: %v", err)
+			}
+			// A signature over something else does not.
+			if err := key.verify([]byte("other bytes"), sig); !errors.Is(err, ErrSignature) {
+				t.Errorf("a signature over other bytes: %v", err)
+			}
+		})
+	}
+	// Every mismatched pairing is refused.
+	k256, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name string
+		crv  int64
+		alg  int64
+	}{
+		{"P-256 claimed under ES384", 1, algES384},
+		{"P-256 claimed under ES512", 1, algES512},
+		{"P-384 claimed under ES256", 2, algES256},
+		{"a curve this proxy has no name for", 9, algES256},
+	} {
+		if _, err := parseCOSEKey(coseKeyFor(k256, c.alg, c.crv, 32)); !errors.Is(err, ErrKey) {
+			t.Errorf("%s: err = %v, want ErrKey", c.name, err)
+		}
+	}
+}
+
+// A credential file edited while the daemon runs is picked up, because
+// enrolment and removal happen through the administration command and the
+// daemon has to see them without a restart. The re-read is at most once a
+// second, so what is pinned here is that a change is noticed at all and that
+// the store does not fall back to an empty list when the file goes bad.
+func TestTheStoreFollowsTheFileItWasLoadedFrom(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "webauthn")
+	a := newAuthenticator(t, "example.test")
+	first, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Add(Credential{User: "alice", ID: a.id, PublicKey: a.coseKey(), Label: "one"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := first.Path(); got != path {
+		t.Errorf("Path = %q, want %q", got, path)
+	}
+	if users := first.Users(); len(users) != 1 || users[0] != "alice" {
+		t.Errorf("Users = %v, want [alice]", users)
+	}
+
+	// A second store over the same file, which another process then changes.
+	second, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := newAuthenticator(t, "example.test")
+	if err := first.Add(Credential{User: "bob", ID: b.id, PublicKey: b.coseKey(), Label: "two"}); err != nil {
+		t.Fatal(err)
+	}
+	// Force the next read rather than waiting out the interval: the subject
+	// is that a changed file is re-read, not how often it is looked at.
+	second.checked = time.Now().Add(-time.Hour)
+	if users := second.Users(); len(users) != 2 {
+		t.Errorf("Users after the file changed = %v, want alice and bob", users)
+	}
+
+	// A file that has gone bad keeps what was already loaded, and the
+	// warning says so: an unreadable account list is not an empty one, and
+	// treating it as empty would unenrol everybody at once.
+	var warned error
+	second.Warn = func(err error) { warned = err }
+	if err := os.WriteFile(path, []byte("this is not a credential line\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	second.checked = time.Now().Add(-time.Hour)
+	if users := second.Users(); len(users) != 2 {
+		t.Errorf("Users after the file went bad = %v, want the two already loaded", users)
+	}
+	if warned == nil {
+		t.Error("nothing was warned about a credential file that would not read")
+	}
+}
+
+// The file is written in a stable order, so a diff of two versions is the
+// change and nothing else -- which is what makes the file reviewable.
+func TestTheFileIsWrittenInAStableOrder(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "webauthn")
+	s, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, user := range []string{"zoe", "alice", "mallory", "bob"} {
+		a := newAuthenticator(t, "example.test")
+		if err := s.Add(Credential{User: user, ID: a.id, PublicKey: a.coseKey()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var users []string
+	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		if f := strings.Split(line, " "); len(f) > 0 && f[0] != "" {
+			users = append(users, f[0])
+		}
+	}
+	for i := 1; i < len(users); i++ {
+		if users[i] < users[i-1] {
+			t.Fatalf("the file is not in order: %v", users)
+		}
+	}
 }

@@ -64,10 +64,11 @@ var ErrLoop = errors.New("the destination is this proxy's own address")
 // Destination reads the address a transparently intercepted connection
 // was originally addressed to.
 func Destination(c net.Conn) (netip.AddrPort, error) {
+	// originalDST reports ErrNoOriginalDestination and nothing else -- on
+	// Linux from every path, and on a platform without the socket options
+	// unconditionally -- so there is no third case to carry here.
 	if ap, err := originalDST(c); err == nil {
 		return ap, nil
-	} else if !errors.Is(err, ErrNoOriginalDestination) {
-		return netip.AddrPort{}, err
 	}
 	// TPROXY: the socket's own local address is the original
 	// destination, because the socket was bound to it non-locally.

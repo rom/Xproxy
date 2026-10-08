@@ -11,6 +11,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"io"
@@ -412,4 +413,160 @@ func (l *lockedBuffer) String() string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.b.String()
+}
+
+// The public half comes back for a key the helper holds, and nothing for one it
+// does not.
+//
+// This is how an operator checks what loaded against the certificate that will
+// use it. A helper that answered with a zero key for a name it does not hold
+// would let a listener start against a key the helper cannot sign with, and the
+// failure would arrive one handshake at a time in production rather than at
+// load.
+func TestThePublicHalfIsReadableForWhatLoaded(t *testing.T) {
+	ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edPub, edKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, err := signerd.New([]signerd.Key{
+		{Name: "ec", Signer: ecKey},
+		{Name: "rsa", Signer: rsaKey},
+		{Name: " ed ", Signer: edKey}, // the name is trimmed on the way in
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, c := range []struct {
+		name string
+		want crypto.PublicKey
+	}{
+		{"ec", ecKey.Public()},
+		{"rsa", rsaKey.Public()},
+		{"ed", edPub},
+		// Looked up the way an operator would type it, with the spaces a
+		// configuration file leaves behind.
+		{" ec ", ecKey.Public()},
+	} {
+		got, ok := srv.PublicKey(c.name)
+		if !ok {
+			t.Errorf("PublicKey(%q) is not loaded", c.name)
+			continue
+		}
+		if !keysEqual(got, c.want) {
+			t.Errorf("PublicKey(%q) is not the key that was loaded", c.name)
+		}
+	}
+
+	for _, name := range []string{"nope", "", "EC"} {
+		if pub, ok := srv.PublicKey(name); ok {
+			t.Errorf("PublicKey(%q) answered with %T for a key nobody loaded", name, pub)
+		}
+	}
+}
+
+// keysEqual compares two public keys without caring which type they are.
+func keysEqual(a, b crypto.PublicKey) bool {
+	type equaler interface{ Equal(crypto.PublicKey) bool }
+	if e, ok := a.(equaler); ok {
+		return e.Equal(b)
+	}
+	return false
+}
+
+// Every hash the protocol names is accepted, and SHA-1 among them on purpose.
+//
+// Refusing SHA-1 here would be this helper deciding a listener's policy from
+// behind a socket, which is the wrong place for it: min_version and
+// cipher_suites are where that decision is written down, and a TLS 1.2 client
+// can still ask for it. What the helper refuses is a hash the protocol has no
+// name for at all -- and the refusal clips the name, because a client can send
+// a megabyte of field and a log that carried it would be the client's own
+// write amplification.
+func TestEveryHashTheProtocolNamesIsSignedAndTheRestIsClipped(t *testing.T) {
+	ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sock, _ := start(t,
+		signerd.Key{Name: "ec", Signer: ecKey},
+		signerd.Key{Name: "rsa", Signer: rsaKey})
+
+	ask := func(t *testing.T, req string) map[string]any {
+		t.Helper()
+		c, err := net.Dial("unix", sock)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = c.Close() }()
+		if _, err := c.Write([]byte(req + "\n")); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		var out map[string]any
+		if err := json.NewDecoder(c).Decode(&out); err != nil {
+			t.Fatalf("no answer: %v", err)
+		}
+		return out
+	}
+
+	// Digests of the right length for each hash.
+	digests := map[string]string{
+		"SHA1":   base64.StdEncoding.EncodeToString(make([]byte, 20)),
+		"SHA256": base64.StdEncoding.EncodeToString(make([]byte, 32)),
+		"SHA384": base64.StdEncoding.EncodeToString(make([]byte, 48)),
+		"SHA512": base64.StdEncoding.EncodeToString(make([]byte, 64)),
+	}
+	for _, c := range []struct{ key, alg, hash string }{
+		{"ec", "ECDSA-SHA256", "SHA256"},
+		{"ec", "ECDSA-SHA384", "SHA384"},
+		{"ec", "ECDSA-SHA512", "SHA512"},
+		{"rsa", "RSA-PSS-SHA256", "SHA256"},
+		{"rsa", "RSA-PSS-SHA384", "SHA384"},
+		{"rsa", "RSA-PSS-SHA512", "SHA512"},
+		{"rsa", "RSA-PKCS1-SHA256", "SHA256"},
+		{"rsa", "RSA-PKCS1-SHA384", "SHA384"},
+		{"rsa", "RSA-PKCS1-SHA512", "SHA512"},
+		{"rsa", "RSA-PKCS1-SHA1", "SHA1"},
+	} {
+		t.Run(c.alg, func(t *testing.T) {
+			out := ask(t, `{"v":1,"key":"`+c.key+`","alg":"`+c.alg+`","digest":"`+digests[c.hash]+`"}`)
+			if msg, _ := out["error"].(string); msg != "" {
+				t.Fatalf("refused: %s", msg)
+			}
+			sig, _ := out["sig"].(string)
+			if sig == "" {
+				t.Error("answered without a signature")
+			}
+		})
+	}
+
+	// A field longer than the bound comes back clipped, so a log line cannot
+	// be made arbitrarily long by a client.
+	long := strings.Repeat("Z", 4096)
+	out := ask(t, `{"v":1,"key":"ec","alg":"ECDSA-`+long+`","digest":"`+digests["SHA256"]+`"}`)
+	msg, _ := out["error"].(string)
+	if msg == "" {
+		t.Fatal("a hash name of four kilobytes was accepted")
+	}
+	if len(msg) > 256 {
+		t.Errorf("the refusal is %d bytes long: %q", len(msg), msg)
+	}
+	if !strings.Contains(msg, "...") {
+		t.Errorf("the refusal does not say it was clipped: %q", msg)
+	}
 }

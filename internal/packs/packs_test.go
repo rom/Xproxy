@@ -488,3 +488,185 @@ func TestAKeyFileIsReadable(t *testing.T) {
 		t.Error("a key with no name was accepted")
 	}
 }
+
+// A pack names itself the same way everywhere it is read.
+//
+// The reason string is what a SIEM query names to find one pack's findings, so
+// the dashes of the identifier are kept rather than folded -- `pack_test-walk`
+// and `pack_test_walk` are different queries, and a rule written against one
+// finds nothing against the other. The identifier's alphabet is narrow for the
+// same reason: it becomes a metric label, a log reason and a command argument.
+func TestAPackNamesItselfTheSameWayEverywhere(t *testing.T) {
+	p := load(t, minimal)
+	if got, want := p.Reason(), "pack_test-walk-then-write"; got != want {
+		t.Errorf("Reason = %q, want %q", got, want)
+	}
+	// A loaded pack always has a technique this build knows, because Check
+	// refuses one whose technique is unknown. So the lookup must succeed,
+	// and must be the technique the file named.
+	tech, ok := p.TechniqueOf()
+	if !ok {
+		t.Fatalf("a loaded pack's technique %q is not in this build", p.Technique)
+	}
+	if tech.ID != p.Technique {
+		t.Errorf("TechniqueOf = %q, want %q", tech.ID, p.Technique)
+	}
+	// A pack this build cannot make the detection for answers false rather
+	// than an empty technique that would read as a real one.
+	fake := &Pack{ID: "x", Technique: "T9999"}
+	if _, ok := fake.TechniqueOf(); ok {
+		t.Error("a technique nobody defines resolved")
+	}
+}
+
+// The enforcement list is what validation checks a pack's declaration against,
+// so it has to be the whole set: a value missing from here is a declaration the
+// loader would refuse for no reason an operator can see.
+func TestTheEnforcementsAreTheWholeSet(t *testing.T) {
+	got := Enforcements()
+	if len(got) != 2 {
+		t.Fatalf("Enforcements = %v, want two", got)
+	}
+	seen := map[Enforcement]bool{}
+	for _, e := range got {
+		seen[e] = true
+	}
+	if !seen[EnforceAlert] || !seen[EnforceDeny] {
+		t.Errorf("Enforcements = %v, want alert and deny", got)
+	}
+	// Only the second of them lets a pack quarantine at all.
+	if (&Pack{Enforcement: EnforceAlert}).MayDeny() {
+		t.Error("an alert-only pack may deny")
+	}
+	if !(&Pack{Enforcement: EnforceDeny}).MayDeny() {
+		t.Error("a deny pack may not deny")
+	}
+}
+
+// The quarantine table expires on the way to being full, not only when an
+// actor is asked about.
+//
+// Quarantined expires the entry it is asked about, so a table full of lapsed
+// holds would otherwise stay full until somebody happened to ask about each
+// one -- and the bound is what stops a quarantine table from growing without
+// end, so a full table refuses new holds. That is the failure worth avoiding:
+// a listener that cannot quarantine the actor in front of it because of
+// addresses whose windows closed an hour ago.
+func TestALapsedQuarantineDoesNotHoldTheTableFull(t *testing.T) {
+	p := load(t, strings.Replace(minimal, "enforcement: alert", "enforcement: deny", 1))
+	at := time.Date(2026, 3, 2, 9, 0, 0, 0, time.UTC)
+	e := New([]*Pack{p}, Options{Enforce: true, Bounds: Bounds{MaxQuarantined: 2}})
+	e.SetClock(func() time.Time { return at })
+
+	trip := func(a netip.Addr, when time.Time) []Finding {
+		e.Observe(Event{Action: "alert", Reason: "modbus_anomaly_write_burst", Kind: "modbus", Actor: a, At: when})
+		e.Observe(Event{Action: "alert", Reason: "modbus_anomaly_write_burst", Kind: "modbus", Actor: a, At: when.Add(time.Second)})
+		return e.Observe(Event{Action: "deny", Reason: "modbus_read_only", Kind: "modbus", Actor: a, At: when.Add(2 * time.Second)})
+	}
+
+	// Two actors fill the table. The pack's window is ten minutes.
+	first := netip.MustParseAddr("10.40.9.1")
+	second := netip.MustParseAddr("10.40.9.2")
+	for _, a := range []netip.Addr{first, second} {
+		if fs := trip(a, at); len(fs) != 1 || !fs[0].Denied {
+			t.Fatalf("%s was not quarantined: %+v", a, fs)
+		}
+	}
+	if _, held := e.Quarantined(first); !held {
+		t.Fatal("the first actor is not held")
+	}
+
+	// An hour later both windows have closed, and a third actor trips the
+	// pack. The table is nominally full of lapsed entries; the new hold
+	// must still happen.
+	later := at.Add(time.Hour)
+	e.SetClock(func() time.Time { return later })
+	third := netip.MustParseAddr("10.40.9.3")
+	fs := trip(third, later)
+	if len(fs) != 1 {
+		t.Fatalf("the third actor did not match: %+v", fs)
+	}
+	if !fs[0].Denied {
+		t.Error("a table of lapsed holds refused a new one")
+	}
+	if _, held := e.Quarantined(third); !held {
+		t.Error("the third actor is not held")
+	}
+	// And the lapsed ones are gone rather than merely ignored.
+	for _, a := range []netip.Addr{first, second} {
+		if _, held := e.Quarantined(a); held {
+			t.Errorf("%s is still held an hour past its window", a)
+		}
+	}
+	// Releasing is what an operator does when the laptop turns out to be
+	// the commissioning engineer's; releasing nobody says so.
+	if !e.Release(third) {
+		t.Error("releasing a held actor reported nothing to release")
+	}
+	if e.Release(third) {
+		t.Error("releasing twice reported a second quarantine")
+	}
+}
+
+// The identifier's alphabet, in full.
+//
+// It is narrow on purpose: the identifier becomes a metric label, a log reason
+// and a command-line argument, so a pack called `my pack!` would produce a
+// metric nobody can query and a reason nobody can grep. A loader that accepted
+// one would push the problem out to three places that cannot reject it.
+func TestThePackIdentifierAlphabet(t *testing.T) {
+	for _, id := range []string{"a", "0", "walk-then-write", "t0861-modbus-walk", "x-1"} {
+		if !validID(id) {
+			t.Errorf("validID(%q) = false, want true", id)
+		}
+	}
+	for _, c := range []struct {
+		id  string
+		why string
+	}{
+		{"", "empty"},
+		{strings.Repeat("a", 65), "past 64 characters"},
+		{"-leading", "a leading dash"},
+		{"trailing-", "a trailing dash"},
+		{"Upper", "an upper-case letter"},
+		{"with space", "a space"},
+		{"under_score", "an underscore, which a dash already covers"},
+		{"dot.separated", "a dot"},
+		{"slash/es", "a separator"},
+		{"bang!", "punctuation"},
+	} {
+		if validID(c.id) {
+			t.Errorf("validID(%q) = true, want false (%s)", c.id, c.why)
+		}
+	}
+}
+
+// A signal's kinds default to the pack's, and either way they come back sorted
+// and copied.
+//
+// The default is what makes a pack readable: a Modbus-only pack writes its
+// signals without repeating `kinds: [modbus]` on each one. The sort is what
+// makes the finding's `kinds` attribute stable, so a SIEM rule matching on it
+// does not depend on map order. And the copy is what stops a caller that sorts
+// its result from reordering the pack itself.
+func TestASignalsKindsDefaultToThePacksAndAreCopied(t *testing.T) {
+	p := &Pack{ID: "x", Kinds: []string{"s7", "modbus", "iec104"}}
+
+	own := p.SignalKinds(Signal{Name: "a"})
+	if got, want := strings.Join(own, ","), "iec104,modbus,s7"; got != want {
+		t.Errorf("a signal naming none = %v, want the pack's sorted (%s)", own, want)
+	}
+	own[0] = "scribbled"
+	if p.Kinds[0] == "scribbled" || p.SignalKinds(Signal{})[0] == "scribbled" {
+		t.Error("SignalKinds handed out the pack's own slice")
+	}
+
+	named := p.SignalKinds(Signal{Name: "b", Kinds: []string{"tftp", "coap"}})
+	if got, want := strings.Join(named, ","), "coap,tftp"; got != want {
+		t.Errorf("a signal naming its own = %v, want %s", named, want)
+	}
+	named[0] = "scribbled"
+	if p.SignalKinds(Signal{Name: "b", Kinds: []string{"tftp", "coap"}})[0] == "scribbled" {
+		t.Error("SignalKinds handed out the signal's own slice")
+	}
+}
