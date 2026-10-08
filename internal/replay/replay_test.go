@@ -706,3 +706,145 @@ func TestAnEncryptedRecordingOpensWithItsKey(t *testing.T) {
 		t.Errorf("a plain recording with a key given: %v", err)
 	}
 }
+
+// The pixel reader, at every width a server may use.
+//
+// A recording is replayed long after the session, and the pixel format is
+// whatever that viewer and that desktop agreed on at the time -- 8, 16 or 32
+// bits, either byte order. A reader that only handled the common one would
+// render an old recording as noise, and noise is indistinguishable from a
+// session that really did show noise.
+func TestEveryPixelWidthAndBothByteOrdersAreRead(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		pf   [16]byte
+		px   []byte
+		want color.RGBA
+	}{
+		{
+			// 32 bits little endian, eight bits each: the usual.
+			name: "32 bits little endian",
+			pf:   [16]byte{32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0},
+			px:   []byte{0x30, 0x20, 0x10, 0x00},
+			want: color.RGBA{R: 0x10, G: 0x20, B: 0x30, A: 255},
+		},
+		{
+			name: "32 bits big endian",
+			pf:   [16]byte{32, 24, 1, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0},
+			px:   []byte{0x00, 0x10, 0x20, 0x30},
+			want: color.RGBA{R: 0x10, G: 0x20, B: 0x30, A: 255},
+		},
+		{
+			// 16 bits, 5-6-5: the format a slow link asks for.
+			name: "16 bits little endian 565",
+			pf:   [16]byte{16, 16, 0, 1, 0, 31, 0, 63, 0, 31, 11, 5, 0, 0, 0, 0},
+			px:   []byte{0x00, 0xf8}, // red at full in 565
+			want: color.RGBA{R: 255, G: 0, B: 0, A: 255},
+		},
+		{
+			name: "16 bits big endian 565",
+			pf:   [16]byte{16, 16, 1, 1, 0, 31, 0, 63, 0, 31, 11, 5, 0, 0, 0, 0},
+			px:   []byte{0xf8, 0x00},
+			want: color.RGBA{R: 255, G: 0, B: 0, A: 255},
+		},
+		{
+			// 8 bits, 3-3-2.
+			name: "8 bits",
+			pf:   [16]byte{8, 8, 0, 1, 0, 7, 0, 7, 0, 3, 5, 2, 0, 0, 0, 0},
+			px:   []byte{0xe0}, // red at full in 332
+			want: color.RGBA{R: 255, G: 0, B: 0, A: 255},
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			fb, err := NewFramebuffer(1, 1, c.pf)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := fb.colourAt(c.px); got != c.want {
+				t.Errorf("colourAt = %+v, want %+v", got, c.want)
+			}
+		})
+	}
+	// A width this reader has no name for yields no pixel rather than
+	// reading past the bytes it was given.
+	odd, err := NewFramebuffer(1, 1, [16]byte{24, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := odd.pf.bytesPerPixel(); n != 0 {
+		t.Errorf("bytesPerPixel for 24 bits = %d, want 0", n)
+	}
+}
+
+// A framebuffer that cannot exist is refused rather than allocated.
+//
+// The numbers come out of the recording, which came off the wire, so they are
+// a desktop's claim about itself. MaxPixels is why a recording naming 65535 by
+// 65535 does not ask the machine replaying it for sixteen gigabytes.
+func TestAFramebufferSizeIsNotTrusted(t *testing.T) {
+	for _, c := range []struct{ w, h int }{{0, 24}, {80, 0}, {-1, 10}, {10, -1}} {
+		if _, err := NewFramebuffer(c.w, c.h, pf32); err == nil {
+			t.Errorf("a framebuffer of %dx%d was allocated", c.w, c.h)
+		}
+	}
+	if _, err := NewFramebuffer(65535, 65535, pf32); err == nil {
+		t.Error("a framebuffer past MaxPixels was allocated")
+	} else if !strings.Contains(err.Error(), "bound") {
+		t.Errorf("err = %v, want it to name the bound", err)
+	}
+}
+
+// The palette index reader, at each width a tile may pack to.
+//
+// A palette of n colours packs its indices at 1, 2, 4 or 8 bits, and the
+// packing is per row with each row starting on a byte. Reading one bit width
+// as another is how a tile comes out as diagonal stripes, and a row that is
+// shorter than the tile claims must read as index zero rather than past its
+// end.
+func TestThePackedPaletteIndexIsReadAtEveryWidth(t *testing.T) {
+	for _, c := range []struct {
+		n    int
+		bits int
+	}{{1, 1}, {2, 1}, {3, 2}, {4, 2}, {5, 4}, {16, 4}, {17, 8}, {128, 8}} {
+		if got := paletteBits(c.n); got != c.bits {
+			t.Errorf("paletteBits(%d) = %d, want %d", c.n, got, c.bits)
+		}
+	}
+	// One bit: the high bit of the byte is index 0 of the row.
+	row1 := []byte{0b10110000}
+	for xx, want := range []int{1, 0, 1, 1, 0, 0, 0, 0} {
+		if got := packedIndex(row1, xx, 1); got != want {
+			t.Errorf("packedIndex(1 bit, %d) = %d, want %d", xx, got, want)
+		}
+	}
+	// Two bits, four to the byte, most significant first.
+	row2 := []byte{0b11100100}
+	for xx, want := range []int{3, 2, 1, 0} {
+		if got := packedIndex(row2, xx, 2); got != want {
+			t.Errorf("packedIndex(2 bits, %d) = %d, want %d", xx, got, want)
+		}
+	}
+	// Four bits, two to the byte, high nibble first.
+	row4 := []byte{0xA5}
+	for xx, want := range []int{0xA, 0x5} {
+		if got := packedIndex(row4, xx, 4); got != want {
+			t.Errorf("packedIndex(4 bits, %d) = %d, want %d", xx, got, want)
+		}
+	}
+	// Eight bits, one to the byte.
+	row8 := []byte{7, 200}
+	for xx, want := range []int{7, 200} {
+		if got := packedIndex(row8, xx, 8); got != want {
+			t.Errorf("packedIndex(8 bits, %d) = %d, want %d", xx, got, want)
+		}
+	}
+	// Past the row's end at every width: index zero, not a read past it.
+	for _, bits := range []int{1, 2, 4, 8} {
+		if got := packedIndex(nil, 0, bits); got != 0 {
+			t.Errorf("packedIndex(%d bits) past the end = %d, want 0", bits, got)
+		}
+		if got := packedIndex([]byte{0xff}, 64, bits); got != 0 {
+			t.Errorf("packedIndex(%d bits) far past the end = %d, want 0", bits, got)
+		}
+	}
+}
