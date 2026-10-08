@@ -2481,6 +2481,18 @@ func (v *validator) discoveryDNSName(dp string, d *Discovery) {
 }
 
 func (v *validator) upstreamTLS(p string, t *UpstreamTLS) {
+	if t == nil {
+		// No section is nothing to check: the connection is made with
+		// the system roots and this build's defaults, which is what
+		// eleven of the thirteen callers already assumed by guarding on
+		// the pointer. The two that guarded on the mode instead reached
+		// here with nil -- "upstream_tls_mode is not none" does not mean
+		// a section was written -- and a validator that panics is worse
+		// than any configuration it could be handed: what an operator
+		// needs back is the sentence about their mistake, not a stack
+		// trace, and on a reload this runs inside the running process.
+		return
+	}
 	if t.CAFile != "" {
 		v.file(p+".ca_file", t.CAFile)
 	}
@@ -8074,7 +8086,7 @@ func (v *validator) ftpListener(p string, f *FTPListener, hasTLS bool) {
 	default:
 		v.errf("%s.upstream_tls_mode: must be none, starttls or implicit", p)
 	}
-	if f.UpstreamTLSMode != "none" {
+	if f.UpstreamTLS != nil {
 		v.upstreamTLS(p+".upstream_tls", f.UpstreamTLS)
 	}
 	seen := map[string]bool{}
@@ -13273,7 +13285,7 @@ func (v *validator) syslogListener(p string, g *SyslogListener, hasTLS bool) {
 	default:
 		v.errf("%s.upstream_tls_mode: must be none or implicit", p)
 	}
-	if g.UpstreamTLSMode != "none" {
+	if g.UpstreamTLS != nil {
 		v.upstreamTLS(p+".upstream_tls", g.UpstreamTLS)
 	}
 	switch g.Hostname {
