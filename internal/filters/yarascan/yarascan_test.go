@@ -184,3 +184,72 @@ func hasAttr(attrs []any, key string) bool {
 	}
 	return false
 }
+
+// The filter names itself with the instance name an operator wrote, not the
+// kind. Two yara filters on one route -- one over uploads, one over downloads
+// -- are told apart in the refusal's reason and in the counters by this name,
+// so a filter that reported the kind would make both of them read as "yara".
+func TestTheFilterCarriesTheNameItWasBuiltUnder(t *testing.T) {
+	if got := build(t, nil).Name(); got != "uploads" {
+		t.Errorf("Name = %q, want the instance name", got)
+	}
+	res := filtertest.Run(build(t, nil), post("a file with TOP-SECRET-MARKER inside"), nil)
+	if res.Request.Reason != "uploads" {
+		t.Errorf("the refusal's reason = %q, want the instance name", res.Request.Reason)
+	}
+}
+
+// A response body the scanner read part of is handed on complete.
+//
+// The scanner reads up to max_bytes to scan them and then has to give the
+// client a body that is still the whole body: the bytes it buffered, then the
+// one it peeked to find out there was more, then the rest of the stream. A
+// reader that lost the peeked byte would corrupt every response longer than
+// the bound -- silently, and only for large files.
+func TestABodyScannedInPartIsStillDeliveredWhole(t *testing.T) {
+	// 4096 is the smallest bound the options allow, and the body is longer
+	// than it so the scan really does stop part way.
+	body := strings.Repeat("0123456789abcdef", 320) // 5120 bytes
+	f := build(t, map[string]any{"max_bytes": 4096})
+	r := resp(body)
+	res := filtertest.Run(f, post("clean"), r)
+	if res.Response.Deny {
+		t.Fatalf("a clean body was refused: %+v", res.Response)
+	}
+	got, err := io.ReadAll(r.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != body {
+		t.Errorf("the body came back as %q, want %q", got, body)
+	}
+	// Closing the rejoined body closes the stream underneath it, which is
+	// the response's own: a filter that lost the closer would leak a
+	// connection per large response.
+	if err := r.Body.Close(); err != nil {
+		t.Errorf("closing the rejoined body: %v", err)
+	}
+}
+
+// A response with no body at all is not a body to scan.
+//
+// A 204 and a HEAD reply both arrive here with http.NoBody, and a scanner that
+// treated either as an empty file would charge a scan and a counter against a
+// response that carried nothing.
+func TestAResponseWithNoBodyIsNotScanned(t *testing.T) {
+	f := build(t, nil)
+	for _, c := range []struct {
+		name string
+		body io.ReadCloser
+	}{
+		{"no body", nil},
+		{"http.NoBody", http.NoBody},
+	} {
+		r := resp("")
+		r.Body = c.body
+		res := filtertest.Run(f, post("clean"), r)
+		if res.Response.Deny {
+			t.Errorf("%s: refused: %+v", c.name, res.Response)
+		}
+	}
+}
