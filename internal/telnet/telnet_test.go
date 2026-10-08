@@ -222,3 +222,42 @@ func FuzzParser(f *testing.F) {
 		}
 	})
 }
+
+// Every command RFC 854 defines has a name, and one it does not is still
+// named.
+//
+// These names are what a policy refusal and an access line say, so a command
+// arriving as a number nobody recognises reads as `command-200` rather than
+// disappearing from the record: an option negotiation this proxy cannot name
+// is exactly the thing worth seeing in a log.
+func TestCommandNames(t *testing.T) {
+	for _, c := range []struct {
+		code byte
+		want string
+	}{
+		{IAC, "IAC"}, {DONT, "DONT"}, {DO, "DO"}, {WONT, "WONT"}, {WILL, "WILL"},
+		{SB, "SB"}, {GA, "GA"}, {EL, "EL"}, {EC, "EC"}, {AYT, "AYT"}, {AO, "AO"},
+		{IP, "IP"}, {BRK, "BRK"}, {DM, "DM"}, {NOP, "NOP"}, {SE, "SE"},
+	} {
+		if got := CommandName(c.code); got != c.want {
+			t.Errorf("CommandName(%d) = %q, want %q", c.code, got, c.want)
+		}
+	}
+	// Outside the table: the number survives into the record.
+	for _, code := range []byte{0, 1, 200, 239} {
+		if got, want := CommandName(code), "command-"+itoa(code); got != want {
+			t.Errorf("CommandName(%d) = %q, want %q", code, got, want)
+		}
+	}
+}
+
+func itoa(b byte) string {
+	if b == 0 {
+		return "0"
+	}
+	var d []byte
+	for ; b > 0; b /= 10 {
+		d = append([]byte{'0' + b%10}, d...)
+	}
+	return string(d)
+}
