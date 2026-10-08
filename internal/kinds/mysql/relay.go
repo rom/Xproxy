@@ -79,7 +79,15 @@ func newServer(host proxy.Host, cfg config.Listener, ln net.Listener, tlsCfg *tl
 // listener's policy: {mode: shadow}, which is the estate-wide spelling. This kind
 // read only the first, so an operator who trialled its policy the way the
 // reference documents got enforcement instead of a ledger.
-func (t *server) enforcing() bool { return !t.mc.MonitorOnly && !t.cfg.Shadowing() }
+func (t *server) enforcing() bool { return t.enforcement().Enforcing() }
+
+// enforcement folds this listener's reasons not to enforce into one answer, so
+// that the precedence, and the name a status view reports, are the same on
+// every kind.
+func (t *server) enforcement() config.Enforcement {
+	e := config.Enforcement{Shadow: t.cfg.Shadowing(), MonitorOnly: t.mc.MonitorOnly}
+	return e
+}
 
 func (t *server) serve() {
 	for {
@@ -130,6 +138,14 @@ func (t *server) handle(c net.Conn) {
 	ip := netutil.AddrOf(c.RemoteAddr().String())
 	se := &session{t: t, ip: ip, client: c}
 
+	// The capture is opened before anything can refuse the session, because a
+	// refused session is the one an operator most often wants: it never dials, so
+	// there is nothing to record after this point. A nil tap -- no rule wants
+	// this one -- wraps nothing and writes nothing.
+	se.tap = t.host.Capture().Open("mysql", t.name, "", c.RemoteAddr())
+	defer se.tap.Close()
+	se.client = se.tap.Client(c)
+
 	if !t.admit(se) {
 		return
 	}
@@ -151,11 +167,11 @@ func (t *server) handle(c net.Conn) {
 
 	up, err := t.dial(se)
 	if err != nil {
-		t.deny(se.ip, "upstream_unavailable", err.Error())
+		t.deny(se, "upstream_unavailable", err.Error())
 		return
 	}
 	defer func() { _ = up.Close() }()
-	se.up = up
+	se.up = se.tap.Upstream(up)
 
 	if err := t.handshake(se, hs); err != nil {
 		return
@@ -171,7 +187,7 @@ func (t *server) handle(c net.Conn) {
 func (t *server) admit(se *session) bool {
 	ok, reason := t.gate.Enter(se.ip)
 	if !ok {
-		t.deny(se.ip, reason, "")
+		t.deny(se, reason, "")
 	}
 	return ok
 }
@@ -192,12 +208,12 @@ func (t *server) handshake(se *session, hs time.Duration) error {
 	srv.Lax()
 	greet, err := srv.Next()
 	if err != nil {
-		t.deny(se.ip, "unreadable_greeting", err.Error())
+		t.deny(se, "unreadable_greeting", err.Error())
 		return errRefused
 	}
 	g, err := wire.ParseGreeting(greet.Payload)
 	if err != nil {
-		t.deny(se.ip, "unreadable_greeting", err.Error())
+		t.deny(se, "unreadable_greeting", err.Error())
 		return errRefused
 	}
 	se.serverCaps = g.Caps
@@ -207,7 +223,7 @@ func (t *server) handshake(se *session, hs time.Duration) error {
 	// requires it has nothing to serve: refusing here is the honest answer, and
 	// it names the server rather than the client.
 	if t.policy.requireTLS && !g.Offers(wire.CapSSL) {
-		t.deny(se.ip, "upstream_no_tls", g.Version)
+		t.deny(se, "upstream_no_tls", g.Version)
 		return errRefused
 	}
 
@@ -215,7 +231,7 @@ func (t *server) handshake(se *session, hs time.Duration) error {
 	payload := append([]byte(nil), greet.Payload...)
 	cleared, err := wire.StripCaps(payload, t.policy.DenyCaps())
 	if err != nil {
-		t.deny(se.ip, "unreadable_greeting", err.Error())
+		t.deny(se, "unreadable_greeting", err.Error())
 		return errRefused
 	}
 	if cleared != 0 {
@@ -232,47 +248,48 @@ func (t *server) handshake(se *session, hs time.Duration) error {
 	cli.Lax()
 	first, err := cli.Next()
 	if err != nil {
-		t.deny(se.ip, "unreadable_login", err.Error())
+		t.deny(se, "unreadable_login", err.Error())
 		return errRefused
 	}
 	l, err := wire.ParseLogin(first.Payload)
 	if err != nil {
-		t.deny(se.ip, "unreadable_login", err.Error())
+		t.deny(se, "unreadable_login", err.Error())
 		return errRefused
 	}
 	if l.SSLOnly {
 		if t.tlsCfg == nil {
-			t.deny(se.ip, "tls_required", "the listener has no certificate")
+			t.deny(se, "tls_required", "the listener has no certificate")
 			return errRefused
 		}
 		if err := t.clearClaimedCaps(se, &first, l); err != nil {
-			t.deny(se.ip, "unreadable_login", err.Error())
+			t.deny(se, "unreadable_login", err.Error())
 			return errRefused
 		}
 		// The short form goes upstream too, because the server has to know the
 		// client is upgrading -- and then both legs are encrypted
 		// independently.
 		if err := se.upgrade(t.tlsCfg, first, hs); err != nil {
-			t.deny(se.ip, "tls_handshake_failed", err.Error())
+			t.deny(se, "tls_handshake_failed", err.Error())
 			return errRefused
 		}
 		cli = wire.NewReader(se.client, t.policy.MaxMessage())
 		cli.Lax()
 		if first, err = cli.Next(); err != nil {
-			t.deny(se.ip, "unreadable_login", err.Error())
+			t.deny(se, "unreadable_login", err.Error())
 			return errRefused
 		}
 		if l, err = wire.ParseLogin(first.Payload); err != nil {
-			t.deny(se.ip, "unreadable_login", err.Error())
+			t.deny(se, "unreadable_login", err.Error())
 			return errRefused
 		}
 	}
 	if err := t.clearClaimedCaps(se, &first, l); err != nil {
-		t.deny(se.ip, "unreadable_login", err.Error())
+		t.deny(se, "unreadable_login", err.Error())
 		return errRefused
 	}
 	se.clientCaps = l.Caps
 	se.user, se.database = l.User, l.Database
+	se.tap.User(l.User)
 	if l.Plugin != "" {
 		se.plugin = l.Plugin
 	}
@@ -510,10 +527,13 @@ func (t *server) decide(se *session, p wire.Packet) (ok, fatal bool) {
 	if !has {
 		// A message with no command octet. The protocol defines none, and
 		// forwarding it would mean forwarding something nobody decided about.
-		t.deny(se.ip, "empty_command", "")
+		t.deny(se, "empty_command", "")
 		return false, true
 	}
 	d := t.policy.Command(se.sess(), cmd)
+	if d.Allow {
+		t.logOp(se, wire.CommandName(cmd), "allow")
+	}
 	if !d.Allow {
 		t.refused(se, d, wire.CommandName(cmd))
 		if t.enforcing() || d.Hard {
@@ -535,7 +555,7 @@ func (t *server) decide(se *session, p wire.Packet) (ok, fatal bool) {
 	case wire.ComChangeUser:
 		cu, err := wire.ReadChangeUser(rest, se.clientCaps)
 		if err != nil {
-			t.deny(se.ip, "unreadable_change_user", err.Error())
+			t.deny(se, "unreadable_change_user", err.Error())
 			return false, true
 		}
 		d = t.policy.ChangeUser(se.sess(), cu)
@@ -589,6 +609,7 @@ func (t *server) decideStatements(se *session, text string, seq byte) (ok, fatal
 		se.statements++
 		d := t.policy.Statement(se.sess(), st, text)
 		if d.Allow {
+			t.logOp(se, string(st.Kind), "allow")
 			continue
 		}
 		se.denied++

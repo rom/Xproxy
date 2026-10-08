@@ -44,7 +44,14 @@ func (t *server) refused(se *session, d Decision, what string) {
 		t.host.Shadow().Record("s7", t.name, d.Reason, d.Rule, what)
 		return
 	}
+	se.tap.Deny(d.Reason)
 	c.Refuse("s7", d.Reason)
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
+	if bl := t.host.Bans(); bl != nil && se.ip.IsValid() {
+		bl.Observe(se.ip, "s7_denied")
+	}
+
 	if !t.alerts() {
 		return
 	}
@@ -74,13 +81,12 @@ func (t *server) refused(se *session, d Decision, what string) {
 		attrs = append(attrs, "comment", textsafe.Clip64(d.Comment))
 	}
 	t.host.Logs().SecurityEvent(context.Background(), "deny", "s7_"+d.Reason, attrs...)
-	if bl := t.host.Bans(); bl != nil && se.ip.IsValid() {
-		bl.Observe(se.ip, "s7_denied")
-	}
 }
 
 // deny records a refusal that is not about something the policy read.
-func (t *server) deny(ip netip.Addr, reason, detail string) {
+func (t *server) deny(se *session, reason, detail string) {
+	ip := se.ip
+	se.tap.Deny(reason)
 	t.host.Counters().Refuse("s7", reason)
 	if t.alerts() {
 		attrs := []any{"listener", t.name, "client_ip", ip.String(), "proto", "s7",

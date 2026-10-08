@@ -24,6 +24,7 @@ import (
 func (se *session) credential(info *rdp.ClientInfo) string {
 	t := se.t
 	se.user, se.domain = info.Username, info.Domain
+	se.tap.User(info.Username)
 	if t.mfaGuard != nil {
 		if reason := se.checkFactor(info); reason != "" {
 			return reason
@@ -110,9 +111,10 @@ func (se *session) wantsFactor() bool {
 func (se *session) factorFailed(why string) {
 	t := se.t
 	t.engine.Counters().RDPMFAFailed.Add(1)
-	t.deny(se.ip, "rdp_mfa_failed", textsafe.Clip64(se.user)+" "+why)
-	t.engine.Logs().SecurityEvent(context.Background(), "deny", "rdp_mfa_failed",
-		"listener", t.cfg.Name, "client_ip", se.ip.String(),
+	// One record, through the funnel. This wrote a second event of its own
+	// alongside it, which alert_on_deny could not silence and which the ban
+	// ladder never saw.
+	t.deny(se, "rdp_mfa_failed", textsafe.Clip64(se.user)+" "+why,
 		"user", textsafe.Clip64(se.user), "reason", why)
 }
 
@@ -171,7 +173,7 @@ func (se *session) admitByPolicy() string {
 		User:     user,
 		Target:   t.v.Upstream,
 		Action:   authorization.ActionConnect,
-	}, textsafe.Clip64(se.user), t.authzGate(se.ip))
+	}, textsafe.Clip64(se.user), t.authzGate(se))
 }
 
 // admitByGrant is the just-in-time access decision. It runs after the factor,
@@ -197,7 +199,7 @@ func (se *session) admitByGrant() string {
 		return ""
 	}
 	t.engine.Counters().RDPRefused.Add(1)
-	t.deny(se.ip, adm.Reason, textsafe.Clip64(se.user))
+	t.deny(se, adm.Reason, textsafe.Clip64(se.user))
 	return adm.Reason
 }
 

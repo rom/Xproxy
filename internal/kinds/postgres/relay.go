@@ -86,9 +86,22 @@ func newServer(host proxy.Host, cfg config.Listener, ln net.Listener, tlsCfg *tl
 // listener's policy: {mode: shadow}, which is the estate-wide spelling. This kind
 // read only the first, so an operator who trialled its policy the way the
 // reference documents got enforcement instead of a ledger.
-func (t *server) enforcing() bool { return !t.pc.MonitorOnly && !t.cfg.Shadowing() }
+func (t *server) enforcing() bool { return t.enforcement().Enforcing() }
 
-func (t *server) alerts() bool { return true }
+// enforcement folds this listener's reasons not to enforce into one answer, so
+// that the precedence, and the name a status view reports, are the same on
+// every kind.
+func (t *server) enforcement() config.Enforcement {
+	e := config.Enforcement{Shadow: t.cfg.Shadowing(), MonitorOnly: t.pc.MonitorOnly}
+	return e
+}
+
+// alerts says whether a refusal on this listener is worth a security event.
+//
+// It was a stub returning true until the listener had the setting. The counters,
+// the access line and the ban observation do not go through here: this is the
+// record alone.
+func (t *server) alerts() bool { return t.pc.AlertOnDeny == nil || *t.pc.AlertOnDeny }
 
 func (t *server) serve() {
 	for {
@@ -131,6 +144,12 @@ func (t *server) handle(c net.Conn) {
 	defer func() { _ = c.Close() }()
 	ip := netutil.AddrOf(c.RemoteAddr().String())
 	se := &session{t: t, ip: ip, client: c}
+	// Opened before anything can refuse the session, because a refused session is
+	// the one an operator most often wants and it never dials: after that point
+	// there is nothing left to record. A nil tap wraps nothing and writes nothing.
+	se.tap = t.host.Capture().Open("postgres", t.name, "", c.RemoteAddr())
+	defer se.tap.Close()
+	se.client = se.tap.Client(c)
 
 	if !t.admit(se) {
 		return
@@ -143,7 +162,7 @@ func (t *server) handle(c net.Conn) {
 	}
 	if err := t.negotiate(se, hs); err != nil {
 		if !errors.Is(err, errRefused) {
-			t.deny(ip, "handshake_failed", err.Error())
+			t.deny(se, "handshake_failed", err.Error())
 		}
 		return
 	}
@@ -160,7 +179,7 @@ var errRefused = errors.New("postgres: refused")
 func (t *server) admit(se *session) bool {
 	ok, reason := t.gate.Enter(se.ip)
 	if !ok {
-		t.deny(se.ip, reason, "")
+		t.deny(se, reason, "")
 	}
 	return ok
 }
@@ -182,7 +201,7 @@ func (t *server) negotiate(se *session, hs time.Duration) error {
 	rd := wire.NewReader(se.client, wire.FromClient, t.policy.maxMessage)
 	s, raw, err := rd.ReadStartup()
 	if err != nil {
-		t.deny(se.ip, "unreadable_startup", err.Error())
+		t.deny(se, "unreadable_startup", err.Error())
 		return errRefused
 	}
 	switch s.Code {
@@ -192,7 +211,7 @@ func (t *server) negotiate(se *session, hs time.Duration) error {
 			// where answering 'N' is right, because the alternative is
 			// promising an upgrade this listener cannot perform.
 			if t.policy.requireTLS {
-				t.deny(se.ip, "tls_required", "the listener has no certificate")
+				t.deny(se, "tls_required", "the listener has no certificate")
 				return errRefused
 			}
 			if err := se.writeClient([]byte{wire.DenyTLS}); err != nil {
@@ -201,7 +220,7 @@ func (t *server) negotiate(se *session, hs time.Duration) error {
 			return t.afterNegotiate(se, hs)
 		}
 		if err := se.upgrade(t.tlsCfg, hs); err != nil {
-			t.deny(se.ip, "tls_handshake_failed", err.Error())
+			t.deny(se, "tls_handshake_failed", err.Error())
 			return errRefused
 		}
 		return t.afterNegotiate(se, hs)
@@ -232,7 +251,7 @@ func (t *server) negotiate(se *session, hs time.Duration) error {
 		// require_tls exists for.
 		return t.startupWith(se, s, raw, hs)
 	}
-	t.deny(se.ip, "unreadable_startup", "")
+	t.deny(se, "unreadable_startup", "")
 	return errRefused
 }
 
@@ -241,14 +260,14 @@ func (t *server) afterNegotiate(se *session, hs time.Duration) error {
 	rd := wire.NewReader(se.client, wire.FromClient, t.policy.maxMessage)
 	s, raw, err := rd.ReadStartup()
 	if err != nil {
-		t.deny(se.ip, "unreadable_startup", err.Error())
+		t.deny(se, "unreadable_startup", err.Error())
 		return errRefused
 	}
 	if s.Code != wire.Version3 {
 		// A second encryption request, or a cancel after an upgrade. Neither
 		// is a thing a client legitimately does here, and forwarding it would
 		// mean forwarding a message out of its place in the protocol.
-		t.deny(se.ip, "startup_out_of_order", fmt.Sprintf("code %d", s.Code))
+		t.deny(se, "startup_out_of_order", fmt.Sprintf("code %d", s.Code))
 		return errRefused
 	}
 	return t.startupWith(se, s, raw, hs)
@@ -257,6 +276,7 @@ func (t *server) afterNegotiate(se *session, hs time.Duration) error {
 // startupWith decides about the identity in the startup packet and keeps it.
 func (t *server) startupWith(se *session, s *wire.Startup, raw []byte, hs time.Duration) error {
 	se.user = s.User()
+	se.tap.User(se.user)
 	se.database = s.Database()
 	se.app = s.Get("application_name")
 	se.startupRaw = raw
@@ -430,12 +450,12 @@ func (t *server) relay(se *session) {
 	}
 	up, err := t.dial(se)
 	if err != nil {
-		t.deny(se.ip, "upstream_unavailable", err.Error())
+		t.deny(se, "upstream_unavailable", err.Error())
 		se.fatal(Decision{Reason: "upstream_unavailable"})
 		return
 	}
 	defer func() { _ = up.Close() }()
-	se.up = up
+	se.up = se.tap.Upstream(up)
 
 	// The startup packet goes on as the octets the client sent. Re-encoding it
 	// would mean deciding about one message and forwarding another.
@@ -477,7 +497,7 @@ func (t *server) fromServer(se *session) {
 		case wire.MsgAuthentication:
 			code, err := m.AuthRequest()
 			if err != nil {
-				t.deny(se.ip, "unreadable_message", "authentication")
+				t.deny(se, "unreadable_message", "authentication")
 				return
 			}
 			if code == wire.AuthOK {
@@ -568,7 +588,7 @@ func (t *server) decide(se *session, m wire.Message) (ok, fatal bool) {
 	case wire.MsgQuery:
 		text, err := m.QueryText()
 		if err != nil {
-			t.deny(se.ip, "unreadable_message", "query")
+			t.deny(se, "unreadable_message", "query")
 			return false, true
 		}
 		return t.decideStatements(se, text, "")
@@ -576,7 +596,7 @@ func (t *server) decide(se *session, m wire.Message) (ok, fatal bool) {
 	case wire.MsgParse:
 		p, err := m.ReadParse()
 		if err != nil {
-			t.deny(se.ip, "unreadable_message", "parse")
+			t.deny(se, "unreadable_message", "parse")
 			return false, true
 		}
 		fwd, _ := t.decideStatements(se, p.Statement, p.Name)
@@ -585,7 +605,7 @@ func (t *server) decide(se *session, m wire.Message) (ok, fatal bool) {
 	case wire.MsgBind:
 		b, err := m.ReadBind()
 		if err != nil {
-			t.deny(se.ip, "unreadable_message", "bind")
+			t.deny(se, "unreadable_message", "bind")
 			return false, true
 		}
 		// A Bind names a prepared statement the relay has already decided
@@ -604,7 +624,7 @@ func (t *server) decide(se *session, m wire.Message) (ok, fatal bool) {
 	// A frontend message this relay does not recognise. Forwarding it would
 	// mean forwarding something nobody has decided about, on a protocol where
 	// the client chose the octet -- so it is refused, and named.
-	t.deny(se.ip, "unknown_message", m.Name())
+	t.deny(se, "unknown_message", m.Name())
 	return false, true
 }
 
@@ -615,7 +635,7 @@ func (t *server) decideStatements(se *session, text, prepName string) (ok, fatal
 		// A statement before the server said AuthenticationOk. There is no
 		// legitimate one, and forwarding it would mean asking the database to
 		// run something for a connection it has not agreed to serve.
-		t.deny(se.ip, "statement_before_auth", "")
+		t.deny(se, "statement_before_auth", "")
 		return false, true
 	}
 	maxStmt := t.policy.maxStatements
@@ -650,6 +670,7 @@ func (t *server) decideOne(se *session, st wire.Statement, text string) (ok, fat
 	se.statements++
 	d := t.policy.Statement(se.sess(), st, text)
 	if d.Allow {
+		t.allowed(se, string(st.Kind))
 		return true, false
 	}
 	se.denied++

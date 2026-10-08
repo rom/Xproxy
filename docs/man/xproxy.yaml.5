@@ -239,6 +239,12 @@ Read it with \fBxproxyctl policy report\fR (\fB\-top N\fR, \fB\-json\fR), which 
 .PP
 \fBWhat shadow mode does and does not stop.\fR It applies to \fIpolicy\fR: the statements an estate writes about what its own traffic may do. It never applies to integrity, identity or a bound, because forwarding those would mean acting on bytes the code could not read, or admitting somebody who did not authenticate \[u2014] a trial instead of a door.
 .PP
+\fBThree settings stop a listener enforcing, and they belong to different layers.\fR \fBpolicy.mode: shadow\fR is this switch, the estate\(aqs; \fBmonitor_only\fR is a kind\(aqs own; and a \fBlearn\fR run is observe\-only unless \fBlearn.enforce\fR says otherwise. They are folded with one precedence \[u2014] either explicit switch beats a learning run, and \fBshadow\fR is reported first because it is the one an operator who set it will look for \[u2014] so a listener carrying two of them behaves predictably. What it must not do is behave predictably and \fIreport\fR something else: \fBxproxyctl listeners\fR shows the mode as \fBenforce\fR, \fBshadow\fR, \fBmonitor\fR or \fBlearn\fR, naming which one it is rather than collapsing three reasons into "not enforcing", and a configuration that sets two of them is advised on at load, because turning one off then changes nothing.
+.PP
+\fBEvery kind bounds the work one client can start, under the name that says what it counts.\fR There are five, and the difference is the unit rather than the setting: \fBmax_sessions\fR (with \fBmax_sessions_per_client\fR) where the session is the protocol\(aqs own unit and outlives a connection \[u2014] ssh, rdp, vnc, ftp, the database wire protocols; \fBmax_connections\fR where the connection is the unit \[u2014] modbus, iec104, imap, snmp over TCP; \fBmax_clients\fR for a datagram peer (coap); \fBmax_in_flight\fR for queries rather than connections (dns); and \fBmax_tunnels\fR for the forward proxy\(aqs CONNECT tunnels. A datagram kind has no connections to bound at all, so \fBbacnet\fR, \fBntp\fR, \fBradius\fR and \fBtftp\fR have \fBrate_limit\fR instead, which is the only ceiling there is when every packet is its own conversation. A kind with none of these would be a kind one client can fill, which is why it is checked rather than remembered.
+.PP
+\fBOne name, two meanings, and this is the exception to know about.\fR On thirteen kinds \fBmonitor_only\fR means "evaluate and do not enforce". On \fBiec104\fR it means the protocol\(aqs own \fImonitor direction\fR: the link carries monitoring and no control, so every command and every system command is \fBrefused\fR rather than permitted. The two are opposite in effect, which is why the IEC 104 listener\(aqs \fBmonitor_only\fR is not one of the three settings above and does not appear in a listener\(aqs mode.
+.PP
 .TS
 allbox;
 lbw(1.4i) lbw(1.5i) lbx
@@ -653,6 +659,61 @@ T}	T{
 \fB{mode:\: enforce|shadow}\fR for this listener alone;\: see \fBpolicy\fR
 T}
 .TE
+.SS "What a refusal leaves behind"
+.PP
+Three settings decide what a listener does about a refusal, and they are not the same setting. Each kind carries the ones that mean something on its protocol.
+.PP
+\fB\fBalert_on_deny\fR\fR (every kind, default \fBtrue\fR) decides the \fBsecurity event\fR and nothing else. With it off, a refusal still:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+increments the refusal counters, the per\-reason table and the kind\(aqs own counters, so \fBxproxyctl\fR and the dashboards see it;
+.PP
+.ti -3n
+\(bu
+writes the access line, where the kind writes one;
+.PP
+.ti -3n
+\(bu
+goes into the session recording, on the kinds that record;
+.PP
+.ti -3n
+\(bu
+reaches the \fBban ladder\fR, so repeated refusals still ban the address; and
+.PP
+.ti -3n
+\(bu
+is still answered: the client is turned away exactly as before.
+.RE
+.PP
+.PP
+It is for a listener whose refusals are routine \-\- an egress proxy where a browser reaches for a destination the policy does not carry, a time gateway answering hosts that will never be in its list \-\- where an event per refusal is noise an estate has decided it does not want to carry to its collector. Turning the record off is not turning the policy down, and nothing about the refusal changes but the one line.
+.PP
+\fB\fBdeny_response\fR\fR decides \fBhow\fR a refusal is said, and exists only where the protocol offers more than one way to say it and the session survives being told: modbus, iec104, snmp, ldap, dhcp, tftp, opcua, mms, radius, tacacs, kkdcp, imap, pop3, amqp, s7, bacnet and the four database relays. Sixteen kinds have no such setting, and that is a property of their protocols rather than a gap:
+.RS 3n
+.PP
+.ti -3n
+\(bu
+\fBNothing to answer with.\fR \fBtcp\fR and \fBudp\fR read no protocol, so there is no message that means "no"; \fBsyslog\fR is one\-way and has no response channel at all. On \fBudp\fR an error sent to a source address that did not really send anything is itself an attack on whoever owns that address.
+.PP
+.ti -3n
+\(bu
+\fBThe refusal \fIis\fR the end.\fR On the access gateways \-\- \fBssh\fR, \fBtelnet\fR, \fBvnc\fR, \fBrdp\fR \-\- a refused session is a session that does not open, and the smaller refusals inside one (a channel, a device, a dynamic channel) each have the one answer the protocol defines, which is what the client\(aqs own stack understands.
+.PP
+.ti -3n
+\(bu
+\fBOne right answer, already chosen.\fR \fBcoap\fR always answers 4.03 or 4.01, because a dropped confirmable request is retransmitted four or five times and then shows in the device\(aqs log as a timeout where a refusal happened. \fBmqtt\fR answers the version\(aqs own \fBNotAuthorized\fR reason code. \fBsmtp\fR and \fBftp\fR answer with the protocol\(aqs reply codes, and on \fBftp\fR the refusal a client sees is often the server\(aqs own 5xx relayed through. \fBforward\fR answers 403 or 407, or the SOCKS5 reply code. A listener\-wide knob here could only make the answer less correct than the one the refusal site already picks.
+.PP
+.ti -3n
+\(bu
+\fBAlready there under the protocol\(aqs own word.\fR \fBdns\fR has \fBblock_action\fR (\fBnxdomain\fR, \fBrefuse\fR, \fBsinkhole\fR), and \fBntp\fR has the \fBkod\fR section \-\- the kiss\-o\(aq\-death packet is the protocol\(aqs refusal, with switches of its own. \fBntske\fR answers with the error record RFC 8915 defines for its handshake. Adding \fBdeny_response\fR to these would be a second name for a control they already have.
+.RE
+.PP
+.PP
+\fB\fBlog_requests\fR\fR decides whether the access line per operation is written at all, and exists on twelve kinds: the four database relays, and \fBbacnet\fR, \fBkkdcp\fR, \fBldap\fR, \fBmms\fR, \fBopcua\fR, \fBradius\fR, \fBs7\fR and \fBtacacs\fR. It is a switch on those because the line is the audit record there \-\- the statement, the object, the command \-\- and its volume is the session\(aqs, not the connection\(aqs.
+.PP
+The other kinds write their access line \fBunconditionally\fR, under the access log\(aqs own switches (\fBlogging.access.enabled\fR, and the sampling and field selection in that section, which apply to every kind). That is the right shape where a session is one line, or where the per\-operation record is something better than a line: on the access gateways it is the \fBsession recording\fR, which holds what was typed and what came back rather than a summary of it. \fBsyslog\fR is the one kind that writes no access line of its own, and for a reason \-\- every record it forwards is already a record, and a line per message would double the volume of the thing being relayed.
 .SS "server.listeners[].tcp (kind: tcp)"
 .PP
 A \fBkind: tcp\fR listener forwards connections at layer 4. TLS connections are routed by the server name of the ClientHello, which is peeked and passed through unchanged, so the upstream terminates TLS with its own certificate and the client verifies that one. Connections that are not TLS, or whose name matches no route, go to \fBdefault\fR when set and are closed otherwise. A tcp listener takes no \fBtls\fR, \fBprotocols\fR, \fBh3\fR or \fBredirect_to_https\fR; bans and the global connection limits apply at accept as on every listener.
@@ -813,6 +874,15 @@ T}	T{
 none
 T}	T{
 Apply YARA rules to the bytes of each connection;\: see below
+T}
+T{
+\fBalert_\:on_\:deny\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A security event for every refusal
 T}
 .TE
 .PP
@@ -1084,6 +1154,15 @@ T}	T{
 T}	T{
 CIDRs a client must come from
 T}
+T{
+\fBalert_\:on_\:deny\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A security event for every refusal
+T}
 .TE
 .PP
 Counters: \fBudp_sessions\fR, \fBudp_sessions_open\fR, \fBudp_datagrams_in\fR, \fBudp_datagrams_out\fR, \fBudp_bytes_in\fR, \fBudp_bytes_out\fR, \fBudp_dropped\fR (a datagram the policy would not relay), \fBudp_rejected\fR (a new client the table bounds refused) and \fBudp_errors\fR (a session that found no reachable endpoint); the matching \fBxproxy_udp_*\fR metrics. Every session writes one \fBudp\fR access line with the client, the endpoint, the datagrams and bytes each way and how it ended. Refusals are \fBudp_denied\fR deny events, so bans apply.
@@ -1274,6 +1353,15 @@ T}	T{
 none
 T}	T{
 Terminate TLS inside a CONNECT tunnel and read what passes through it;\: see below
+T}
+T{
+\fBalert_\:on_\:deny\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A security event for every refusal
 T}
 .TE
 .SS "Egress rules: who may send what, where, and when"
@@ -2175,6 +2263,15 @@ T}	T{
 none
 T}	T{
 Answer as a resolver that is not there: where a refusal would be written,\: or as a whole listener with nothing behind it;\: see below
+T}
+T{
+\fBalert_\:on_\:deny\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A security event for every refusal
 T}
 .TE
 .SS "server.listeners[].dns.cache: serve\-stale and prefetch"
@@ -3471,6 +3568,15 @@ T}	T{
 T}	T{
 After the proxy\(aqs own EHLO,\: send \fBXCLIENT ADDR=\: PORT=\fR (the Postfix extension) when the upstream advertises it,\: so the mail server\(aqs logs and policies see the real client
 T}
+T{
+\fBalert_\:on_\:deny\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A security event for every refusal
+T}
 .TE
 .PP
 Every session writes one \fBsmtp\fR line to the access log with the client address, whether it was encrypted, messages, octets, refusals, the endpoint and why it closed. AUTH arguments, challenges and responses are never logged: they carry the password. Counters: \fBsmtp_sessions\fR, \fBsmtp_sessions_open\fR, \fBsmtp_messages\fR, \fBsmtp_refused\fR, \fBsmtp_rejected\fR, \fBsmtp_tls_upgrades\fR, \fBsmtp_protocol_errors\fR, \fBsmtp_bytes_in\fR; the matching \fBxproxy_smtp_*\fR metrics. Protocol violations are \fBsmtp_denied\fR deny events, so a \fBbans.triggers\fR entry on that reason turns a prober into a ban.
@@ -3798,6 +3904,15 @@ T}	T{
 
 T}	T{
 Record what crosses this listener and write proposed topic lists,\: below
+T}
+T{
+\fBalert_\:on_\:deny\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A security event for every refusal
 T}
 .TE
 .SS "server.listeners[].mqtt.learn"
@@ -4258,6 +4373,15 @@ T}	T{
 \fB4096\fR
 T}	T{
 Parsed messages waiting for the collector. When it is full the relay drops and counts,\: rather than holding every sender behind one slow collector
+T}
+T{
+\fBalert_\:on_\:deny\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A security event for every refusal
 T}
 .TE
 .PP
@@ -15747,6 +15871,15 @@ T}	T{
 T}	T{
 CIDRs a client must come from
 T}
+T{
+\fBalert_\:on_\:deny\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A security event for every refusal
+T}
 .TE
 .SS "Reading the picture: \fBpixel_stream\fR and \fBbounds\fR"
 .PP
@@ -16318,6 +16451,15 @@ T}	T{
 T}	T{
 CIDRs a client must come from
 T}
+T{
+\fBalert_\:on_\:deny\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A security event for every refusal
+T}
 .TE
 .SS "The two credentials"
 .PP
@@ -16483,6 +16625,15 @@ T}	T{
 \fB[]\fR (any)
 T}	T{
 CIDRs a client must come from
+T}
+T{
+\fBalert_\:on_\:deny\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A security event for every refusal
 T}
 .TE
 .PP
@@ -16952,6 +17103,15 @@ T}	T{
 \fB[]\fR (any)
 T}	T{
 Others are closed at accept
+T}
+T{
+\fBalert_\:on_\:deny\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A security event for every refusal
 T}
 .TE
 .PP
@@ -17498,6 +17658,15 @@ T}	T{
 \fB[]\fR (any)
 T}	T{
 Others are closed before the handshake
+T}
+T{
+\fBalert_\:on_\:deny\fR
+T}	T{
+bool
+T}	T{
+\fBtrue\fR
+T}	T{
+A security event for every refusal
 T}
 .TE
 .SS "server.listeners[].ssh.principals"
@@ -33387,8 +33556,8 @@ T}
 .PP
 .TS
 allbox;
-lbw(0.9i) lbw(0.9i) lbw(0.9i) lbx
-lw(0.9i) lw(0.9i) lw(0.9i) lx.
+lbw(1.0i) lbw(0.9i) lbw(0.9i) lbx
+lw(1.0i) lw(0.9i) lw(0.9i) lx.
 T{
 Key
 T}	T{
@@ -33406,6 +33575,24 @@ T}	T{
 \fBrules[i]\fR
 T}	T{
 Identifies the rule in \fBGET /\:v1/\:capture\fR
+T}
+T{
+\fBlisteners\fR
+T}	T{
+list of names
+T}	T{
+any
+T}	T{
+Only traffic on these listeners. The one selector that works on every kind,\: HTTP and otherwise
+T}
+T{
+\fBkinds\fR
+T}	T{
+list of kinds
+T}	T{
+any
+T}	T{
+Only these listener kinds (\fBmysql\fR,\: \fBssh\fR,\: \fBtcp\fR,\: ...). Validated against the kinds in the configuration,\: so a typo is a load error rather than a rule that never matches
 T}
 T{
 \fBhosts\fR
@@ -33500,6 +33687,42 @@ T}
 .TE
 .PP
 Selectors within a rule are AND, values within a selector are OR, and rules are tried in order. To capture one route for one client, put both selectors in one rule; to capture two unrelated things, write two rules.
+.SS "Capturing a session on a non\-HTTP listener"
+.PP
+Most listener kinds carry sessions rather than requests, and they are captured too: one pcapng flow per session, holding the bytes each way up to \fBmax_body_bytes\fR, with the protocol, the listener, the login the protocol named and the refusal in the flow\(aqs comment.
+.PP
+Four selectors apply to a session, because they are the four things that are true of one before it has sent anything: \fBlisteners\fR, \fBkinds\fR, \fBclient_cidrs\fR and \fBdenied\fR. The request\-shaped selectors \-\- \fBhosts\fR, \fBroutes\fR, \fBmethods\fR, \fBpaths\fR, \fBstatuses\fR, \fBreasons\fR \-\- cannot be answered about a session, so a rule naming any of them never matches one; \fBpercent\fR and \fBmax_flows\fR work as they do for a request.
+.PP
+.RS 4
+.nf
+.ft CR
+capture:
+  enabled: true
+  directory: /var/lib/xproxy/capture
+  bodies: true            # a session *is* payload: without this nothing is written
+  max_body_bytes: 65536
+  rules:
+    # What the database relay turned away, whatever turned it away.
+    \- name: refused\-sessions
+      kinds: [mysql, postgres, tds]
+      denied: true
+      max_flows: 500
+
+    # One engineer's bastion sessions, for a reported problem.
+    \- name: reported\-operator
+      listeners: [plant\-ssh]
+      client_cidrs: ["198.51.100.7/32"]
+.ft
+.fi
+.RE
+.PP
+\fBbodies: true\fR is required and not the default: a session has no head to keep the way an HTTP request has one, so with bodies off there is nothing to write, and the configuration says so at load rather than leaving an operator to find an empty file.
+.PP
+\fBWhat the file holds depends on where the kind terminates encryption.\fR A kind that terminates TLS \-\- the databases, the mail protocols, ldap, mqtt, modbus, iec104 \-\- is captured as plaintext protocol, with the handshake left out, so a dissector reads it. A kind that does not is captured as it crossed: \fBtcp\fR splices TLS records and \fBntske\fR relays or terminates a handshake, so those files hold ciphertext, which still names the server, the version and the cipher suites. \fBssh\fR holds the SSH transport, encrypted after the key exchange; \fBvnc\fR holds RFB\(aqs own TLS where a session negotiates it. On \fBssh\fR, \fBvnc\fR, \fBrdp\fR, \fBftp\fR and \fBtelnet\fR the plaintext record of a session is that kind\(aqs own session recording (\fBrecording:\fR in its listener section), which answers a different question: what the operator did, rather than what crossed the wire.
+.PP
+The \fBrequest_id\fR in a flow\(aqs comment is the kind\(aqs own session identifier where it has one \-\- the identifier \fBxproxyctl sessions\fR lists, and the one a recording file is named after \-\- so a capture, a recording and the access log can be lined up. Kinds that do not register with the session table get a random identifier instead, so that a file holding several of their sessions still says which packet belongs to which.
+.PP
+The \fBhttp\fR and \fBforward\fR kinds, and \fBkkdcp\fR and \fBdns\fR, are request\-shaped rather than session\-shaped: \fBhttp\fR writes one capture per request as described above, and the other three are not captured yet.
 .SH "mysql"
 .PP
 \fBkind: mysql\fR is a relay in front of a MySQL or MariaDB server.

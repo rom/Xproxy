@@ -7,6 +7,7 @@ import (
 	"time"
 
 	wire "github.com/rom/xproxy/internal/amqpwire"
+	"github.com/rom/xproxy/internal/capture"
 )
 
 // One connection, and the state a policy on this protocol needs it to have.
@@ -33,6 +34,10 @@ type session struct {
 	ip     netip.Addr
 	client net.Conn
 	up     net.Conn
+
+	// tap records the session for a pcapng capture, and is nil -- usable, and
+	// doing nothing -- whenever no rule wants this one, which is the usual case.
+	tap *capture.Tap
 
 	cliReader *wire.Reader
 	upReader  *wire.Reader
@@ -140,6 +145,7 @@ func (se *session) expectAuth(mech, user string) {
 	se.mech = mech
 	if user != "" {
 		se.user = user
+		se.tap.User(user)
 	}
 	se.mu.Unlock()
 }

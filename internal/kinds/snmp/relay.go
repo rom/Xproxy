@@ -517,6 +517,11 @@ func (t *server) handleStream(client net.Conn) {
 	s.Counters().SNMPSessionsOpen.Add(1)
 	defer s.Counters().SNMPSessionsOpen.Add(-1)
 	ip := netutil.AddrOf(client.RemoteAddr().String())
+	// Opened before anything can refuse the session, because a refused session is
+	// the one an operator most often wants and it never dials: after that point
+	// there is nothing left to record. A nil tap wraps nothing and writes nothing.
+	tap := t.host.Capture().Open("snmp", t.cfg.Name, "", client.RemoteAddr())
+	defer tap.Close()
 	var up net.Conn
 	var pool *upstream.Pool
 	var ep *upstream.Endpoint
@@ -533,12 +538,14 @@ func (t *server) handleStream(client net.Conn) {
 		s.Counters().SNMPRejected.Add(1)
 		s.Counters().Refuse("snmp", "client_not_allowed")
 		t.deny(ip, "client_not_allowed", "")
+		tap.Deny("client_not_allowed")
 		t.logSession(ip, start, false, "client_not_allowed")
 		return
 	}
 	if reason := t.admitClient(ip); reason != "" {
 		s.Counters().SNMPRejected.Add(1)
 		s.Counters().Refuse("snmp", reason)
+		tap.Deny(reason)
 		t.logSession(ip, start, false, reason)
 		return
 	}
@@ -546,6 +553,7 @@ func (t *server) handleStream(client net.Conn) {
 		Kind: "snmp", Listener: t.cfg.Name, Client: client.RemoteAddr().String(),
 	}, func() { _ = client.Close() })
 	defer live.Done()
+	tap.Name(live.ID)
 	secure := false
 	if t.m.TLSMode == "implicit" || (t.tlsCfg != nil && t.m.TLSMode == "") {
 		tc := tls.Server(client, t.tlsCfg)
@@ -553,21 +561,28 @@ func (t *server) handleStream(client net.Conn) {
 		if err := tc.HandshakeContext(context.Background()); err != nil {
 			s.Counters().Refuse("snmp", "tls_handshake")
 			t.deny(ip, "tls_handshake", err.Error())
+			tap.Deny("tls_handshake")
 			t.logSession(ip, start, false, "tls_handshake")
 			return
 		}
 		_ = tc.SetDeadline(time.Time{})
 		client, secure = tc, true
 	}
+	// Wrapped after the handshake, so the capture holds SNMP rather than the TLS
+	// records carrying it; on a listener with no certificate this is the socket.
+	client = tap.Client(client)
 	var err error
 	up, pool, ep, err = t.dialAgent(ip)
+	up = tap.Upstream(up)
 	if err != nil {
 		s.Counters().SNMPUpstreamFail.Add(1)
+		tap.Deny("upstream_unavailable")
 		t.logSession(ip, start, secure, "upstream_unavailable")
 		return
 	}
 	if t.m.ProxyProtocol {
 		if _, err := up.Write(netutil.ProxyV2Header(client.RemoteAddr(), client.LocalAddr())); err != nil {
+			tap.Deny("proxy_header")
 			t.logSession(ip, start, secure, "proxy_header")
 			return
 		}
@@ -584,6 +599,7 @@ func (t *server) handleStream(client net.Conn) {
 		tc := tls.Client(up, c)
 		if err := tc.HandshakeContext(context.Background()); err != nil {
 			s.Counters().Refuse("snmp", "upstream_tls")
+			tap.Deny("upstream_tls")
 			t.logSession(ip, start, secure, "upstream_tls")
 			return
 		}
@@ -592,6 +608,9 @@ func (t *server) handleStream(client net.Conn) {
 	if ep != nil {
 		live.Annotate("", ep.Address, "")
 	}
+	// Not tap.Deny: this reason is how the stream ended, and a session that ran
+	// and then closed was not turned away. The refusals this kind makes about
+	// individual messages reach the tap through deny, as everywhere else.
 	reason := t.pumpStream(client, up, t.streamPeer(client, secure))
 	t.logSession(ip, start, secure, reason)
 }

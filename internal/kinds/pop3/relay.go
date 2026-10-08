@@ -12,6 +12,7 @@ import (
 
 	"github.com/rom/xproxy/internal/admit"
 	"github.com/rom/xproxy/internal/authorization"
+	"github.com/rom/xproxy/internal/capture"
 	"github.com/rom/xproxy/internal/netutil"
 	wire "github.com/rom/xproxy/internal/pop3"
 	"github.com/rom/xproxy/internal/upstream"
@@ -32,8 +33,12 @@ type conn struct {
 	ip     netip.Addr
 	client net.Conn
 	up     net.Conn
-	cr     *wire.Reader
-	sr     *wire.Reader
+
+	// tap records the session for a pcapng capture, and is nil -- usable, and
+	// doing nothing -- whenever no rule wants this one, which is the usual case.
+	tap *capture.Tap
+	cr  *wire.Reader
+	sr  *wire.Reader
 
 	state     wire.State
 	user      string
@@ -52,36 +57,48 @@ type conn struct {
 func (t *server) handle(client net.Conn) {
 	defer func() { _ = client.Close() }()
 	ip := netutil.AddrOf(client.RemoteAddr().String())
+	// Opened before anything can refuse the session, because a refused session is
+	// the one an operator most often wants and it never dials: after that point
+	// there is nothing left to record. A nil tap wraps nothing and writes nothing.
+	tap := t.host.Capture().Open("pop3", t.name, "", client.RemoteAddr())
+	defer tap.Close()
+	client = tap.Client(client)
 	if !t.policy.Client(ip) {
+		tap.Deny("client_not_allowed")
 		t.deny(ip, "client_not_allowed", "")
 		return
 	}
-	if t.admitClient(ip) != "" {
+	if reason := t.admitClient(ip); reason != "" {
+		tap.Deny(reason)
 		return
 	}
 	if t.limiter != nil && !t.limiter.Allow(ip.String()) {
+		tap.Deny("rate_limited")
 		t.host.Counters().Refuse("pop3", "rate_limited")
 		return
 	}
 	if ok, reason := t.gate.Enter(ip); !ok {
+		tap.Deny(reason)
 		t.host.Counters().Refuse("pop3", reason)
 		return
 	}
 	defer t.gate.Leave(ip)
 
-	_, isTLS := client.(*tls.Conn)
+	_, isTLS := netutil.TLSConn(client)
 	up, greeted, err := t.dial(ip)
 	if err != nil {
+		tap.Deny("upstream_failed")
 		t.host.Counters().Refuse("pop3", "upstream_failed")
 		t.host.Logs().Error.Warn("pop3 upstream dial failed", "listener", t.name,
 			"client_ip", ip.String(), "error", err.Error())
 		return
 	}
 	defer func() { _ = up.Close() }()
+	up = tap.Upstream(up)
 	t.host.Counters().POP3Connections.Add(1)
 
 	c := &conn{
-		t: t, ip: ip, client: client, up: up,
+		t: t, ip: ip, client: client, up: up, tap: tap,
 		cr:        wire.NewReader(client, t.maxLine),
 		sr:        wire.NewReader(up, t.maxResp),
 		encrypted: isTLS,
@@ -218,6 +235,7 @@ func (t *server) decide(c *conn, req Request) Decision {
 				return Decision{Reason: reason, Hard: true}
 			}
 			c.user = u
+			c.tap.User(u)
 			req.User = u
 			if !c.encrypted {
 				t.host.Counters().POP3PlaintextLogins.Add(1)
@@ -232,6 +250,7 @@ func (t *server) decide(c *conn, req Request) Decision {
 				return d
 			}
 			c.user = u
+			c.tap.User(u)
 			req.User = u
 		}
 	case "AUTH":
@@ -481,6 +500,10 @@ func (t *server) stls(c *conn, _ *wire.Command) bool {
 	if c.reply("+OK begin TLS negotiation") != nil {
 		return true
 	}
+	// STLS is an in-band upgrade, so the capture pauses over the handshake and
+	// picks the plaintext up again on the far side: the file then holds one
+	// readable stream of the protocol rather than cleartext and then ciphertext.
+	c.tap.Pause()
 	tc := tls.Server(c.client, t.tlsCfg)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -488,8 +511,8 @@ func (t *server) stls(c *conn, _ *wire.Command) bool {
 		t.denyConn(c, "stls_failed", err.Error())
 		return true
 	}
-	c.client = tc
-	c.cr = wire.NewReader(tc, t.maxLine)
+	c.client = c.tap.Client(tc)
+	c.cr = wire.NewReader(c.client, t.maxLine)
 	c.encrypted = true
 	return false
 }

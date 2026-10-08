@@ -25,35 +25,47 @@ var errNoUpstream = errors.New("imap: no reachable server endpoint")
 func (t *server) handle(client net.Conn) {
 	defer func() { _ = client.Close() }()
 	ip := netutil.AddrOf(client.RemoteAddr().String())
+	// Opened before anything can refuse the session, because a refused session is
+	// the one an operator most often wants and it never dials: after that point
+	// there is nothing left to record. A nil tap wraps nothing and writes nothing.
+	tap := t.host.Capture().Open("imap", t.name, "", client.RemoteAddr())
+	defer tap.Close()
+	client = tap.Client(client)
 	if !t.policy.Client(ip) {
+		tap.Deny("client_not_allowed")
 		t.deny(ip, "client_not_allowed", "")
 		return
 	}
-	if t.admitClient(ip) != "" {
+	if reason := t.admitClient(ip); reason != "" {
+		tap.Deny(reason)
 		return
 	}
 	if t.limiter != nil && !t.limiter.Allow(ip.String()) {
+		tap.Deny("rate_limited")
 		t.host.Counters().Refuse("imap", "rate_limited")
 		return
 	}
 	if ok, reason := t.gate.Enter(ip); !ok {
+		tap.Deny(reason)
 		t.host.Counters().Refuse("imap", reason)
 		return
 	}
 	defer t.gate.Leave(ip)
 
-	_, isTLS := client.(*tls.Conn)
+	_, isTLS := netutil.TLSConn(client)
 	up, greeted, err := t.dial(ip)
 	if err != nil {
+		tap.Deny("upstream_failed")
 		t.host.Counters().Refuse("imap", "upstream_failed")
 		t.host.Logs().Error.Warn("imap upstream dial failed", "listener", t.name,
 			"client_ip", ip.String(), "error", err.Error())
 		return
 	}
 	defer func() { _ = up.Close() }()
+	up = tap.Upstream(up)
 	t.host.Counters().IMAPConnections.Add(1)
 
-	c := newConn(t, ip, client, up, isTLS)
+	c := newConn(t, ip, client, up, isTLS, tap)
 	if !t.greeting(c, greeted) {
 		return
 	}
@@ -106,7 +118,7 @@ func (t *server) greeting(c *conn, line []byte) bool {
 		_ = c.line("* BYE " + reasonText(d))
 		return false
 	}
-	_, encrypted := c.client.(*tls.Conn)
+	_, encrypted := netutil.TLSConn(c.client)
 	out, stripped := c.rewriteCaps(r, encrypted)
 	if stripped > 0 {
 		t.host.Counters().IMAPCapabilitiesStripped.Add(uint64(stripped))
@@ -387,7 +399,7 @@ func dropLiteral(c *conn, cmd *wire.Command) {
 // the command would mean the client's session key was negotiated with the
 // server, and this relay would be reading nothing from then on.
 func (t *server) starttls(c *conn, cmd *wire.Command) bool {
-	_, already := c.client.(*tls.Conn)
+	_, already := netutil.TLSConn(c.client)
 	if t.tlsMode != "starttls" || t.tlsCfg == nil || already {
 		d := Decision{Reason: "starttls_not_offered", Hard: true}
 		t.refused(c, nil, d)
@@ -461,7 +473,7 @@ func (t *server) fromServer(c *conn, deadline time.Time) {
 			c.endAuth(r.Tag)
 			t.logAnswer(c, r, name)
 		}
-		_, encrypted := c.client.(*tls.Conn)
+		_, encrypted := netutil.TLSConn(c.client)
 		out, stripped := c.rewriteCaps(r, encrypted)
 		if stripped > 0 {
 			t.host.Counters().IMAPCapabilitiesStripped.Add(uint64(stripped))

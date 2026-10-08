@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rom/xproxy/internal/capture"
 	wire "github.com/rom/xproxy/internal/imap"
 )
 
@@ -39,6 +40,10 @@ type conn struct {
 	ip     netip.Addr
 	client net.Conn
 	up     net.Conn
+
+	// tap records the session for a pcapng capture, and is nil -- usable, and
+	// doing nothing -- whenever no rule wants this one, which is the usual case.
+	tap *capture.Tap
 
 	cr *wire.Reader // the client's commands
 	sr *wire.Reader // the server's responses
@@ -75,9 +80,9 @@ type conn struct {
 	fetched uint64
 }
 
-func newConn(t *server, ip netip.Addr, client, up net.Conn, encrypted bool) *conn {
+func newConn(t *server, ip netip.Addr, client, up net.Conn, encrypted bool, tap *capture.Tap) *conn {
 	return &conn{
-		t: t, ip: ip, client: client, up: up,
+		t: t, ip: ip, client: client, up: up, tap: tap,
 		cr:        wire.NewReader(client, t.maxLine),
 		sr:        wire.NewReader(up, t.maxResp),
 		cw:        client,
@@ -126,6 +131,7 @@ func (c *conn) setState(s wire.State) {
 func (c *conn) setUser(u string) {
 	c.mu.Lock()
 	c.user = u
+	c.tap.User(u)
 	c.mu.Unlock()
 }
 
@@ -221,15 +227,20 @@ func (c *conn) inAuth() bool {
 // upgrade replaces the client's reader and writer with a TLS session this
 // relay terminates, which is what `tls_mode: starttls` means.
 func (c *conn) upgrade(cfg *tls.Config, timeout time.Duration) error {
+	// STARTTLS is an in-band upgrade, so the capture pauses over the handshake and
+	// picks the plaintext up again on the far side: the file then holds one
+	// readable stream of the protocol rather than cleartext and then ciphertext.
+	c.tap.Pause()
 	tc := tls.Server(c.client, cfg)
 	ctx, cancel := contextWithTimeout(timeout)
 	defer cancel()
 	if err := tc.HandshakeContext(ctx); err != nil {
 		return err
 	}
+	wrapped := c.tap.Client(tc)
 	c.mu.Lock()
-	c.client, c.cw = tc, tc
-	c.cr = wire.NewReader(tc, c.t.maxLine)
+	c.client, c.cw = wrapped, wrapped
+	c.cr = wire.NewReader(wrapped, c.t.maxLine)
 	c.encrypted = true
 	c.mu.Unlock()
 	return nil

@@ -140,11 +140,15 @@ type ListenersReport struct {
 	// Enforcing and Shadowing count the listeners in each mode, which is
 	// the number an operator wants on a dashboard: "four of my
 	// twenty-one listeners are not enforcing".
-	Enforcing  int            `json:"enforcing"`
-	Shadowing  int            `json:"shadowing"`
-	Monitoring int            `json:"monitoring"`
-	Listeners  []ListenerView `json:"listeners"`
-	Kinds      []KindActivity `json:"kinds,omitempty"`
+	Enforcing  int `json:"enforcing"`
+	Shadowing  int `json:"shadowing"`
+	Monitoring int `json:"monitoring"`
+	// Learning counts the listeners recording a baseline without
+	// enforcing, which is the third way a listener can be deciding
+	// nothing and the one this report used to leave out.
+	Learning  int            `json:"learning"`
+	Listeners []ListenerView `json:"listeners"`
+	Kinds     []KindActivity `json:"kinds,omitempty"`
 }
 
 // feature is one row of the guard table.
@@ -229,6 +233,8 @@ func (s *Server) ListenersReport() ListenersReport {
 			out.Shadowing++
 		case "monitor":
 			out.Monitoring++
+		case "learn":
+			out.Learning++
 		default:
 			out.Enforcing++
 		}
@@ -314,12 +320,12 @@ func listenerView(l config.Listener) ListenerView {
 	}
 	sec := kindSection(l, kind)
 	v.Configured = sec.IsValid()
-	switch {
-	case l.Shadowing():
-		v.Mode = "shadow"
-	case monitorOnly(sec):
-		v.Mode = "monitor"
-	}
+	v.Mode = config.Enforcement{
+		Shadow:       l.Shadowing(),
+		MonitorOnly:  monitorOnly(sec),
+		Learning:     learning(sec),
+		LearnEnforce: learnEnforces(sec),
+	}.Mode()
 	v.Features = featureViews(kind, sec)
 	return v
 }
@@ -399,6 +405,43 @@ func monitorOnly(sec reflect.Value) bool {
 		return false
 	}
 	v := sec.FieldByIndex(f.Index)
+	return v.Kind() == reflect.Bool && v.Bool()
+}
+
+// learning and learnEnforces read a kind section's learn.enabled and
+// learn.enforce.
+//
+// The third reason a listener may not be enforcing, and the one the view used to
+// miss: a learning run is observe-only unless it says otherwise, so a listener
+// recording a baseline reported mode "enforce" while its policy decided nothing.
+// That is the one field a status view must not get wrong.
+func learning(sec reflect.Value) bool { return learnFlag(sec, "enabled") }
+
+func learnEnforces(sec reflect.Value) bool { return learnFlag(sec, "enforce") }
+
+func learnFlag(sec reflect.Value, key string) bool {
+	if !sec.IsValid() {
+		return false
+	}
+	f, ok := fieldByYAML(sec.Type(), "learn")
+	if !ok {
+		return false
+	}
+	l := sec.FieldByIndex(f.Index)
+	for l.Kind() == reflect.Ptr {
+		if l.IsNil() {
+			return false
+		}
+		l = l.Elem()
+	}
+	if l.Kind() != reflect.Struct {
+		return false
+	}
+	g, ok := fieldByYAML(l.Type(), key)
+	if !ok {
+		return false
+	}
+	v := l.FieldByIndex(g.Index)
 	return v.Kind() == reflect.Bool && v.Bool()
 }
 

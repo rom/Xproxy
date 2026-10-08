@@ -157,11 +157,16 @@ func (s *dynamicState) names() []string {
 func (t *server) refuseDynamic(se *session, name string, id uint32) {
 	t.engine.Counters().RDPChannelsRefused.Add(1)
 	t.engine.Counters().Refuse("rdp", "dynamic_channel")
+	// The recording is marked whatever alert_on_deny says: the session is still
+	// running and whoever replays it has to see where the channel stopped.
+	se.rec.Mark("xproxy: refused the dynamic channel " + textsafe.Clip64(name))
+	if !t.alerts() {
+		return
+	}
 	t.engine.Logs().SecurityEvent(context.Background(), "deny", "rdp_dynamic_channel_refused",
 		"listener", t.cfg.Name, "client_ip", se.ip.String(),
 		"user", textsafe.Clip64(se.user), "target", se.target,
 		"channel", textsafe.Clip64(name), "dynamic_channel_id", id)
-	se.rec.Mark("xproxy: refused the dynamic channel " + textsafe.Clip64(name))
 }
 
 // decideDynamicDown decides a drdynvc message travelling from the desktop to
@@ -176,14 +181,14 @@ func (se *session) decideDynamicDown(data rdp.SendData) ([]byte, string) {
 	t := se.t
 	chunk, err := rdp.ParseChannelChunk(data.Payload)
 	if err != nil {
-		t.deny(se.ip, "rdp_channel_chunk", err.Error())
+		t.deny(se, "rdp_channel_chunk", err.Error())
 		return nil, "upstream_protocol"
 	}
 	if chunk.Compressed() {
 		// A message this gateway cannot read is one it cannot filter, and a
 		// dynamic channel policy that quietly did not apply is worse than a
 		// session that ends.
-		t.deny(se.ip, "rdp_channel_compressed", rdp.ChannelDynamic)
+		t.deny(se, "rdp_channel_compressed", rdp.ChannelDynamic)
 		return nil, "channel_compressed"
 	}
 	msg, done, reason := se.reassembleDown(chunk)
@@ -198,7 +203,7 @@ func (se *session) decideDynamicDown(data rdp.SendData) ([]byte, string) {
 	}
 	dvc, err := rdp.ParseDVC(msg, rdp.FromServer)
 	if err != nil {
-		t.deny(se.ip, "rdp_dynamic_channel", err.Error())
+		t.deny(se, "rdp_dynamic_channel", err.Error())
 		return nil, "upstream_protocol"
 	}
 	switch {
@@ -251,11 +256,11 @@ func (se *session) decideDynamicUp(data rdp.SendData) ([]byte, bool, string) {
 	t := se.t
 	chunk, err := rdp.ParseChannelChunk(data.Payload)
 	if err != nil {
-		t.deny(se.ip, "rdp_channel_chunk", err.Error())
+		t.deny(se, "rdp_channel_chunk", err.Error())
 		return nil, false, "client_protocol"
 	}
 	if chunk.Compressed() {
-		t.deny(se.ip, "rdp_channel_compressed", rdp.ChannelDynamic)
+		t.deny(se, "rdp_channel_compressed", rdp.ChannelDynamic)
 		return nil, false, "channel_compressed"
 	}
 	msg, done, reason := se.reassembleUp(chunk)
@@ -267,7 +272,7 @@ func (se *session) decideDynamicUp(data rdp.SendData) ([]byte, bool, string) {
 	}
 	dvc, err := rdp.ParseDVC(msg, rdp.FromClient)
 	if err != nil {
-		t.deny(se.ip, "rdp_dynamic_channel", err.Error())
+		t.deny(se, "rdp_dynamic_channel", err.Error())
 		return nil, false, "client_protocol"
 	}
 	if dvc.HasChannelID {
@@ -313,7 +318,7 @@ func (se *session) collect(buf *[]byte, chunk rdp.ChannelChunk, side string) (ms
 		*buf = (*buf)[:0]
 	}
 	if len(*buf)+len(chunk.Data) > maxChannelMessage {
-		se.t.deny(se.ip, "rdp_channel_message", rdp.ChannelDynamic)
+		se.t.deny(se, "rdp_channel_message", rdp.ChannelDynamic)
 		return nil, false, side + "_channel_message_too_long"
 	}
 	*buf = append(*buf, chunk.Data...)

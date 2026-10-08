@@ -45,7 +45,7 @@ func (t *server) refused(c *conn, m *wire.Message, d Decision, detail string) (f
 		return true, false
 	}
 	c.refusal()
-	t.deny(c.ip, d.Reason, detail)
+	t.deny(c, d.Reason, detail)
 	t.alertDeny(c, d, detail)
 	return t.respond(c, m, d)
 }
@@ -81,7 +81,7 @@ func (t *server) refuseConn(c *conn, d Decision, detail string) {
 		return
 	}
 	c.refusal()
-	t.deny(c.ip, d.Reason, detail)
+	t.deny(c, d.Reason, detail)
 	t.alertDeny(c, d, detail)
 	_ = c.client.Close()
 }

@@ -166,15 +166,17 @@ func (t *server) idleTimeout() time.Duration {
 // thing it was measuring. What neither relaxes is a bound -- the block, the
 // window, the transfer size, the concurrency -- because shadowing those leaves a
 // working amplifier.
-func (t *server) enforcing() bool {
-	if t.cfg.Shadowing() {
-		return false
+func (t *server) enforcing() bool { return t.enforcement().Enforcing() }
+
+// enforcement folds this listener's reasons not to enforce into one answer, so
+// that the precedence, and the name a status view reports, are the same on
+// every kind.
+func (t *server) enforcement() config.Enforcement {
+	e := config.Enforcement{Shadow: t.cfg.Shadowing()}
+	if l := t.m.Learn; l != nil {
+		e.Learning, e.LearnEnforce = l.Enabled, l.Enforce
 	}
-	l := t.m.Learn
-	if l == nil || !l.Enabled {
-		return true
-	}
-	return l.Enforce
+	return e
 }
 
 // alerts says whether a refusal writes a security event.

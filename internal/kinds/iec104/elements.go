@@ -378,7 +378,7 @@ func (se *session) decideElements(frame *wire.Frame, fromClient bool) (string, b
 			t.alert(se.ip, reason, f.detail)
 			continue
 		}
-		t.deny(se.ip, reason, f.detail)
+		t.deny(se, reason, f.detail)
 		if t.enforcing() || f.hard {
 			return reason, false
 		}

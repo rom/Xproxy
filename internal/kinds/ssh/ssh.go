@@ -19,6 +19,7 @@ import (
 
 	"github.com/rom/xproxy/internal/access"
 	"github.com/rom/xproxy/internal/authorization"
+	"github.com/rom/xproxy/internal/capture"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/keysource"
 	"github.com/rom/xproxy/internal/mfa"
@@ -570,15 +571,28 @@ func (t *server) allowed(ip netip.Addr) bool {
 
 func (t *server) deny(ip netip.Addr, what, detail string) {
 	t.engine.Counters().Refuse("ssh", what)
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
+	if bl := t.engine.Bans(); bl != nil && ip.IsValid() {
+		bl.Observe(ip, "ssh_denied")
+	}
+
+	if !t.alerts() {
+		return
+	}
 	attrs := []any{"listener", t.cfg.Name, "client_ip", ip.String(), "proto", "ssh"}
 	if detail != "" {
 		attrs = append(attrs, "detail", detail)
 	}
 	t.engine.Logs().SecurityEvent(context.Background(), "deny", "ssh_"+what, attrs...)
-	if bl := t.engine.Bans(); bl != nil && ip.IsValid() {
-		bl.Observe(ip, "ssh_denied")
-	}
 }
+
+// alerts says whether a refusal on this listener is worth a security event.
+//
+// The counters, the access line, the session recording and the ban observation do
+// not go through here: this is the record alone, which is what alert_on_deny is
+// named for.
+func (t *server) alerts() bool { return t.h.AlertOnDeny == nil || *t.h.AlertOnDeny }
 
 // shadowed records a policy refusal a listener in shadow mode does not
 // enforce, and says whether it was recorded rather than refused.
@@ -619,7 +633,17 @@ func (t *server) recordWouldDeny(ip netip.Addr, what, rule, detail string) {
 // session is one client connection and the target connection behind
 // it.
 type session struct {
-	t      *server
+	t *server
+	// tap records the session for a pcapng capture, and is nil -- usable, and
+	// doing nothing -- whenever no rule wants this one, which is the usual case.
+	//
+	// What it holds is the SSH transport: the version exchange in the clear and
+	// everything after the key exchange encrypted, because this kind terminates
+	// SSH rather than TLS and there is no socket layer underneath to tap. The
+	// plaintext record of an SSH session is the kind's own recording; this is of
+	// what crossed the wire, which is what a capture is for.
+	tap *capture.Tap
+
 	sconn  *cssh.ServerConn
 	client *cssh.Client
 	ip     netip.Addr
@@ -777,10 +801,17 @@ func (t *server) handle(raw net.Conn) {
 	ip := netutil.AddrOf(raw.RemoteAddr().String())
 	se := &session{t: t, ip: ip}
 	defer func() { _ = raw.Close() }()
+	// Opened before anything can refuse the connection, because a refused one is
+	// the one an operator most often wants and it never dials: after that point
+	// there is nothing left to record. A nil tap wraps nothing and writes nothing.
+	se.tap = t.engine.Capture().Open("ssh", t.cfg.Name, "", raw.RemoteAddr())
+	defer se.tap.Close()
+	raw = se.tap.Client(raw)
 
 	if !t.allowed(ip) && !t.shadowed(ip, "client_not_allowed", "") {
 		s.Counters().SSHRejected.Add(1)
 		t.deny(ip, "client_not_allowed", "")
+		se.tap.Deny("client_not_allowed")
 		t.log(se, start, "client_not_allowed")
 		return
 	}
@@ -792,12 +823,14 @@ func (t *server) handle(raw net.Conn) {
 		Kind: "ssh", Listener: t.cfg.Name, Client: raw.RemoteAddr().String(),
 	}, func() { _ = raw.Close() })
 	defer se.live.Done()
+	se.tap.Name(se.live.ID)
 	// The handshake and authentication share one deadline. Once the
 	// session is up the idle timeout takes over, applied by the
 	// connection wrapper below.
 	_ = raw.SetDeadline(time.Now().Add(t.h.HandshakeTimeout.D()))
 	sconn, chans, reqs, err := cssh.NewServerConn(raw, t.scfg)
 	if err != nil {
+		se.tap.Deny("handshake")
 		t.log(se, start, "handshake")
 		return
 	}
@@ -805,6 +838,7 @@ func (t *server) handle(raw net.Conn) {
 	_ = raw.SetDeadline(time.Time{})
 	se.sconn = sconn
 	se.user = sconn.User()
+	se.tap.User(se.user)
 	se.policy = t.base
 	se.live.Annotate(se.user, "", "")
 	if sconn.Permissions != nil {
@@ -829,6 +863,7 @@ func (t *server) handle(raw net.Conn) {
 	if release, ok := t.admitPrincipal(se.principalKey()); !ok {
 		s.Counters().SSHRejected.Add(1)
 		t.deny(ip, "max_sessions_per_principal", se.principalKey())
+		se.tap.Deny("max_sessions_per_principal")
 		t.log(se, start, "max_sessions_per_principal")
 		return
 	} else if release != nil {
@@ -845,6 +880,7 @@ func (t *server) handle(raw net.Conn) {
 	if se.deceived == "" && (!se.admitByPolicy() || !se.admitByGrant()) {
 		s.Counters().SSHRejected.Add(1)
 		if !t.decoy.admits(ip) {
+			se.tap.Deny(se.grantRefusal)
 			t.log(se, start, se.grantRefusal)
 			return
 		}
@@ -874,6 +910,7 @@ func (t *server) handle(raw net.Conn) {
 	}
 	if err := se.connect(); err != nil {
 		s.Logs().Error.Warn("ssh target unavailable", "listener", t.cfg.Name, "user", textsafe.Clip64(se.user), "err", err.Error())
+		se.tap.Deny("upstream_unavailable")
 		t.log(se, start, "upstream_unavailable")
 		return
 	}

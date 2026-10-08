@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rom/xproxy/internal/capture"
 	wire "github.com/rom/xproxy/internal/respwire"
 )
 
@@ -26,6 +27,10 @@ type session struct {
 	ip     netip.Addr
 	client net.Conn
 	up     net.Conn
+
+	// tap records the session for a pcapng capture, and is nil -- usable, and
+	// doing nothing -- whenever no rule wants this one, which is the usual case.
+	tap *capture.Tap
 
 	cliReader *wire.Reader
 
@@ -93,6 +98,7 @@ func (se *session) authOK() {
 		se.mu.Lock()
 		se.user = *u
 		se.mu.Unlock()
+		se.tap.User(*u)
 	}
 }
 

@@ -1447,6 +1447,22 @@ type MySQLListener struct {
 	// DenyResponse is error (the default: an error packet the client's own
 	// library reports) or drop.
 	DenyResponse string `yaml:"deny_response"`
+	// LogRequests writes an access line for every command and statement this
+	// relay forwards, carrying the command name and the statement *kind* and
+	// never the statement text -- the same rule the refusal record follows, and
+	// for the same reason: a WHERE clause names the row and an INSERT carries the
+	// value, and this log is read by more people than the database is.
+	//
+	// Default false, because a busy database is a great many lines a second. It
+	// is the audit trail a DBA is asked for after an incident, and without it the
+	// only record this relay keeps is of what it refused -- which answers "what
+	// did we stop" and not "what did they run".
+	LogRequests bool `yaml:"log_requests"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	// Turning it off keeps the counters, the access log and the automatic ban,
+	// and loses the security event alone, which is a decision to make
+	// deliberately on a listener whose refusals are routine.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
 	// MonitorOnly evaluates and enforces nothing, except the hard decisions:
 	// the client list, the TLS requirement, the authentication plugins, a
 	// command or statement the relay could not read, a replication command, a
@@ -1704,6 +1720,22 @@ type RedisListener struct {
 	// DenyResponse is error (the default: a -NOPERM error reply the client's own
 	// library reports) or drop.
 	DenyResponse string `yaml:"deny_response"`
+	// LogRequests writes an access line for every command this relay forwards,
+	// carrying the command name and how many keys it named, and never the keys
+	// themselves or the values -- the same rule the refusal record follows, and
+	// for the same reason: a key names the record and the value is the data, and
+	// this log is read by more people than the cache is.
+	//
+	// Default false, because a cache answers a great many commands a second. It
+	// is the audit trail an operator is asked for after an incident, and without
+	// it the only record this relay keeps is of what it refused -- which answers
+	// "what did we stop" and not "what did they run".
+	LogRequests bool `yaml:"log_requests"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	// Turning it off keeps the counters, the access log and the automatic ban,
+	// and loses the security event alone, which is a decision to make
+	// deliberately on a listener whose refusals are routine.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
 	// MonitorOnly evaluates and enforces nothing, except the hard decisions: the
 	// client list, the TLS requirement, a command before authentication, a
 	// message the relay could not read, and the commands in the dangerous set --
@@ -2665,6 +2697,22 @@ type TDSListener struct {
 	// library reports, with the number SQL Server uses for a permission
 	// refusal) or drop.
 	DenyResponse string `yaml:"deny_response"`
+	// LogRequests writes an access line for every batch and statement this relay
+	// forwards, carrying the statement *kind* and never the statement text --
+	// the same rule the refusal record follows, and for the same reason: a WHERE
+	// clause names the row and an INSERT carries the value, and this log is read
+	// by more people than the database is.
+	//
+	// Default false, because a busy database is a great many lines a second. It
+	// is the audit trail a DBA is asked for after an incident, and without it the
+	// only record this relay keeps is of what it refused -- which answers "what
+	// did we stop" and not "what did they run".
+	LogRequests bool `yaml:"log_requests"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	// Turning it off keeps the counters, the access log and the automatic ban,
+	// and loses the security event alone, which is a decision to make
+	// deliberately on a listener whose refusals are routine.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
 	// MonitorOnly evaluates and enforces nothing, except the hard decisions:
 	// the client list, the TLS requirement, a cleartext password, an
 	// unnameable login, a message or statement the relay could not read, and
@@ -2856,6 +2904,22 @@ type PostgresListener struct {
 	// DenyResponse is error (the default: an ErrorResponse the client's own
 	// library reports) or drop (close without a word).
 	DenyResponse string `yaml:"deny_response"`
+	// LogRequests writes an access line for every statement and message this
+	// relay forwards, carrying the message type and the statement *kind* and
+	// never the statement text -- the same rule the refusal record follows, and
+	// for the same reason: a WHERE clause names the row and an INSERT carries the
+	// value, and this log is read by more people than the database is.
+	//
+	// Default false, because a busy database is a great many lines a second. It
+	// is the audit trail a DBA is asked for after an incident, and without it the
+	// only record this relay keeps is of what it refused -- which answers "what
+	// did we stop" and not "what did they run".
+	LogRequests bool `yaml:"log_requests"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	// Turning it off keeps the counters, the access log and the automatic ban,
+	// and loses the security event alone, which is a decision to make
+	// deliberately on a listener whose refusals are routine.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
 	// MonitorOnly evaluates the policy and enforces nothing, except the
 	// decisions marked hard: the client list, the TLS requirement, the
 	// authentication methods, a statement the classifier could not read, a
@@ -6201,6 +6265,11 @@ type SyslogListener struct {
 	// Default 4096. When it is full the relay drops and counts rather
 	// than blocking every sender behind one slow collector.
 	Queue int `yaml:"queue"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	// Turning it off keeps the counters, the access log and the automatic ban,
+	// and loses the security event alone, which is a decision to make
+	// deliberately on a listener whose refusals are routine.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
 }
 
 // SyslogRedaction replaces what matches a pattern in a message.
@@ -6335,6 +6404,11 @@ type FTPListener struct {
 	// access ledger: one somebody asked for, somebody else approved, and
 	// that ends by itself. Needs the access section. See docs/CONFIG.md.
 	RequireGrant bool `yaml:"require_grant"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	// Turning it off keeps the counters, the access log, the session recording and
+	// the automatic ban, and loses the security event alone, which is a decision
+	// to make deliberately on a listener whose refusals are routine.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
 }
 
 // TransferICAP scans the files a session moves (RFC 3507), for the
@@ -6428,6 +6502,11 @@ type TelnetListener struct {
 	// listener was going to refuse answered by a fabricated shell, or a
 	// whole listener that is one. See TelnetDeception.
 	Deception *TelnetDeception `yaml:"deception"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	// Turning it off keeps the counters, the access log, the session recording and
+	// the automatic ban, and loses the security event alone, which is a decision
+	// to make deliberately on a listener whose refusals are routine.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
 }
 
 // TelnetDeception answers as a device that is not there.
@@ -6633,6 +6712,11 @@ type VNCListener struct {
 	ProxyProtocol bool `yaml:"proxy_protocol"`
 	// AllowClients restricts clients to these CIDRs.
 	AllowClients []string `yaml:"allow_clients"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	// Turning it off keeps the counters, the access log, the session recording and
+	// the automatic ban, and loses the security event alone, which is a decision
+	// to make deliberately on a listener whose refusals are routine.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
 }
 
 // VNCBounds bound the pixel stream: what the desktop may declare, and
@@ -6771,6 +6855,11 @@ type RDPListener struct {
 	ProxyProtocol bool `yaml:"proxy_protocol"`
 	// AllowClients restricts clients to these CIDRs.
 	AllowClients []string `yaml:"allow_clients"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	// Turning it off keeps the counters, the access log, the session recording and
+	// the automatic ban, and loses the security event alone, which is a decision
+	// to make deliberately on a listener whose refusals are routine.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
 }
 
 // RDPChannelPolicy decides which static virtual channels a session
@@ -7062,6 +7151,11 @@ type SSHListener struct {
 	ProxyProtocol bool `yaml:"proxy_protocol"`
 	// AllowClients restricts clients to these CIDRs.
 	AllowClients []string `yaml:"allow_clients"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	// Turning it off keeps the counters, the access log, the session recording and
+	// the automatic ban, and loses the security event alone, which is a decision
+	// to make deliberately on a listener whose refusals are routine.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
 }
 
 // SessionRecording records an interactive session to a file that can be
@@ -7370,6 +7464,11 @@ type MQTTListener struct {
 	AllowClients []string `yaml:"allow_clients"`
 	// Learn records what crosses this listener and writes a proposed policy.
 	Learn *MQTTLearn `yaml:"learn"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	// Turning it off keeps the counters, the access log and the automatic ban,
+	// and loses the security event alone, which is a decision to make
+	// deliberately on a listener whose refusals are routine.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
 }
 
 // MQTTLearn is an mqtt listener's learning mode.
@@ -7570,6 +7669,11 @@ type SMTPListener struct {
 	// XCLIENT command (a Postfix extension) after EHLO, when the
 	// upstream advertises it.
 	XClient bool `yaml:"xclient"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	// Turning it off keeps the counters, the access log and the automatic ban,
+	// and loses the security event alone, which is a decision to make
+	// deliberately on a listener whose refusals are routine.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
 }
 
 // DNSListener is a forwarding DNS proxy on the listener address over UDP
@@ -7694,6 +7798,11 @@ type DNSListener struct {
 	// subnet chooses what the next thousand are told. Forward it only
 	// where the clients of this listener are one network.
 	ECS string `yaml:"ecs"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	// Turning it off keeps the counters, the access log and the automatic ban,
+	// and loses the security event alone, which is a decision to make
+	// deliberately on a listener whose refusals are routine.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
 }
 
 // DNSDeception answers as a DNS resolver that is not there.
@@ -8261,6 +8370,13 @@ type ForwardListener struct {
 	// no name at all -- which is what Encrypted Client Hello looks like
 	// from here -- is not a mismatch and is never refused by this.
 	SNI string `yaml:"sni"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	// Turning it off keeps the counters, the access log and the automatic ban,
+	// and loses the security event alone, which is a decision to make
+	// deliberately on a listener whose refusals are routine -- which on an
+	// egress proxy they are: a browser reaching for a destination the policy
+	// does not carry is an ordinary afternoon.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
 }
 
 // ForwardCategory is a named set of destinations.
@@ -8673,6 +8789,11 @@ type TCPListener struct {
 	// apply to QUIC flows: those are encrypted, and a rule over
 	// ciphertext matches nothing.
 	YARA *YARAPolicy `yaml:"yara"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	// Turning it off keeps the counters, the access log and the automatic ban,
+	// and loses the security event alone, which is a decision to make
+	// deliberately on a listener whose refusals are routine.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
 }
 
 // UDPListener is a generic datagram relay: the symmetric primitive to
@@ -8734,6 +8855,11 @@ type UDPListener struct {
 	// address this or rate_limit is what stops the listener being
 	// somebody else's amplifier.
 	AllowClients []string `yaml:"allow_clients"`
+	// AlertOnDeny writes a security event for every refusal. Default true.
+	// Turning it off keeps the counters, the access log and the automatic ban,
+	// and loses the security event alone, which is a decision to make
+	// deliberately on a listener whose refusals are routine.
+	AlertOnDeny *bool `yaml:"alert_on_deny"`
 }
 
 // UDPRateLimit bounds datagrams per second from one source address.
@@ -11070,6 +11196,20 @@ type CaptureRule struct {
 	Reasons []string `yaml:"reasons"`
 	// Denied selects every refusal, whatever the reason.
 	Denied bool `yaml:"denied"`
+	// Listeners are listener names, and Kinds listener kinds. They are
+	// how a rule selects a session on a protocol that has no hosts,
+	// routes, methods or paths: everything but the HTTP listeners.
+	//
+	// An HTTP exchange is identified by what was asked for; a relayed
+	// session is identified by which listener it arrived on and which
+	// protocol that listener speaks, because there is nothing else that
+	// is true of it before a byte is read. Both lists also apply to HTTP
+	// exchanges, where the listener is the one the request arrived on.
+	Listeners []string `yaml:"listeners"`
+	// Kinds are listener kinds ("mysql", "ssh", "tcp"), validated against
+	// the kinds in this configuration so that a typo is a load error
+	// rather than a rule that never matches.
+	Kinds []string `yaml:"kinds"`
 	// Percent samples the exchanges this rule would take. Default 100.
 	Percent int `yaml:"percent"`
 	// MaxFlows bounds how many exchanges this rule ever writes, so a

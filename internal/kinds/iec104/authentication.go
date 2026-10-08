@@ -207,6 +207,6 @@ func (se *session) decideAuthentication(frame *wire.Frame, fromClient bool, now 
 		detail = fmt.Sprintf("%s: last authenticated %s ago, outside the %s window",
 			a.Type, now.Sub(at).Round(time.Second), t.auth.window)
 	}
-	t.deny(se.ip, "iec104_unauthenticated", detail)
+	t.deny(se, "iec104_unauthenticated", detail)
 	return "iec104_unauthenticated", false
 }

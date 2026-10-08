@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -15,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/relay"
 	"github.com/rom/xproxy/internal/streamscan"
 	"github.com/rom/xproxy/internal/textsafe"
@@ -82,7 +82,7 @@ const maxRequestLine = 8 << 10
 
 // alpnOf is what a TLS connection negotiated, or "" for anything else.
 func alpnOf(c net.Conn) string {
-	if tc, ok := c.(*tls.Conn); ok {
+	if tc, ok := netutil.TLSConn(c); ok {
 		return tc.ConnectionState().NegotiatedProtocol
 	}
 	return ""
@@ -244,9 +244,11 @@ func (t *httpTunnel) run() (int64, int64, string) {
 			// shape as often as it is a broken client, and either way the
 			// destination should not be the one to decide.
 			t.f.host.Counters().Refuse("forward", "bad_request")
-			t.f.host.Logs().SecurityEvent(context.Background(), "deny", "forward_tunnel_bad_request",
-				"listener", t.f.name, "client_ip", t.ip.String(), "dest", t.host,
-				"err", textsafe.Clip256(err.Error()))
+			if t.f.alerts() {
+				t.f.host.Logs().SecurityEvent(context.Background(), "deny", "forward_tunnel_bad_request",
+					"listener", t.f.name, "client_ip", t.ip.String(), "dest", t.host,
+					"err", textsafe.Clip256(err.Error()))
+			}
 			_ = writeTunnelStatus(t.client, http.StatusBadRequest, "bad_request")
 			return inBytes, outBytes, "bad_request"
 		}
@@ -328,9 +330,11 @@ func (t *httpTunnel) one(req *http.Request) exchange {
 			return exchange{reason: "yara"}
 		case errors.Is(err, errBodyTooLarge):
 			f.host.Counters().Refuse("forward", "rule_deny")
-			f.host.Logs().SecurityEvent(context.Background(), "deny", "forward_egress_denied",
-				"listener", f.name, "client_ip", t.ip.String(), "user", textsafe.Clip64(t.user),
-				"destination", t.host, "detail", "undeclared body over the bound")
+			if f.alerts() {
+				f.host.Logs().SecurityEvent(context.Background(), "deny", "forward_egress_denied",
+					"listener", f.name, "client_ip", t.ip.String(), "user", textsafe.Clip64(t.user),
+					"destination", t.host, "detail", "undeclared body over the bound")
+			}
 			_ = writeTunnelStatus(t.client, http.StatusForbidden, "rule_deny")
 			return exchange{reason: "rule_deny"}
 		}
@@ -363,6 +367,9 @@ func (t *httpTunnel) one(req *http.Request) exchange {
 				resp.Body = &countedBody{ReadCloser: resp.Body, left: bound,
 					onOver: func() {
 						f.host.Counters().Refuse("forward", "rule_deny")
+						if !f.alerts() {
+							return
+						}
 						f.host.Logs().SecurityEvent(context.Background(), "deny",
 							"forward_egress_denied", "listener", f.name,
 							"client_ip", t.ip.String(), "user", textsafe.Clip64(t.user),
@@ -441,9 +448,13 @@ func (f *forwardServer) tunnelHostGuard(mode string, req *http.Request, ip netip
 		// virtual host once they arrive.
 		return ""
 	}
-	f.host.Logs().SecurityEvent(context.Background(), actionFor(mode), "forward_tunnel_host_mismatch",
-		"listener", f.name, "client_ip", ip.String(), "connect", textsafe.Clip256(host),
-		"host", textsafe.Clip256(req.Host), "mode", mode)
+	// actionFor makes this a refusal only where the mode enforces; observed, it
+	// is an alert and the shadow ledger's, which alert_on_deny does not speak for.
+	if mode != "enforce" || f.alerts() {
+		f.host.Logs().SecurityEvent(context.Background(), actionFor(mode), "forward_tunnel_host_mismatch",
+			"listener", f.name, "client_ip", ip.String(), "connect", textsafe.Clip256(host),
+			"host", textsafe.Clip256(req.Host), "mode", mode)
+	}
 	if mode != "enforce" {
 		f.host.Counters().WouldRefuse("forward", "host_mismatch")
 		f.host.Shadow().Record("forward", f.name, "host_mismatch", "host", req.Host+" through "+host)

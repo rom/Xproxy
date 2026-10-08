@@ -172,10 +172,15 @@ func (f *forwardServer) intercept(client, dst net.Conn, host string, port int,
 	if addrErr != nil && !strings.EqualFold(name, host) {
 		f.host.Counters().InterceptRefused.Add(1)
 		f.host.Counters().Refuse("forward", "sni_mismatch")
-		f.host.Logs().SecurityEvent(context.Background(), "deny", "forward_sni_mismatch",
-			"listener", f.name, "client_ip", ip.String(), "connect", host, "sni", textsafe.Clip256(name))
+		// The ban ladder hears about this before alert_on_deny can silence
+		// the record: turning the log down is not a decision to stop
+		// responding.
 		if bl := f.host.Bans(); bl != nil && ip.IsValid() {
 			bl.Observe(ip, "forward_sni_mismatch")
+		}
+		if f.alerts() {
+			f.host.Logs().SecurityEvent(context.Background(), "deny", "forward_sni_mismatch",
+				"listener", f.name, "client_ip", ip.String(), "connect", host, "sni", textsafe.Clip256(name))
 		}
 		return 0, 0, "sni_mismatch"
 	}
@@ -187,8 +192,10 @@ func (f *forwardServer) intercept(client, dst net.Conn, host string, port int,
 		// what would have happened without a proxy in the way.
 		f.host.Counters().InterceptRefused.Add(1)
 		f.host.Counters().Refuse("forward", "upstream_tls")
-		f.host.Logs().SecurityEvent(context.Background(), "deny", "forward_upstream_tls",
-			"listener", f.name, "client_ip", ip.String(), "dest", host, "err", err.Error())
+		if f.alerts() {
+			f.host.Logs().SecurityEvent(context.Background(), "deny", "forward_upstream_tls",
+				"listener", f.name, "client_ip", ip.String(), "dest", host, "err", err.Error())
+		}
 		return 0, 0, "upstream_tls"
 	}
 	defer func() { _ = upstream.Close() }()
@@ -468,9 +475,13 @@ func (f *forwardServer) sniGuard(mode string, client net.Conn, br *bufio.Reader,
 	if _, err := netip.ParseAddr(strings.Trim(host, "[]")); err == nil {
 		return br, ""
 	}
-	f.host.Logs().SecurityEvent(context.Background(), actionFor(mode), "forward_sni_mismatch",
-		"listener", f.name, "client_ip", ip.String(), "connect", textsafe.Clip256(host),
-		"sni", textsafe.Clip256(name), "mode", mode)
+	// actionFor makes this a refusal only where the mode enforces; observed, it
+	// is an alert and the shadow ledger's, which alert_on_deny does not speak for.
+	if mode != "enforce" || f.alerts() {
+		f.host.Logs().SecurityEvent(context.Background(), actionFor(mode), "forward_sni_mismatch",
+			"listener", f.name, "client_ip", ip.String(), "connect", textsafe.Clip256(host),
+			"sni", textsafe.Clip256(name), "mode", mode)
+	}
 	if mode != "enforce" {
 		f.host.Counters().WouldRefuse("forward", "sni_mismatch")
 		f.host.Shadow().Record("forward", f.name, "sni_mismatch", "sni", name+" through "+host)

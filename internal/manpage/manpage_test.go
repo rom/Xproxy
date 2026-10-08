@@ -92,3 +92,55 @@ func TestPagesCurrent(t *testing.T) {
 		}
 	}
 }
+
+// TestEveryCommandHasAPage is the check that was missing when xproxy-admin
+// shipped without one.
+//
+// It reads cmd/ rather than a list, because a list is the thing that was already
+// wrong: nine of the ten commands had a page, the tenth was the web GUI, and
+// nothing failed. A command added tomorrow fails this test until somebody writes
+// its page, which is the only moment anybody will.
+func TestEveryCommandHasAPage(t *testing.T) {
+	cmds, err := os.ReadDir("../../cmd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pages, err := Build("../../docs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range cmds {
+		if !d.IsDir() {
+			continue
+		}
+		name := d.Name() + ".8"
+		if _, ok := pages[name]; !ok {
+			t.Errorf("cmd/%s has no manual page; write docs/man/%s.md and add it to Build",
+				d.Name(), name)
+		}
+	}
+}
+
+// TestEveryPageIsPackaged keeps the RPM spec in step. A page that is generated
+// and not installed is a page nobody on a packaged system can read, and a page
+// installed into a subpackage that does not list it fails the build.
+func TestEveryPageIsPackaged(t *testing.T) {
+	spec, err := os.ReadFile("../../deploy/rpm/xproxy.spec")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pages, err := Build("../../docs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(spec)
+	for name := range pages {
+		section := name[len(name)-1:]
+		if !strings.Contains(text, "docs/man/"+name+" ") {
+			t.Errorf("%s is generated but the spec does not install it", name)
+		}
+		if !strings.Contains(text, "%{_mandir}/man"+section+"/"+name+"*") {
+			t.Errorf("%s is installed but no %%files section lists it", name)
+		}
+	}
+}

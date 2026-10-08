@@ -41,6 +41,7 @@ import (
 	"github.com/rom/xproxy/internal/admit"
 	"github.com/rom/xproxy/internal/anomaly"
 	"github.com/rom/xproxy/internal/authorization"
+	"github.com/rom/xproxy/internal/capture"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/correlate"
 	"github.com/rom/xproxy/internal/engineering"
@@ -276,6 +277,14 @@ type session struct {
 	secure bool
 	live   *sessions.Session
 
+	// tap records the session for a pcapng capture, and is nil -- usable, and
+	// doing nothing -- whenever no rule wants this one, which is the usual case.
+	//
+	// Only the client side is wrapped, and the capture names no server: a Modbus
+	// session fans out to a device per route, so there is no one upstream
+	// connection to be the other end of the conversation.
+	tap *capture.Tap
+
 	// workers are the per-route device connections, opened on demand:
 	// one session may reach several devices when the routes send
 	// different unit identifiers to different pools.
@@ -340,6 +349,12 @@ func (t *server) handle(client net.Conn) {
 	se := &session{t: t, client: client, ip: ip, watch: newWatcher(),
 		workers: map[string]*worker{}, writes: make(chan []byte, 16),
 		pending: make(chan struct{}, t.m.Pending())}
+	// Opened before anything can refuse the session, because a refused session is
+	// the one an operator most often wants and it never dials: after that point
+	// there is nothing left to record. A nil tap wraps nothing and writes nothing.
+	se.tap = t.host.Capture().Open("modbus", t.cfg.Name, "", client.RemoteAddr())
+	defer se.tap.Close()
+	se.client = se.tap.Client(client)
 	defer func() {
 		se.stop()
 		_ = client.Close()
@@ -352,7 +367,7 @@ func (t *server) handle(client net.Conn) {
 	}()
 	if !t.policy.ClientAllowed(ip) {
 		t.host.Counters().ModbusRejected.Add(1)
-		t.deny(ip, "client_not_allowed", "")
+		t.deny(se, "client_not_allowed", "")
 		t.log(se, start, "client_not_allowed")
 		return
 	}
@@ -360,7 +375,7 @@ func (t *server) handle(client net.Conn) {
 	// listener's own address lists -- those are local policy about local
 	// clients, and a feed must not overrule an allow rule an operator wrote --
 	// and before the device is dialled.
-	if reason := t.admitClient(ip); reason != "" {
+	if reason := t.admitClient(se); reason != "" {
 		t.host.Counters().ModbusRejected.Add(1)
 		t.log(se, start, reason)
 		return
@@ -374,19 +389,23 @@ func (t *server) handle(client net.Conn) {
 		Kind: "modbus", Listener: t.cfg.Name, Client: client.RemoteAddr().String(),
 	}, func() { _ = client.Close() })
 	defer se.live.Done()
+	se.tap.Name(se.live.ID)
 	if t.m.TLSMode == "implicit" || (t.tlsCfg != nil && t.m.TLSMode == "") {
 		tc := tls.Server(client, t.tlsCfg)
 		_ = tc.SetDeadline(time.Now().Add(10 * time.Second))
 		if err := tc.HandshakeContext(context.Background()); err != nil {
-			t.deny(ip, "tls_handshake", err.Error())
+			t.deny(se, "tls_handshake", err.Error())
 			t.log(se, start, "tls_handshake")
 			return
 		}
 		_ = tc.SetDeadline(time.Time{})
-		se.client, se.secure = tc, true
+		// The tap follows the protocol rather than the TLS records carrying it:
+		// tls.Server reads the socket directly, so nothing recorded the
+		// handshake, and from here the tap sees the plaintext inside it.
+		se.client, se.secure = se.tap.Client(tc), true
 		if reason := se.readRole(tc.ConnectionState()); reason != "" {
 			t.host.Counters().ModbusRejected.Add(1)
-			t.deny(ip, reason, "")
+			t.deny(se, reason, "")
 			t.log(se, start, reason)
 			return
 		}
@@ -395,7 +414,7 @@ func (t *server) handle(client net.Conn) {
 		// only come from TLS. Saying so here rather than refusing every
 		// frame is the difference between a misconfiguration and a
 		// mystery.
-		t.deny(ip, "security_requires_tls", "")
+		t.deny(se, "security_requires_tls", "")
 		t.log(se, start, "security_requires_tls")
 		return
 	}
@@ -473,14 +492,14 @@ func (se *session) run() string {
 				errors.Is(err, wire.ErrLength) || errors.Is(err, wire.ErrFormat) ||
 				errors.Is(err, wire.ErrUnknownFunction) {
 				t.host.Counters().ModbusMalformed.Add(1)
-				t.deny(se.ip, "framing", err.Error())
+				t.deny(se, "framing", err.Error())
 				return "framing"
 			}
 			return ""
 		}
 		if len(raw) > max {
 			t.host.Counters().ModbusMalformed.Add(1)
-			t.deny(se.ip, "frame_too_large", "")
+			t.deny(se, "frame_too_large", "")
 			return "frame_too_large"
 		}
 		if t.limiter != nil && !t.limiter.Allow(se.ip.String()) {
@@ -493,7 +512,7 @@ func (se *session) run() string {
 			// A frame the relay cannot read is a frame it cannot decide
 			// about, and the device would read those bytes somehow.
 			t.host.Counters().ModbusMalformed.Add(1)
-			t.deny(se.ip, "malformed", err.Error())
+			t.deny(se, "malformed", err.Error())
 			se.answerException(frame, wire.FCReadHoldingRegisters, wire.ExIllegalFunction, frame.PDU)
 			return "malformed"
 		}
@@ -586,7 +605,7 @@ func (se *session) run() string {
 		if reason != "" {
 			t.host.Counters().ModbusDenied.Add(1)
 			se.denied.Add(1)
-			t.deny(se.ip, reason, fmt.Sprintf("unit %d", frame.Unit))
+			t.deny(se, reason, fmt.Sprintf("unit %d", frame.Unit))
 			// A unit identifier nothing is behind is the answer that maps
 			// an estate, so it is the first one worth fabricating.
 			if se.deceive(frame, pdu, reason) {
@@ -631,15 +650,17 @@ func (se *session) run() string {
 // run is observe-only unless it says otherwise, which is what stops one
 // being left on by accident, and a listener in shadow mode records
 // without deciding whether or not it is learning.
-func (t *server) enforcing() bool {
-	if t.cfg.Shadowing() {
-		return false
+func (t *server) enforcing() bool { return t.enforcement().Enforcing() }
+
+// enforcement folds this listener's reasons not to enforce into one answer, so
+// that the precedence, and the name a status view reports, are the same on
+// every kind.
+func (t *server) enforcement() config.Enforcement {
+	e := config.Enforcement{Shadow: t.cfg.Shadowing()}
+	if l := t.m.Learn; l != nil {
+		e.Learning, e.LearnEnforce = l.Enabled, l.Enforce
 	}
-	l := t.m.Learn
-	if l == nil || !l.Enabled {
-		return true
-	}
-	return l.Enforce
+	return e
 }
 
 func (t *server) requestTimeout() time.Duration {
@@ -787,7 +808,7 @@ func (se *session) exchange(w *worker, j *job) ([]byte, *wire.PDU, error) {
 			// bytes differently, which is the whole class of bug this
 			// relay exists to prevent.
 			t.host.Counters().ModbusMalformed.Add(1)
-			t.deny(se.ip, "malformed_response", perr.Error())
+			t.deny(se, "malformed_response", perr.Error())
 			return wire.Encode(t.framing, &wire.Frame{Transaction: j.txn, Unit: j.frame.Unit,
 				PDU: wire.ExceptionPDU(j.req.pdu.Function, wire.ExServerFailure)}), nil, nil
 		}
@@ -796,7 +817,7 @@ func (se *session) exchange(w *worker, j *job) ([]byte, *wire.PDU, error) {
 			// gateway with a bug or an answer to somebody else's
 			// request. Either way it is not this exchange's answer.
 			t.host.Counters().ModbusMalformed.Add(1)
-			t.deny(se.ip, "response_unit_mismatch",
+			t.deny(se, "response_unit_mismatch",
 				fmt.Sprintf("asked %d, answered %d", unit, frame.Unit))
 			return wire.Encode(t.framing, &wire.Frame{Transaction: j.txn, Unit: j.frame.Unit,
 				PDU: wire.ExceptionPDU(j.req.pdu.Function, wire.ExServerFailure)}), nil, nil
@@ -976,7 +997,8 @@ func exceptionFor(d Decision) byte {
 // identifiers and which registers that master may touch is the `modbus` policy's
 // own business, because it is the thing that can say what a write to holding
 // register 40001 means.
-func (t *server) admitClient(ip netip.Addr) string {
+func (t *server) admitClient(se *session) string {
+	ip := se.ip
 	h := t.host
 	return admit.Client(admit.Deps{
 		Lists: h.ThreatIntel(),
@@ -1003,7 +1025,7 @@ func (t *server) admitClient(ip netip.Addr) string {
 			h.Counters().WouldRefuse("modbus", reason)
 			h.Shadow().Record("modbus", t.cfg.Name, reason, rule, detail)
 		},
-		Deny:       func(reason, _, detail string) { t.deny(ip, reason, detail) },
+		Deny:       func(reason, _, detail string) { t.deny(se, reason, detail) },
 		Quarantine: func(reason, _, detail string) { t.quarantine(ip, reason, detail) },
 	})
 }
@@ -1044,9 +1066,23 @@ func (l *limitedReader) Read(p []byte) (int, error) {
 }
 
 // deny writes a security event and counts a refusal.
-func (t *server) deny(ip netip.Addr, what, detail string) {
+// deny records a refusal, and tells the capture the session was one.
+//
+// The capture asks about the refusal rather than how the session ended, which is
+// why it is recorded here and not from the access log: a session that ran and then
+// closed on a timeout did not get turned away, and a `denied: true` rule that
+// matched it would select most of the traffic on the listener.
+func (t *server) deny(se *session, what, detail string) {
+	ip := se.ip
+	se.tap.Deny(what)
 	t.host.Counters().ModbusRefused.Add(1)
 	t.host.Counters().Refuse("modbus", what)
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
+	if bl := t.host.Bans(); bl != nil && ip.IsValid() {
+		bl.Observe(ip, "modbus_denied")
+	}
+
 	if !t.m.Alerts() {
 		return
 	}
@@ -1055,9 +1091,6 @@ func (t *server) deny(ip netip.Addr, what, detail string) {
 		attrs = append(attrs, "detail", detail)
 	}
 	t.host.Logs().SecurityEvent(context.Background(), "deny", "modbus_"+what, attrs...)
-	if bl := t.host.Bans(); bl != nil && ip.IsValid() {
-		bl.Observe(ip, "modbus_denied")
-	}
 }
 
 // quarantine reports the bounded refusal without turning it into evidence for
@@ -1099,14 +1132,18 @@ func (t *server) alert(ip netip.Addr, what, detail string) {
 // asked for, because "a write was refused" is not an audit trail and
 // "unit 3, write_single_register at 40010, value 900, rule setpoints" is.
 func (t *server) refuse(se *session, frame *wire.Frame, pdu *wire.PDU, d Decision) {
+	se.tap.Deny(d.Reason)
 	t.host.Counters().Refuse("modbus", d.Reason)
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
+	if bl := t.host.Bans(); bl != nil && se.ip.IsValid() {
+		bl.Observe(se.ip, "modbus_denied")
+	}
+
 	if !t.m.Alerts() {
 		return
 	}
 	t.audit(se, frame, pdu, d, "deny")
-	if bl := t.host.Bans(); bl != nil && se.ip.IsValid() {
-		bl.Observe(se.ip, "modbus_denied")
-	}
 }
 
 // subAttrs adds the sub-function to a log line, where the frame has one.

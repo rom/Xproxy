@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/rom/xproxy/internal/authorization"
+	"github.com/rom/xproxy/internal/capture"
 	wire "github.com/rom/xproxy/internal/ldap"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/safe"
@@ -40,6 +41,10 @@ type session struct {
 	ip     netip.Addr
 	client net.Conn
 	up     net.Conn
+
+	// tap records the session for a pcapng capture, and is nil -- usable, and
+	// doing nothing -- whenever no rule wants this one, which is the usual case.
+	tap *capture.Tap
 	// secure says the connection to the client is protected.
 	secure bool
 
@@ -125,6 +130,12 @@ func (t *server) handle(c net.Conn) {
 	defer s.Counters().LDAPSessionsOpen.Add(-1)
 	se := &session{t: t, client: c, ip: netutil.AddrOf(c.RemoteAddr().String()),
 		outstanding: map[int]*exchange{}}
+	// Opened before anything can refuse the session, because a refused session is
+	// the one an operator most often wants and it never dials: after that point
+	// there is nothing left to record. A nil tap wraps nothing and writes nothing.
+	se.tap = t.host.Capture().Open("ldap", t.cfg.Name, "", c.RemoteAddr())
+	defer se.tap.Close()
+	se.client = se.tap.Client(c)
 	var pool *upstream.Pool
 	var ep *upstream.Endpoint
 	defer func() {
@@ -139,7 +150,7 @@ func (t *server) handle(c net.Conn) {
 	if !t.policy.Client(se.ip) {
 		s.Counters().LDAPRejected.Add(1)
 		s.Counters().Refuse("ldap", "client_not_allowed")
-		t.deny(se.ip, "client_not_allowed", "")
+		t.deny(se, "client_not_allowed", "")
 		t.logSession(se, start, "client_not_allowed")
 		return
 	}
@@ -147,6 +158,7 @@ func (t *server) handle(c net.Conn) {
 		Kind: "ldap", Listener: t.cfg.Name, Client: c.RemoteAddr().String(),
 	}, func() { _ = c.Close() })
 	defer live.Done()
+	se.tap.Name(live.ID)
 	// Implicit TLS: LDAPS, port 636, TLS from the first octet. The other
 	// mode -- StartTLS -- is an extended operation and is handled in the
 	// request loop, because the session has to read cleartext first.
@@ -155,15 +167,19 @@ func (t *server) handle(c net.Conn) {
 		_ = tc.SetDeadline(time.Now().Add(10 * time.Second))
 		if err := tc.HandshakeContext(context.Background()); err != nil {
 			s.Counters().Refuse("ldap", "tls_handshake")
-			t.deny(se.ip, "tls_handshake", err.Error())
+			t.deny(se, "tls_handshake", err.Error())
 			t.logSession(se, start, "tls_handshake")
 			return
 		}
 		_ = tc.SetDeadline(time.Time{})
-		se.client, se.secure = tc, true
+		// The tap follows the protocol rather than the TLS records carrying it:
+		// tls.Server reads the socket directly, so nothing recorded the
+		// handshake, and from here the tap sees the plaintext inside it.
+		se.client, se.secure = se.tap.Client(tc), true
 	}
 	var err error
 	se.up, pool, ep, err = t.dialDirectory(se.ip.String())
+	se.up = se.tap.Upstream(se.up)
 	if err != nil {
 		s.Counters().LDAPUpstreamFail.Add(1)
 		t.logSession(se, start, "upstream_unavailable")
@@ -234,7 +250,7 @@ func (se *session) fromClient() string {
 		_ = conn.SetReadDeadline(time.Now().Add(t.idleTimeout()))
 		raw, err := rd.Next()
 		if err != nil {
-			if reason := t.readError(err, se.ip, "client"); reason != "" {
+			if reason := t.readError(err, se, "client"); reason != "" {
 				return reason
 			}
 			return "closed"
@@ -247,7 +263,7 @@ func (se *session) fromClient() string {
 		if perr != nil {
 			s.Counters().LDAPMalformed.Add(1)
 			s.Counters().Refuse("ldap", "malformed")
-			t.deny(se.ip, "ldap_malformed", perr.Error())
+			t.deny(se, "ldap_malformed", perr.Error())
 			return "ldap_malformed"
 		}
 		if end, handled := se.check(m); end != "" {
@@ -259,7 +275,7 @@ func (se *session) fromClient() string {
 			// A response arriving from the client is traffic going the wrong
 			// way: this side asks and the directory answers.
 			s.Counters().Refuse("ldap", "wrong_direction")
-			t.deny(se.ip, "ldap_wrong_direction", m.Op.String())
+			t.deny(se, "ldap_wrong_direction", m.Op.String())
 			return "ldap_wrong_direction"
 		}
 		if reason, handled := se.handleStartTLS(m); handled {
@@ -307,13 +323,13 @@ func (se *session) check(m *wire.Message) (end string, handled bool) {
 		// pair an answer with a request nobody made.
 		s.Counters().LDAPMalformed.Add(1)
 		s.Counters().Refuse("ldap", "message_id_zero")
-		t.deny(se.ip, "ldap_message_id_zero", "")
+		t.deny(se, "ldap_message_id_zero", "")
 		return "ldap_message_id_zero", false
 	}
 	if m.Op == wire.OpBindRequest && t.binds != nil && !t.binds.Allow(se.ip.String()) {
 		s.Counters().LDAPRateLimited.Add(1)
 		s.Counters().Refuse("ldap", "bind_rate_limited")
-		t.deny(se.ip, "ldap_bind_rate_limited", "")
+		t.deny(se, "ldap_bind_rate_limited", "")
 		return "ldap_bind_rate_limited", false
 	}
 	if t.limiter != nil && !t.limiter.Allow(se.ip.String()) {
@@ -436,7 +452,7 @@ func (se *session) remember(m *wire.Message, d Decision) bool {
 	if len(se.outstanding) >= se.t.maxOutstanding() {
 		se.mu.Unlock()
 		se.t.host.Counters().Refuse("ldap", "too_many_outstanding")
-		se.t.deny(se.ip, "ldap_too_many_outstanding", "")
+		se.t.deny(se, "ldap_too_many_outstanding", "")
 		if out := wire.Answer(m.ID, m.Op, wire.ResultBusy,
 			"too many operations outstanding"); out != nil {
 			_ = se.writeClient(out)

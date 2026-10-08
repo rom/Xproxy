@@ -24,6 +24,7 @@ import (
 	"github.com/rom/xproxy/internal/acceptgroup"
 	"github.com/rom/xproxy/internal/access"
 	"github.com/rom/xproxy/internal/authorization"
+	"github.com/rom/xproxy/internal/capture"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/mfa"
 	"github.com/rom/xproxy/internal/netutil"
@@ -174,15 +175,42 @@ func (t *server) shutdown(ctx context.Context) {
 }
 
 // deny feeds the ban ladder.
-func (t *server) deny(ip netip.Addr, what, detail string) {
+// deny records a refusal, and tells the capture the session was one.
+//
+// The capture asks about the refusal rather than how the session ended, which is
+// why it is recorded here and not from the access log: a session that ran and then
+// closed on a timeout did not get turned away, and a `denied: true` rule that
+// matched it would select most of the traffic on the listener.
+//
+// extra carries the attributes a caller has that this funnel does not know about --
+// the user a factor failed for, the reason it gave. They belong on this record
+// rather than on a second one of the caller's own: a refusal logged twice is a
+// refusal alert_on_deny can only half silence, and the half it cannot reach is the
+// one written from the site nobody remembers.
+func (t *server) deny(se *session, what, detail string, extra ...any) {
+	ip := se.ip
+	se.tap.Deny(what)
 	t.engine.Counters().Refuse("telnet", what)
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
 	if bl := t.engine.Bans(); bl != nil && ip.IsValid() {
 		bl.Observe(ip, "telnet_denied")
 	}
+
+	if !t.alerts() {
+		return
+	}
 	t.engine.Logs().SecurityEvent(context.Background(), "deny", "telnet_denied",
-		"listener", t.cfg.Name, "client_ip", ip.String(), "what", what,
-		"detail", textsafe.Clip256(detail))
+		append([]any{"listener", t.cfg.Name, "client_ip", ip.String(), "what", what,
+			"detail", textsafe.Clip256(detail)}, extra...)...)
 }
+
+// alerts says whether a refusal on this listener is worth a security event.
+//
+// The counters, the access line, the session recording and the ban observation do
+// not go through here: this is the record alone, which is what alert_on_deny is
+// named for.
+func (t *server) alerts() bool { return t.t.AlertOnDeny == nil || *t.t.AlertOnDeny }
 
 // shadowed records a policy refusal a listener in shadow mode does not
 // enforce, and says whether it was recorded rather than refused.
@@ -216,11 +244,12 @@ func (t *server) recordWouldDeny(ip netip.Addr, what, rule, detail string) {
 // authzGate lends the estate's authorisation policy this listener's own refusal
 // machinery, so a refusal it makes is counted, logged and banned on exactly as
 // one this listener made itself.
-func (t *server) authzGate(ip netip.Addr) authorization.Gate {
+func (t *server) authzGate(se *session) authorization.Gate {
+	ip := se.ip
 	return authorization.Gate{
 		Shadowing: t.cfg.Shadowing,
 		Record:    func(reason, rule, detail string) { t.recordWouldDeny(ip, reason, rule, detail) },
-		Deny:      func(reason, _, detail string) { t.deny(ip, reason, detail) },
+		Deny:      func(reason, _, detail string) { t.deny(se, reason, detail) },
 	}
 }
 
@@ -243,6 +272,11 @@ type session struct {
 	up     net.Conn
 	ip     netip.Addr
 	target string
+
+	// tap records the session for a pcapng capture, and is nil -- usable, and
+	// doing nothing -- whenever no rule wants this one, which is the usual case.
+	tap *capture.Tap
+
 	// user is the name the second factor was checked against, empty
 	// where there is no factor. The target's own login is separate and
 	// the proxy does not read it.
@@ -297,7 +331,7 @@ func (se *session) admitByGrant() string {
 	if t.shadowed(se.ip, adm.Reason, textsafe.Clip64(se.user)) {
 		return ""
 	}
-	t.deny(se.ip, adm.Reason, textsafe.Clip64(se.user))
+	t.deny(se, adm.Reason, textsafe.Clip64(se.user))
 	return adm.Reason
 }
 
@@ -324,7 +358,7 @@ func (se *session) admitByPolicy() string {
 		User:     se.user,
 		Target:   t.t.Upstream,
 		Action:   authorization.ActionConnect,
-	}, textsafe.Clip64(se.user), t.authzGate(se.ip))
+	}, textsafe.Clip64(se.user), t.authzGate(se))
 }
 
 func (t *server) handle(client net.Conn) {
@@ -335,10 +369,15 @@ func (t *server) handle(client net.Conn) {
 	s.Counters().TelnetSessionsOpen.Add(1)
 	defer s.Counters().TelnetSessionsOpen.Add(-1)
 	defer func() { se.closeRecording() }()
+	// Opened before anything can refuse the session, because a refused session is
+	// the one an operator most often wants and it never dials: after that point
+	// there is nothing left to record. A nil tap wraps nothing and writes nothing.
+	se.tap = t.engine.Capture().Open("telnet", t.cfg.Name, "", client.RemoteAddr())
+	defer se.tap.Close()
 
 	if !t.clientAllowed(se.ip) && !t.shadowed(se.ip, "client_refused", "") {
 		s.Counters().TelnetRejected.Add(1)
-		t.deny(se.ip, "client_refused", "")
+		t.deny(se, "client_refused", "")
 		_ = client.Close()
 		return
 	}
@@ -357,6 +396,7 @@ func (t *server) handle(client net.Conn) {
 		Kind: "telnet", Listener: t.cfg.Name, Client: client.RemoteAddr().String(),
 	}, func() { _ = client.Close() })
 	defer se.live.Done()
+	se.tap.Name(se.live.ID)
 	if t.tlsCfg != nil {
 		tc := tls.Server(client, t.tlsCfg)
 		if err := tc.HandshakeContext(context.Background()); err != nil {
@@ -365,6 +405,11 @@ func (t *server) handle(client net.Conn) {
 		}
 		client, se.client = tc, tc
 	}
+	// Wrapped here rather than at the top, so that on a TLS listener the capture
+	// holds the protocol and not the TLS records carrying it: the handshake above
+	// ran on the socket itself and nothing recorded it.
+	client = se.tap.Client(client)
+	se.client = client
 	defer func() { _ = se.client.Close() }()
 	if t.t.SessionTimeout > 0 {
 		timer := time.AfterFunc(t.t.SessionTimeout.D(), func() { _ = se.client.Close() })
@@ -479,7 +524,7 @@ func (se *session) connect() error {
 				continue
 			}
 		}
-		se.up, se.ep, se.target = conn, ep, ep.Address
+		se.up, se.ep, se.target = se.tap.Upstream(conn), ep, ep.Address
 		se.live.Annotate(se.user, se.target, "")
 		// The window is spent once a machine was actually reached: a
 		// session that never got there did not use the access.
@@ -627,7 +672,7 @@ func (se *session) decide(p *wire.Parser, b []byte, src net.Conn, fromClient boo
 	})
 	if err != nil {
 		t.engine.Counters().TelnetRefused.Add(1)
-		t.deny(se.ip, "telnet_malformed", err.Error())
+		t.deny(se, "telnet_malformed", err.Error())
 		return nil, "malformed"
 	}
 	return out, ""

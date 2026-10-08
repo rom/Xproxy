@@ -15,6 +15,7 @@ import (
 
 	"github.com/rom/xproxy/internal/admit"
 	"github.com/rom/xproxy/internal/authorization"
+	"github.com/rom/xproxy/internal/capture"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/netutil"
 	"github.com/rom/xproxy/internal/proxy"
@@ -180,11 +181,14 @@ func (t *server) shutdown(ctx context.Context) {
 type session struct {
 	t      *server
 	client net.Conn
-	cr     *wire.Reader
-	up     net.Conn
-	ur     *wire.Reader
-	pool   *upstream.Pool
-	ep     *upstream.Endpoint
+	// tap records the session for a pcapng capture, and is nil -- usable, and
+	// doing nothing -- whenever no rule wants this one, which is the usual case.
+	tap  *capture.Tap
+	cr   *wire.Reader
+	up   net.Conn
+	ur   *wire.Reader
+	pool *upstream.Pool
+	ep   *upstream.Endpoint
 
 	ip        netip.Addr
 	secure    bool // the client side is encrypted
@@ -208,6 +212,12 @@ func (t *server) handle(client net.Conn) {
 	defer s.Counters().SMTPSessionsOpen.Add(-1)
 	ip := netutil.AddrOf(client.RemoteAddr().String())
 	se := &session{t: t, client: client, ip: ip, deadline: start.Add(t.m.SessionTimeout.D())}
+	// Opened before anything can refuse the session, because a refused session is
+	// the one an operator most often wants and it never dials: after that point
+	// there is nothing left to record. A nil tap wraps nothing and writes nothing.
+	se.tap = t.engine.Capture().Open("smtp", t.cfg.Name, "", client.RemoteAddr())
+	defer se.tap.Close()
+	se.client = se.tap.Client(client)
 	defer func() {
 		if se.up != nil {
 			_ = se.up.Close()
@@ -221,7 +231,7 @@ func (t *server) handle(client net.Conn) {
 	if !t.allowed(ip) {
 		s.Counters().SMTPRejected.Add(1)
 		_, _ = client.Write([]byte("554 5.7.1 access denied\r\n"))
-		t.deny(ip, "client_not_allowed", "")
+		t.deny(se, "client_not_allowed", "")
 		t.log(se, start, "client_not_allowed")
 		return
 	}
@@ -229,7 +239,7 @@ func (t *server) handle(client net.Conn) {
 	// listener's own allow list -- that is local policy about local clients, and
 	// a feed must not overrule an allow rule an operator wrote -- and before a
 	// greeting is exchanged with anybody.
-	if reason := t.admitClient(ip); reason != "" {
+	if reason := t.admitClient(se); reason != "" {
 		s.Counters().SMTPRejected.Add(1)
 		_, _ = client.Write([]byte("554 5.7.1 access denied\r\n"))
 		t.log(se, start, reason)
@@ -243,7 +253,10 @@ func (t *server) handle(client net.Conn) {
 			return
 		}
 		_ = tc.SetDeadline(time.Time{})
-		se.client = tc
+		// The tap follows the protocol rather than the TLS records carrying it:
+		// tls.Server reads the socket directly, so nothing recorded the handshake,
+		// and from here the tap sees the plaintext inside it.
+		se.client = se.tap.Client(tc)
 		se.secure = true
 	}
 	se.cr = wire.NewReader(se.client, t.m.MaxCommandLine)
@@ -288,7 +301,8 @@ func (t *server) handle(client net.Conn) {
 // What the envelope says is this listener's own business. `MAIL FROM` is an
 // address rather than an identity, and the verb list and the recipient rules above
 // are where a decision about it belongs.
-func (t *server) admitClient(ip netip.Addr) string {
+func (t *server) admitClient(se *session) string {
+	ip := se.ip
 	e := t.engine
 	return admit.Client(admit.Deps{
 		Lists: e.ThreatIntel(),
@@ -310,7 +324,7 @@ func (t *server) admitClient(ip netip.Addr) string {
 			e.Counters().WouldRefuse("smtp", reason)
 			e.Shadow().Record("smtp", t.cfg.Name, reason, rule, detail)
 		},
-		Deny: func(reason, _, detail string) { t.deny(ip, reason, detail) },
+		Deny: func(reason, _, detail string) { t.deny(se, reason, detail) },
 	})
 }
 
@@ -329,17 +343,37 @@ func (t *server) allowed(ip netip.Addr) bool {
 	return false
 }
 
-func (t *server) deny(ip netip.Addr, what, detail string) {
+// deny records a refusal, and tells the capture the session was one.
+//
+// The capture asks about the refusal rather than how the session ended, which is
+// why it is recorded here and not from the access log: a session that ran and then
+// closed on a timeout did not get turned away, and a `denied: true` rule that
+// matched it would select most of the traffic on the listener.
+func (t *server) deny(se *session, what, detail string) {
+	ip := se.ip
+	se.tap.Deny(what)
 	t.engine.Counters().Refuse("smtp", what)
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
+	if bl := t.engine.Bans(); bl != nil && ip.IsValid() {
+		bl.Observe(ip, "smtp_denied")
+	}
+
+	if !t.alerts() {
+		return
+	}
 	attrs := []any{"listener", t.cfg.Name, "client_ip", ip.String(), "proto", "smtp"}
 	if detail != "" {
 		attrs = append(attrs, "detail", detail)
 	}
 	t.engine.Logs().SecurityEvent(context.Background(), "deny", "smtp_"+what, attrs...)
-	if bl := t.engine.Bans(); bl != nil && ip.IsValid() {
-		bl.Observe(ip, "smtp_denied")
-	}
 }
+
+// alerts says whether a refusal on this listener is worth a security event.
+//
+// The counters and the ban observation do not go through here: this is the record
+// alone, which is what alert_on_deny is named for.
+func (t *server) alerts() bool { return t.m.AlertOnDeny == nil || *t.m.AlertOnDeny }
 
 // shadowed records a policy refusal a listener in shadow mode does not
 // enforce, and says whether it was recorded rather than refused.
@@ -408,7 +442,7 @@ func (se *session) connect() (wire.Reply, error) {
 	if conn == nil {
 		return wire.Reply{}, errors.New("no reachable endpoint")
 	}
-	se.up, se.ep = conn, ep
+	se.up, se.ep = se.tap.Upstream(conn), ep
 	// Anything that goes wrong from here until the upstream session is
 	// up is the endpoint's to answer for.
 	se.upFailed = true
@@ -603,7 +637,7 @@ func (se *session) loop() string {
 			case errors.Is(err, wire.ErrLineTooLong):
 				t.engine.Counters().SMTPProtocolErrors.Add(1)
 				_ = se.toClient(wire.Reply{Code: 500, Lines: []string{"5.5.6 line too long"}})
-				t.deny(se.ip, "line_too_long", "")
+				t.deny(se, "line_too_long", "")
 				return "line_too_long"
 			case errors.Is(err, wire.ErrBareNewline), errors.Is(err, wire.ErrBareCR):
 				// A line that ends differently for the proxy than for
@@ -612,7 +646,7 @@ func (se *session) loop() string {
 				// sender meant.
 				t.engine.Counters().SMTPProtocolErrors.Add(1)
 				_ = se.toClient(wire.Reply{Code: 500, Lines: []string{"5.5.2 line must end with CRLF"}})
-				t.deny(se.ip, "bare_newline", err.Error())
+				t.deny(se, "bare_newline", err.Error())
 				return "bare_newline"
 			default:
 				return "client_closed"
@@ -762,19 +796,23 @@ func (se *session) startTLS(wire.Command) (string, error) {
 	if n := se.cr.Buffered(); n > 0 {
 		t.engine.Counters().SMTPProtocolErrors.Add(1)
 		_ = se.toClient(wire.Reply{Code: 554, Lines: []string{"5.7.0 data pipelined across STARTTLS"}})
-		t.deny(se.ip, "starttls_injection", strconv.Itoa(n)+" octets")
+		t.deny(se, "starttls_injection", strconv.Itoa(n)+" octets")
 		return "starttls_injection", nil
 	}
 	if err := se.toClient(wire.Reply{Code: 220, Lines: []string{"2.0.0 ready to start TLS"}}); err != nil {
 		return "", err
 	}
+	// STARTTLS is an in-band upgrade, so the capture pauses over the handshake and
+	// picks the plaintext up again on the far side: the file then holds one
+	// readable stream of the protocol rather than cleartext and then ciphertext.
+	se.tap.Pause()
 	tc := tls.Server(se.client, t.tlsCfg)
 	_ = tc.SetDeadline(time.Now().Add(t.m.ReadTimeout.D()))
 	if err := tc.HandshakeContext(context.Background()); err != nil {
 		return "tls_handshake", nil
 	}
 	_ = tc.SetDeadline(time.Time{})
-	se.client = tc
+	se.client = se.tap.Client(tc)
 	se.secure = true
 	se.greeted, se.authed, se.inMail, se.rcpts = false, false, false, 0
 	se.cr = wire.NewReader(se.client, t.m.MaxCommandLine)
@@ -937,12 +975,12 @@ func (se *session) dataFailed(cerr error) (string, error) {
 	case errors.Is(cerr, wire.ErrLineTooLong):
 		t.engine.Counters().SMTPProtocolErrors.Add(1)
 		_ = se.toClient(wire.Reply{Code: 500, Lines: []string{"5.5.6 message line too long"}})
-		t.deny(se.ip, "line_too_long", "in DATA")
+		t.deny(se, "line_too_long", "in DATA")
 		return "line_too_long", nil
 	case errors.Is(cerr, wire.ErrBareNewline), errors.Is(cerr, wire.ErrBareCR):
 		t.engine.Counters().SMTPProtocolErrors.Add(1)
 		_ = se.toClient(wire.Reply{Code: 500, Lines: []string{"5.5.2 message line must end with CRLF"}})
-		t.deny(se.ip, "smuggling", cerr.Error())
+		t.deny(se, "smuggling", cerr.Error())
 		return "smuggling", nil
 	default:
 		return "data_failed", nil

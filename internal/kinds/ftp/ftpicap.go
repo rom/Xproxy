@@ -199,9 +199,14 @@ func (se *session) scanned(svc *icap.Service, dst io.Writer, src io.Reader, c wi
 	}
 	if d.blocked != "" {
 		se.t.engine.Counters().FTPScanBlocked.Add(1)
-		se.t.engine.Logs().SecurityEvent(context.Background(), "deny", "ftp_icap_blocked",
-			"listener", se.t.cfg.Name, "client_ip", se.ip.String(), "user", textsafe.Clip64(se.user),
-			"path", textsafe.Clip256(path), "command", c.Verb, "service", svc.Name(), "reason", d.blocked)
+		// Not routed through deny: the transfer is refused, the session is not,
+		// so there is no tap verdict and no ban observation to make here. The
+		// record is the part alert_on_deny speaks for, and it is gated.
+		if se.t.alerts() {
+			se.t.engine.Logs().SecurityEvent(context.Background(), "deny", "ftp_icap_blocked",
+				"listener", se.t.cfg.Name, "client_ip", se.ip.String(), "user", textsafe.Clip64(se.user),
+				"path", textsafe.Clip256(path), "command", c.Verb, "service", svc.Name(), "reason", d.blocked)
+		}
 		return 0, d.blocked
 	}
 	// What was held goes out now, through the same bounds a streamed

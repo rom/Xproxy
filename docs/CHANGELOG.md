@@ -6,6 +6,94 @@ the roadmap phase that delivered them (see [ROADMAP.md](ROADMAP.md)).
 
 ## Unreleased
 
+### Fixed (`alert_on_deny` reaches every kind, and every refusal on it)
+
+The setting that silences a refusal's security event was on twenty-four kinds and
+is now on all thirty-six: `dns`, `syslog`, `udp`, `mqtt`, `smtp`, `ftp`, `telnet`,
+`vnc`, `rdp`, `ssh`, `tcp` and `forward` took it. It is the setting an estate wants
+on a listener whose refusals are routine -- an egress proxy where a browser
+reaching for a destination the policy does not carry is an ordinary afternoon --
+and those twelve included every kind that fits that description.
+
+**Turning the record down was turning the ban off.** On fifteen of the kinds that
+already had the setting, the ban-ladder observation sat *after* the security event
+in the same refusal funnel, behind the same early return. So `alert_on_deny:
+false` -- documented as losing the event and nothing else -- also stopped repeated
+refusals from ever banning the address. The observation now precedes the gate at
+every one of the sixteen sites, and a sweep over the kind sources fails if a new
+one puts it back the other way round.
+
+**A refused factor was recorded twice.** On `ftp`, `telnet`, `vnc` and `rdp` the
+MFA failure called the gated refusal funnel *and* wrote a second event of its own,
+which neither the gate nor the ban ladder reached. One record now, with the user
+and the reason the duplicate carried. `ftp`'s copy also passed its `what` already
+prefixed into a funnel that adds the prefix, so the funnel's half of the pair read
+`ftp_ftp_mfa_failed`; the surviving record reads `ftp_mfa_failed`, which is what
+this document already said it was.
+
+Seven more refusals were written from outside any funnel and so could not be
+silenced either: an ICAP verdict on an FTP transfer or an SFTP write, a refused
+RDP static or dynamic channel, a refused redirected device, a desktop that named
+no I/O channel, and an NTP upstream the egress list refuses. Each is gated where
+it stands, with its counters, recording marks and ban observations in front of the
+gate.
+
+`deny_response` and `log_requests` were examined across every kind in the same
+pass and are **not** gaps: both are protocol-shaped, and
+[CONFIG.md](CONFIG.md#what-a-refusal-leaves-behind) now says which kinds carry
+each and why the others cannot. `deny_response` needs a protocol with more than
+one way to say no and a session that survives being told; on the sixteen kinds
+without it there is either nothing to answer with (`tcp`, `udp`, `syslog`), the
+refusal is itself the end of the session (the access gateways), one answer is
+already the right one (`coap`, `mqtt`, `smtp`, `ftp`, `forward`), or the control
+exists under the protocol's own word (`dns`'s `block_action`, `ntp`'s `kod`).
+
+### Added (the pcapng capture reaches the twenty-five kinds that carry sessions)
+
+The capture subsystem has recorded HTTP exchanges since it was built, and nothing
+else: on a proxy whose other thirty-six listener kinds carry databases, control
+systems and bastion sessions, "record what happened" stopped at the one protocol
+that was already the best logged. It now covers every kind whose traffic is a
+session.
+
+One pcapng flow per session, holding the bytes each way up to `max_body_bytes`,
+with the protocol, the listener, the login the protocol named and the refusal in
+the flow's comment -- so a file is readable months later with no access log beside
+it. Four selectors apply, because they are the four things true of a session
+before it has sent anything: `listeners` and `kinds`, both new and both usable on
+an HTTP rule too, plus `client_cidrs` and `denied`.
+
+`denied` is the rule an operator writes first, and it is why the tap is opened
+before anything can refuse the session: a session turned away at the concurrency
+gate never dials, so after that point there is nothing left to record. It is also
+why the refusal is taken from each kind's own refusal funnel rather than from the
+access log -- several kinds log one reason for a refusal and for a session that
+ran for an hour and then timed out, and a `denied: true` rule that matched the
+second would have selected most of the listener.
+
+What a file holds depends on where the kind terminates encryption, and the
+difference is documented per kind in [CONFIG.md](CONFIG.md#capture). A kind that
+terminates TLS is captured as readable protocol, with the handshake left out --
+including the in-band upgrades, MySQL's `CLIENT_SSL`, Postgres's `SSLRequest`,
+STARTTLS, FTP's `AUTH TLS`, LDAP's StartTLS, RDP's and TDS's, where the tap pauses
+over the handshake and picks the plaintext up on the far side. A kind that does not
+terminate anything is captured as it crossed: `tcp` splices TLS records, `ssh`
+holds the SSH transport. On the bastion kinds the plaintext record remains that
+kind's own session recording, which answers a different question.
+
+Not covered: the eight datagram kinds, which have no connection to tap, and the
+four request-shaped kinds -- `http`, which has had its own per-request capture from
+the start, and `forward`, `kkdcp` and `dns`, which need the same shape rather than
+a session tap. A sweep over the kind registry fails if a connection-oriented kind
+is added without a tap.
+
+Two hazards the wrapping exposed, fixed before the kinds were wired: a type
+assertion cannot be forwarded through a wrapper, so `conn.(*tls.Conn)` read
+plaintext on a connection that was in fact TLS -- the seven places that asked now
+go through `netutil.TLSConn`, which follows `Unwrap()`; and `net.Conn` does not
+carry `CloseWrite`, so a spliced session over a wrapped connection would have
+waited for a timeout instead of ending.
+
 ### Fixed (an eighth audit round: the attack surface, and who controls the data on it)
 
 A review of every network component, parser and protocol implementation,

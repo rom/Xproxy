@@ -3,7 +3,6 @@ package opcua
 import (
 	"context"
 	"fmt"
-	"net/netip"
 	"time"
 
 	wire "github.com/rom/xproxy/internal/opcua"
@@ -53,15 +52,19 @@ func (t *server) refused2(c *conn, d Decision, what string) {
 		t.host.Shadow().Record("opcua", t.name, d.Reason, d.Rule, what)
 		return
 	}
+	c.tap.Deny(d.Reason)
 	ct.Refuse("opcua", d.Reason)
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
+	if bl := t.host.Bans(); bl != nil && c.ip.IsValid() {
+		bl.Observe(c.ip, "opcua_denied")
+	}
+
 	if !t.alerts() {
 		return
 	}
 	t.host.Logs().SecurityEvent(context.Background(), "deny", "opcua_"+d.Reason,
 		t.attrs(c, d, what)...)
-	if bl := t.host.Bans(); bl != nil && c.ip.IsValid() {
-		bl.Observe(c.ip, "opcua_denied")
-	}
 }
 
 // attrs builds the log attributes for one refusal.
@@ -100,7 +103,9 @@ func (t *server) attrs(c *conn, d Decision, what string) []any {
 }
 
 // deny records a refusal that is not about something the policy read.
-func (t *server) deny(ip netip.Addr, reason, detail string) {
+func (t *server) deny(c *conn, reason, detail string) {
+	ip := c.ip
+	c.tap.Deny(reason)
 	t.host.Counters().Refuse("opcua", reason)
 	if t.alerts() {
 		a := []any{"listener", t.name, "client_ip", ip.String(), "proto", "opcua",

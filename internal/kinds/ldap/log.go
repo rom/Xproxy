@@ -3,7 +3,6 @@ package ldap
 import (
 	"context"
 	"crypto/tls"
-	"net/netip"
 	"time"
 
 	wire "github.com/rom/xproxy/internal/ldap"
@@ -57,6 +56,12 @@ func (se *session) enforcedRefusal(m *wire.Message, d Decision) {
 	bound, secure := se.boundName, se.secure
 	se.mu.Unlock()
 	t.logRequest(se, m, d, "deny")
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
+	if bl := t.host.Bans(); bl != nil && se.ip.IsValid() {
+		bl.Observe(se.ip, "ldap_denied")
+	}
+
 	if !t.alerts() {
 		return
 	}
@@ -72,15 +77,26 @@ func (se *session) enforcedRefusal(m *wire.Message, d Decision) {
 		attrs = append(attrs, "detail", d.Detail)
 	}
 	t.host.Logs().SecurityEvent(context.Background(), "deny", d.Reason, attrs...)
-	if bl := t.host.Bans(); bl != nil && se.ip.IsValid() {
-		bl.Observe(se.ip, "ldap_denied")
-	}
 }
 
 // deny records a refusal that is not about a request the policy read: a
 // client that may not connect, a malformed message, a bound, a bind the
 // directory itself refused. None of these is shadowed.
-func (t *server) deny(ip netip.Addr, what, detail string) {
+// deny records a refusal, and tells the capture the session was one.
+//
+// The capture asks about the refusal rather than how the session ended, which is
+// why it is recorded here and not from the access log: a session that ran and then
+// closed on a timeout did not get turned away, and a `denied: true` rule that
+// matched it would select most of the traffic on the listener.
+func (t *server) deny(se *session, what, detail string) {
+	ip := se.ip
+	se.tap.Deny(what)
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
+	if bl := t.host.Bans(); bl != nil && ip.IsValid() {
+		bl.Observe(ip, "ldap_denied")
+	}
+
 	if !t.alerts() {
 		return
 	}
@@ -93,9 +109,6 @@ func (t *server) deny(ip netip.Addr, what, detail string) {
 		attrs = append(attrs, "detail", detail)
 	}
 	t.host.Logs().SecurityEvent(context.Background(), "deny", name, attrs...)
-	if bl := t.host.Bans(); bl != nil && ip.IsValid() {
-		bl.Observe(ip, "ldap_denied")
-	}
 }
 
 // detailOf is one short line describing a request, for the shadow ledger's
@@ -248,7 +261,7 @@ func (se *session) handleStartTLS(m *wire.Message) (string, bool) {
 		// needs it; refusing keeps the session's state something both ends
 		// agree about.
 		t.host.Counters().Refuse("ldap", "starttls_twice")
-		t.deny(se.ip, "ldap_starttls_twice", "")
+		t.deny(se, "ldap_starttls_twice", "")
 		_ = se.writeClient(wire.StartTLSResponse(m.ID, wire.ResultOperationsError,
 			"the connection is already protected"))
 		return "", true
@@ -261,7 +274,7 @@ func (se *session) handleStartTLS(m *wire.Message) (string, bool) {
 		// A relay that upgraded anyway would be changing the transport under
 		// answers already in flight.
 		t.host.Counters().Refuse("ldap", "starttls_outstanding")
-		t.deny(se.ip, "ldap_starttls_outstanding", "")
+		t.deny(se, "ldap_starttls_outstanding", "")
 		_ = se.writeClient(wire.StartTLSResponse(m.ID, wire.ResultOperationsError,
 			"operations are outstanding"))
 		return "", true
@@ -274,16 +287,20 @@ func (se *session) handleStartTLS(m *wire.Message) (string, bool) {
 		se.cmu.Unlock()
 		return "closed", true
 	}
+	// StartTLS is an in-band upgrade, so the capture pauses over the handshake and
+	// picks the plaintext up again on the far side: the file then holds one
+	// readable stream of the protocol rather than cleartext and then ciphertext.
+	se.tap.Pause()
 	tc := tls.Server(se.client, t.tlsCfg)
 	_ = tc.SetDeadline(time.Now().Add(10 * time.Second))
 	if err := tc.HandshakeContext(context.Background()); err != nil {
 		se.cmu.Unlock()
 		t.host.Counters().Refuse("ldap", "tls_handshake")
-		t.deny(se.ip, "tls_handshake", err.Error())
+		t.deny(se, "tls_handshake", err.Error())
 		return "tls_handshake", true
 	}
 	_ = tc.SetDeadline(time.Time{})
-	se.client = tc
+	se.client = se.tap.Client(tc)
 	se.cmu.Unlock()
 	se.mu.Lock()
 	// The identity does not survive the upgrade. RFC 4513 §5.1.7 says the

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rom/xproxy/internal/capture"
 	wire "github.com/rom/xproxy/internal/tacacs"
 )
 
@@ -104,6 +105,10 @@ type conn struct {
 	client net.Conn
 	up     net.Conn
 
+	// tap records the session for a pcapng capture, and is nil -- usable, and
+	// doing nothing -- whenever no rule wants this one, which is the usual case.
+	tap *capture.Tap
+
 	cmu sync.Mutex
 	umu sync.Mutex
 
@@ -116,8 +121,8 @@ type conn struct {
 	started int
 }
 
-func newConn(t *server, ip netip.Addr, client, up net.Conn) *conn {
-	return &conn{t: t, ip: ip, client: client, up: up, live: map[uint32]*sess{}}
+func newConn(t *server, ip netip.Addr, client, up net.Conn, tap *capture.Tap) *conn {
+	return &conn{t: t, ip: ip, client: client, up: up, tap: tap, live: map[uint32]*sess{}}
 }
 
 // session returns the session a header belongs to, creating it for a first

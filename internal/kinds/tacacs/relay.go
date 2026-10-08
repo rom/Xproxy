@@ -34,35 +34,49 @@ import (
 func (t *server) handle(client net.Conn) {
 	defer func() { _ = client.Close() }()
 	ip := netutil.AddrOf(client.RemoteAddr().String())
+	// Opened before anything can refuse the session, because a refused session is
+	// the one an operator most often wants and it never dials: after that point
+	// there is nothing left to record. A nil tap wraps nothing and writes nothing.
+	tap := t.host.Capture().Open("tacacs", t.name, "", client.RemoteAddr())
+	defer tap.Close()
 	if !t.policy.Client(ip) {
+		tap.Deny("client_not_allowed")
 		t.deny(ip, "client_not_allowed", "")
 		return
 	}
-	if t.admitClient(ip) != "" {
+	if reason := t.admitClient(ip); reason != "" {
+		tap.Deny(reason)
 		return
 	}
 	if t.limiter != nil && !t.limiter.Allow(ip.String()) {
+		tap.Deny("rate_limited")
 		t.host.Counters().Refuse("tacacs", "rate_limited")
 		return
 	}
 	if ok, reason := t.gate.Enter(ip); !ok {
+		tap.Deny(reason)
 		t.host.Counters().Refuse("tacacs", reason)
 		return
 	}
 	defer t.gate.Leave(ip)
-	if _, isTLS := client.(*tls.Conn); boolOr(t.c.RequireTLS, false) && !isTLS {
+	if _, isTLS := netutil.TLSConn(client); boolOr(t.c.RequireTLS, false) && !isTLS {
+		tap.Deny("tls_required")
 		t.deny(ip, "tls_required", "")
 		return
 	}
+	// Wrapped after the TLS question is settled, so the capture holds the
+	// protocol rather than the records carrying it.
+	client = tap.Client(client)
 	up, err := t.dial(ip)
 	if err != nil {
+		tap.Deny("upstream_failed")
 		t.host.Counters().Refuse("tacacs", "upstream_failed")
 		t.host.Logs().Error.Warn("tacacs upstream dial failed", "listener", t.name,
 			"client_ip", ip.String(), "error", err.Error())
 		return
 	}
 	defer func() { _ = up.Close() }()
-	c := newConn(t, ip, client, up)
+	c := newConn(t, ip, client, tap.Upstream(up), tap)
 	deadline := time.Now().Add(t.lifetime)
 	done := make(chan struct{})
 	go func() {
@@ -332,6 +346,7 @@ func (t *server) read(c *conn, s *sess, h wire.Header, body []byte) (Request, bo
 		var ac wire.AcctRequest
 		if ac, err = wire.ParseAcctRequest(plain); err == nil {
 			s.user = ac.User
+			c.tap.User(ac.User)
 			req.User, req.Port, req.RemAddr = ac.User, ac.Port, ac.RemAddr
 			req.AuthenType, req.Service, req.Method, req.PrivLvl = ac.Type, ac.Service, ac.Method, ac.PrivLvl
 			req.Args, req.Command, req.ServiceArg = ac.Args, ac.Args.Command(), ac.Args.Service()

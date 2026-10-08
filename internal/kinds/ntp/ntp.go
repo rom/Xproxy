@@ -698,9 +698,16 @@ func (s *server) openBackends() error {
 			// The egress list is what stops a pool whose name resolves
 			// somewhere new from quietly becoming a new destination.
 			s.host.Counters().Refuse("ntp", "server_not_allowed")
-			s.host.Logs().SecurityEvent(context.Background(), "deny", "ntp_denied",
-				"listener", s.cfg.Name, "proto", "ntp", "detail", "server_not_allowed",
-				"server", ap.String())
+			// This refuses an upstream, not a client, and it is still the
+			// listener's refusal: dhcp6 puts the same server_not_allowed
+			// through its gated funnel. Silencing the record leaves the
+			// endpoint unused, the counter raised, and -- if the list
+			// refuses them all -- a listener that does not start.
+			if s.n.Alerts() {
+				s.host.Logs().SecurityEvent(context.Background(), "deny", "ntp_denied",
+					"listener", s.cfg.Name, "proto", "ntp", "detail", "server_not_allowed",
+					"server", ap.String())
+			}
 			continue
 		}
 		conn, err := net.DialUDP("udp", nil, net.UDPAddrFromAddrPort(ap))
@@ -1051,15 +1058,17 @@ func (s *server) probe(b *backend) (*wire.Packet, time.Duration, time.Duration, 
 
 // enforcing says whether the policy decides or only records. A learning
 // run is observe-only unless it says otherwise.
-func (s *server) enforcing() bool {
-	if s.cfg.Shadowing() {
-		return false
+func (s *server) enforcing() bool { return s.enforcement().Enforcing() }
+
+// enforcement folds this listener's reasons not to enforce into one answer, so
+// that the precedence, and the name a status view reports, are the same on
+// every kind.
+func (s *server) enforcement() config.Enforcement {
+	e := config.Enforcement{Shadow: s.cfg.Shadowing()}
+	if l := s.n.Learn; l != nil {
+		e.Learning, e.LearnEnforce = l.Enabled, l.Enforce
 	}
-	l := s.n.Learn
-	if l == nil || !l.Enabled {
-		return true
-	}
-	return l.Enforce
+	return e
 }
 
 // sweep expires associations and outstanding requests on the monotonic
@@ -1144,6 +1153,12 @@ func (s *server) deny(peer netip.AddrPort, reason, detail string) {
 // paths that have already counted the refusal: a refusal counted twice is
 // a refusal an operator cannot count.
 func (s *server) denyLog(peer netip.AddrPort, reason, detail string) {
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
+	if bl := s.host.Bans(); bl != nil && peer.Addr().IsValid() {
+		bl.Observe(peer.Addr(), "ntp_denied")
+	}
+
 	if !s.n.Alerts() {
 		return
 	}
@@ -1153,9 +1168,6 @@ func (s *server) denyLog(peer netip.AddrPort, reason, detail string) {
 		attrs = append(attrs, "reason_detail", detail)
 	}
 	s.host.Logs().SecurityEvent(context.Background(), "deny", "ntp_denied", attrs...)
-	if bl := s.host.Bans(); bl != nil && peer.Addr().IsValid() {
-		bl.Observe(peer.Addr(), "ntp_denied")
-	}
 }
 
 // refuse is a policy refusal of a client's packet: counted, logged with
@@ -1180,6 +1192,12 @@ func (s *server) refuse(client netip.AddrPort, d Decision, raw []byte, pkt *wire
 // packet: "a client was refused" is not an audit trail and "version 3
 // from 10.0.0.9, mode client, stratum 2, reason version_not_allowed" is.
 func (s *server) audit(client netip.AddrPort, d Decision, pkt *wire.Packet, kind string) {
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
+	if bl := s.host.Bans(); bl != nil && client.Addr().IsValid() && kind == "deny" {
+		bl.Observe(client.Addr(), "ntp_denied")
+	}
+
 	if !s.n.Alerts() {
 		return
 	}
@@ -1196,9 +1214,6 @@ func (s *server) audit(client netip.AddrPort, d Decision, pkt *wire.Packet, kind
 		attrs = append(attrs, "key_id", pkt.KeyID)
 	}
 	s.host.Logs().SecurityEvent(context.Background(), kind, "ntp_denied", attrs...)
-	if bl := s.host.Bans(); bl != nil && client.Addr().IsValid() && kind == "deny" {
-		bl.Observe(client.Addr(), "ntp_denied")
-	}
 }
 
 // logPacket writes the per-packet access line, which is what an estate

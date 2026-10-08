@@ -2,7 +2,6 @@ package redis
 
 import (
 	"context"
-	"net/netip"
 	"strings"
 
 	"github.com/rom/xproxy/internal/textsafe"
@@ -34,7 +33,18 @@ func (t *server) refused(se *session, d Decision, what string) {
 		t.host.Shadow().Record("redis", t.name, d.Reason, d.Rule, what)
 		return
 	}
+	se.tap.Deny(d.Reason)
 	c.Refuse("redis", d.Reason)
+	t.logOp(se, what, 0, "deny")
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
+	if bl := t.host.Bans(); bl != nil && se.ip.IsValid() {
+		bl.Observe(se.ip, "redis_denied")
+	}
+
+	if !t.alerts() {
+		return
+	}
 	s := se.sess()
 	attrs := []any{"listener", t.name, "client_ip", se.ip.String(), "proto", "redis",
 		"reason", d.Reason, "secure", s.Secure, "authed", s.Authed}
@@ -60,23 +70,28 @@ func (t *server) refused(se *session, d Decision, what string) {
 		attrs = append(attrs, "detail", textsafe.Clip64(d.Detail))
 	}
 	t.host.Logs().SecurityEvent(context.Background(), "deny", "redis_"+d.Reason, attrs...)
-	if bl := t.host.Bans(); bl != nil && se.ip.IsValid() {
-		bl.Observe(se.ip, "redis_denied")
-	}
 }
 
 // deny records a refusal that is not about something the policy read.
-func (t *server) deny(ip netip.Addr, reason, detail string) {
+func (t *server) deny(se *session, reason, detail string) {
+	ip := se.ip
+	se.tap.Deny(reason)
 	t.host.Counters().Refuse("redis", reason)
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
+	if bl := t.host.Bans(); bl != nil && ip.IsValid() {
+		bl.Observe(ip, "redis_denied")
+	}
+
+	if !t.alerts() {
+		return
+	}
 	attrs := []any{"listener", t.name, "client_ip", ip.String(), "proto", "redis",
 		"reason", reason}
 	if detail != "" {
 		attrs = append(attrs, "detail", textsafe.Clip64(detail))
 	}
 	t.host.Logs().SecurityEvent(context.Background(), "deny", "redis_"+reason, attrs...)
-	if bl := t.host.Bans(); bl != nil && ip.IsValid() {
-		bl.Observe(ip, "redis_denied")
-	}
 }
 
 // authFailure records a credential the server refused.
@@ -109,4 +124,43 @@ func (t *server) keyPositionUnknown(se *session, cmd string) {
 		"command", textsafe.Clip64(cmd),
 		"detail", "the keys of this command are at positions that depend on an option, "+
 			"so a key prefix policy cannot be applied to it")
+}
+
+// alerts says whether a refusal on this listener is worth a security event.
+//
+// The counters, the access line and the ban observation do not go through here:
+// this is the record alone, which is what alert_on_deny is named for.
+func (t *server) alerts() bool { return t.rc.AlertOnDeny == nil || *t.rc.AlertOnDeny }
+
+// logOp writes the access line for one command.
+//
+// A refusal is written either way -- it is rare, and it is the one line nobody
+// would choose to lose -- and what was forwarded only when log_requests asks,
+// because a cache answers a great many commands a second. Without it this relay's
+// only record is of what it refused, which answers "what did we stop" and not
+// "what did they run".
+//
+// It carries the command name and how many arguments it had, and never the
+// arguments: on this protocol the first argument is the key, which names the
+// record, and the rest is the data.
+func (t *server) logOp(se *session, what string, args int, action string) {
+	if action == "allow" && !t.rc.LogRequests {
+		return
+	}
+	s := se.sess()
+	attrs := []any{"listener", t.name, "proto", "redis", "client_ip", se.ip.String(),
+		"secure", s.Secure, "authed", s.Authed, "action", action}
+	if what != "" {
+		attrs = append(attrs, "command", textsafe.Clip64(what))
+	}
+	if args > 0 {
+		attrs = append(attrs, "args", args)
+	}
+	if s.User != "" {
+		attrs = append(attrs, "db_user", textsafe.Clip64(s.User))
+	}
+	if s.Database != 0 {
+		attrs = append(attrs, "database", s.Database)
+	}
+	t.host.Logs().Access.Info("redis", attrs...)
 }

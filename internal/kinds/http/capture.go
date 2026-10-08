@@ -65,7 +65,7 @@ func (s *engine) beginCapture(r *http.Request, st *reqState) {
 	// that gets here and is not wanted must not be offered again at the
 	// end (see finishCapture).
 	st.pcapAsked = true
-	if !c.Wants(st.host, st.route, r.Method, st.path, st.clientIP) {
+	if !c.Wants(listenerName(st), st.host, st.route, r.Method, st.path, st.clientIP) {
 		return
 	}
 	cs := &captureState{}
@@ -117,6 +117,8 @@ func (s *engine) finishCapture(rw *responseWriter, r *http.Request, st *reqState
 	redact := c.Redact()
 	e := &capture.Exchange{
 		Start:     st.start,
+		Kind:      "http",
+		Listener:  listenerName(st),
 		Client:    addrPort(st.clientIP, r.RemoteAddr),
 		Server:    serverAddrPort(r),
 		RequestID: st.id,
@@ -138,6 +140,15 @@ func (s *engine) finishCapture(rw *responseWriter, r *http.Request, st *reqState
 		e.ResponseTruncated = cs.respBody.truncated
 	}
 	c.Write(e)
+}
+
+// listenerName is the listener this request arrived on, for the capture rules
+// that select on it. A request that was refused before routing still has one.
+func listenerName(st *reqState) string {
+	if st == nil || st.ln == nil {
+		return ""
+	}
+	return st.ln.Name
 }
 
 // serialiseRequest renders the request head the way it reached the

@@ -39,13 +39,22 @@ func ParseRole(s string) (Role, error) {
 type User struct {
 	Name string
 	Role Role
-	// Hash is the password hash, or "x509" for a user that only logs in
-	// with a client certificate whose common name equals Name.
+	// Hash is the password hash, or CertOnlyHash for a user that only logs
+	// in with a client certificate whose common name equals Name.
 	Hash string
+	// noPassword carries CertOnly past List, which blanks Hash so that no
+	// caller is handed a password verifier it has no business with. Without
+	// it CertOnly is always false on a listed user, which is how the GUI
+	// ended up calling Lookup once per row to ask the question again.
+	noPassword bool
 }
 
+// CertOnlyHash is what stands in the hash field for a user who logs in with a
+// client certificate and has no password.
+const CertOnlyHash = "x509"
+
 // CertOnly reports whether the user has no password.
-func (u User) CertOnly() bool { return u.Hash == "x509" }
+func (u User) CertOnly() bool { return u.noPassword || u.Hash == CertOnlyHash }
 
 // HashPassword derives a stored hash for a password (see passwd).
 func HashPassword(password string) (string, error) { return passwd.Hash(password) }
@@ -153,7 +162,7 @@ func readUsers(path string) (map[string]User, fileStamp, error) {
 			// and unable to log in. That is a truncated line or a botched
 			// edit, not a deliberate account: say so instead of leaving
 			// the operator to find out at the login page.
-			return nil, stamp, fmt.Errorf("%s:%d: user %q has an empty hash (use \"x509\" for a certificate-only user)", path, line, parts[0])
+			return nil, stamp, fmt.Errorf("%s:%d: user %q has an empty hash (use %q for a certificate-only user)", path, line, parts[0], CertOnlyHash)
 		}
 		if _, dup := byN[parts[0]]; dup {
 			return nil, stamp, fmt.Errorf("%s:%d: duplicate user %q", path, line, parts[0])
@@ -225,6 +234,7 @@ func (u *Users) List() []User {
 	defer u.mu.RUnlock()
 	out := make([]User, 0, len(u.byN))
 	for _, x := range u.byN {
+		x.noPassword = x.CertOnly()
 		x.Hash = ""
 		out = append(out, x)
 	}

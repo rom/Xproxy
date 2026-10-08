@@ -321,5 +321,5 @@ func pixelReason(err error) string {
 // caused it: a bound that fires without saying which one and by how
 // much is a bound an operator cannot tune.
 func (se *session) pixelDeny(reason string, err error) {
-	se.t.deny(se.ip, "vnc_"+reason, err.Error())
+	se.t.deny(se, "vnc_"+reason, err.Error())
 }

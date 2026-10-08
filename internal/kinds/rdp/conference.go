@@ -44,7 +44,7 @@ func (se *session) conference() string {
 	}
 	conn, err := rdp.ParseConnect(payload)
 	if err != nil {
-		t.deny(se.ip, "rdp_conference", err.Error())
+		t.deny(se, "rdp_conference", err.Error())
 		return "client_conference"
 	}
 	if reason := se.applyChannelPolicy(conn); reason != "" {
@@ -133,7 +133,7 @@ func (se *session) readClientMethods(conn *rdp.Connect) (uint32, string) {
 		}
 		methods, err := rdp.ParseClientSecurity(b.Data)
 		if err != nil {
-			se.t.deny(se.ip, "rdp_client_security", err.Error())
+			se.t.deny(se, "rdp_client_security", err.Error())
 			return 0, "client_conference"
 		}
 		return methods, ""
@@ -155,7 +155,7 @@ func (se *session) applyChannelPolicy(conn *rdp.Connect) string {
 			continue
 		}
 		if list, err = rdp.ParseChannels(b.Data); err != nil {
-			t.deny(se.ip, "rdp_channels", err.Error())
+			t.deny(se, "rdp_channels", err.Error())
 			return "client_conference"
 		}
 	}
@@ -184,9 +184,14 @@ func (se *session) applyChannelPolicy(conn *rdp.Connect) string {
 	}
 	if refused > 0 {
 		t.engine.Counters().RDPChannelsRefused.Add(uint64(refused)) //nolint:gosec // bounded by the channel list
-		t.engine.Logs().SecurityEvent(context.Background(), "deny", "rdp_channel_refused",
-			"listener", t.cfg.Name, "client_ip", se.ip.String(),
-			"asked", strings.Join(se.asked, ","), "granted", strings.Join(se.granted, ","))
+		// Not routed through deny: the channels are refused, the session runs
+		// on, so there is no tap verdict and no ban to make. The record is the
+		// part alert_on_deny speaks for, and it is gated.
+		if t.alerts() {
+			t.engine.Logs().SecurityEvent(context.Background(), "deny", "rdp_channel_refused",
+				"listener", t.cfg.Name, "client_ip", se.ip.String(),
+				"asked", strings.Join(se.asked, ","), "granted", strings.Join(se.granted, ","))
+		}
 	}
 	data, err := rdp.EncodeChannels(out)
 	if err != nil {
@@ -235,11 +240,16 @@ func (se *session) readServerChannels(resp *rdp.Connect) string {
 		}
 	}
 	if !seen || se.ioChannel == 0 {
-		se.t.engine.Logs().SecurityEvent(context.Background(), "deny", "rdp_no_io_channel",
-			"listener", se.t.cfg.Name, "client_ip", se.ip.String(), "target", se.target,
-			"detail", "the desktop's conference response did not name the channel the session runs on")
 		se.t.engine.Counters().RDPRefused.Add(1)
 		se.t.engine.Counters().Refuse("rdp", "no_io_channel")
+		// Not routed through deny: what this refuses is the desktop's answer,
+		// not the client, so banning the address that dialled in would punish
+		// the wrong end. The counters and the ended session stand either way.
+		if se.t.alerts() {
+			se.t.engine.Logs().SecurityEvent(context.Background(), "deny", "rdp_no_io_channel",
+				"listener", se.t.cfg.Name, "client_ip", se.ip.String(), "target", se.target,
+				"detail", "the desktop's conference response did not name the channel the session runs on")
+		}
 		return "upstream_no_io_channel"
 	}
 	return ""

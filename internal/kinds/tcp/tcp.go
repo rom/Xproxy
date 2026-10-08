@@ -209,6 +209,18 @@ func (t *server) handle(client net.Conn) {
 	start := time.Now()
 	s.Counters().TCPConnections.Add(1)
 	clientIP := addrOf(client.RemoteAddr().String())
+	// Opened before anything can refuse the connection, because a refused one is
+	// the one an operator most often wants and it never dials: after that point
+	// there is nothing left to record. A nil tap wraps nothing and writes nothing.
+	//
+	// This kind never terminates anything -- it reads a ClientHello to pick a
+	// route and splices the rest -- so what the capture holds is the stream as it
+	// crossed, TLS records and all. On a layer 4 listener that is the only answer
+	// there is, and it is the one worth having: the handshake alone names the
+	// server, the version and the cipher suites.
+	tap := t.engine.Capture().Open("tcp", t.cfg.Name, "", client.RemoteAddr())
+	defer tap.Close()
+	client = tap.Client(client)
 	// Peek the first record without terminating TLS. Non-TLS traffic and
 	// hellos without a name take the default route.
 	hard := time.Now().Add(helloPeekTimeout)
@@ -249,19 +261,21 @@ func (t *server) handle(client net.Conn) {
 				// Nothing at all: a server-first protocol. Relay it.
 				break
 			}
+			tap.Deny("read_error")
 			t.finish(client, clientIP, start, sni, "", "", "read_error", 0, 0)
 			return
 		}
 	}
 	_ = client.SetReadDeadline(time.Time{})
 	if t.cfg.TCP.OriginalDestination {
-		t.intercepted(client, clientIP, start, sni, buf)
+		t.intercepted(client, clientIP, start, sni, buf, tap)
 		return
 	}
 	upName, ok := t.resolve(sni)
 	if !ok {
 		s.Counters().TCPRejected.Add(1)
 		s.Counters().Refuse("tcp", "no_route")
+		tap.Deny("no_route")
 		t.finish(client, clientIP, start, sni, "", "", "no_route", 0, 0)
 		return
 	}
@@ -270,11 +284,13 @@ func (t *server) handle(client net.Conn) {
 	// endpoint is dialled, so a refused client reaches nothing.
 	if reason := t.admitClient(clientIP, upName); reason != "" {
 		s.Counters().TCPRejected.Add(1)
+		tap.Deny(reason)
 		t.finish(client, clientIP, start, sni, upName, "", reason, 0, 0)
 		return
 	}
 	pool := s.Pool(upName)
 	if pool == nil {
+		tap.Deny("no_pool")
 		t.finish(client, clientIP, start, sni, upName, "", "no_pool", 0, 0)
 		return
 	}
@@ -296,11 +312,12 @@ func (t *server) handle(client net.Conn) {
 			s.Logs().Error.Warn("tcp upstream dial failed", "listener", t.cfg.Name, "endpoint", e.Address, "err", err.Error())
 			continue
 		}
-		ep, up = e, c
+		ep, up = e, tap.Upstream(c)
 		break
 	}
 	if up == nil {
 		s.Counters().TCPErrors.Add(1)
+		tap.Deny("upstream_unavailable")
 		t.finish(client, clientIP, start, sni, upName, "", "upstream_unavailable", 0, 0)
 		return
 	}
@@ -308,6 +325,7 @@ func (t *server) handle(client net.Conn) {
 		if _, err := up.Write(proxyV2Header(client.RemoteAddr(), client.LocalAddr())); err != nil {
 			pool.End(ep, true, 0)
 			_ = up.Close()
+			tap.Deny("upstream_write")
 			t.finish(client, clientIP, start, sni, upName, ep.Address, "upstream_write", 0, 0)
 			return
 		}
@@ -315,6 +333,7 @@ func (t *server) handle(client net.Conn) {
 	if _, err := up.Write(buf); err != nil {
 		pool.End(ep, true, 0)
 		_ = up.Close()
+		tap.Deny("upstream_write")
 		t.finish(client, clientIP, start, sni, upName, ep.Address, "upstream_write", 0, 0)
 		return
 	}
@@ -363,14 +382,32 @@ func (t *server) admitClient(ip netip.Addr, upstreamName string) string {
 		},
 		Deny: func(reason, rule, detail string) {
 			e.Counters().Refuse("tcp", reason)
-			e.Logs().SecurityEvent(context.Background(), "deny", "tcp_"+reason,
-				"listener", t.cfg.Name, "proto", "tcp", "client_ip", ip.String(),
-				"rule", rule, "detail", detail)
+			// The ban ladder hears about this before alert_on_deny can
+			// silence the record below: turning the log down is not a
+			// decision to stop responding.
 			if bl := e.Bans(); bl != nil && ip.IsValid() {
 				bl.Observe(ip, "tcp_denied")
 			}
+
+			if !t.alerts() {
+				return
+			}
+			e.Logs().SecurityEvent(context.Background(), "deny", "tcp_"+reason,
+				"listener", t.cfg.Name, "proto", "tcp", "client_ip", ip.String(),
+				"rule", rule, "detail", detail)
 		},
 	})
+}
+
+// alerts says whether a refusal on this listener is worth a security event.
+//
+// The counters, the access line and the ban observation do not go through here:
+// this is the record alone, which is what alert_on_deny is named for. A listener
+// relaying streams it does not parse refuses on a handful of grounds -- a client
+// the lists hold out, a destination outside the policy, a server name with no
+// route -- and on a port facing the internet the last of those is constant.
+func (t *server) alerts() bool {
+	return t.cfg.TCP == nil || t.cfg.TCP.AlertOnDeny == nil || *t.cfg.TCP.AlertOnDeny
 }
 
 func (t *server) finish(client net.Conn, ip netip.Addr, start time.Time, sni, up, endpoint, reason string, in, out int64) {
@@ -380,9 +417,11 @@ func (t *server) finish(client net.Conn, ip netip.Addr, start time.Time, sni, up
 	if reason != "" {
 		attrs = append(attrs, "closed", reason)
 		if reason == "no_route" {
-			t.engine.Logs().SecurityEvent(context.Background(), "deny", "tcp_no_route", append([]any{"proto", "tcp"}, attrs...)...)
 			if bl := t.engine.Bans(); bl != nil {
 				bl.Observe(ip, "tcp_no_route")
+			}
+			if t.alerts() {
+				t.engine.Logs().SecurityEvent(context.Background(), "deny", "tcp_no_route", append([]any{"proto", "tcp"}, attrs...)...)
 			}
 		}
 	}

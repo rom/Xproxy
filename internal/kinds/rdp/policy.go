@@ -20,14 +20,14 @@ func (se *session) decideDevices(data rdp.SendData) ([]byte, bool, string) {
 	t := se.t
 	chunk, err := rdp.ParseChannelChunk(data.Payload)
 	if err != nil {
-		t.deny(se.ip, "rdp_channel_chunk", err.Error())
+		t.deny(se, "rdp_channel_chunk", err.Error())
 		return nil, false, "client_protocol"
 	}
 	if chunk.Compressed() {
 		// A message this gateway cannot read is one it cannot filter,
 		// and a redirection policy that quietly did not apply is worse
 		// than a session that ends.
-		t.deny(se.ip, "rdp_channel_compressed", rdp.ChannelDeviceRedirection)
+		t.deny(se, "rdp_channel_compressed", rdp.ChannelDeviceRedirection)
 		return nil, false, "channel_compressed"
 	}
 	msg, done, reason := se.reassemble(chunk)
@@ -46,7 +46,7 @@ func (se *session) decideDevices(data rdp.SendData) ([]byte, bool, string) {
 	}
 	devices, err := rdp.ParseDeviceAnnounce(msg)
 	if err != nil {
-		t.deny(se.ip, "rdp_device_announce", err.Error())
+		t.deny(se, "rdp_device_announce", err.Error())
 		return nil, false, "client_protocol"
 	}
 	kept := make([]rdp.Device, 0, len(devices))
@@ -60,11 +60,16 @@ func (se *session) decideDevices(data rdp.SendData) ([]byte, bool, string) {
 	}
 	if len(refused) > 0 {
 		t.engine.Counters().RDPDevicesRefused.Add(uint64(len(refused))) //nolint:gosec // bounded by the device list
-		t.engine.Logs().SecurityEvent(context.Background(), "deny", "rdp_device_refused",
-			"listener", t.cfg.Name, "client_ip", se.ip.String(),
-			"user", textsafe.Clip64(se.user), "target", se.target,
-			"refused", strings.Join(refused, ","))
+		// The recording is marked whatever alert_on_deny says: the session is
+		// still running and whoever replays it has to see which devices the
+		// desktop was never offered.
 		se.rec.Mark("xproxy: refused " + strings.Join(refused, ", "))
+		if t.alerts() {
+			t.engine.Logs().SecurityEvent(context.Background(), "deny", "rdp_device_refused",
+				"listener", t.cfg.Name, "client_ip", se.ip.String(),
+				"user", textsafe.Clip64(se.user), "target", se.target,
+				"refused", strings.Join(refused, ","))
+		}
 	}
 	out, err := rdp.EncodeDeviceAnnounce(kept)
 	if err != nil {
@@ -80,7 +85,7 @@ func (se *session) reassemble(chunk rdp.ChannelChunk) (msg []byte, done bool, re
 		se.pending = se.pending[:0]
 	}
 	if len(se.pending)+len(chunk.Data) > maxChannelMessage {
-		se.t.deny(se.ip, "rdp_channel_message", rdp.ChannelDeviceRedirection)
+		se.t.deny(se, "rdp_channel_message", rdp.ChannelDeviceRedirection)
 		return nil, false, "channel_message_too_long"
 	}
 	se.pending = append(se.pending, chunk.Data...)
@@ -142,12 +147,12 @@ func (se *session) decideIO(data rdp.SendData) ([]byte, bool, string) {
 		// Encrypted under the protocol's own scheme, which this
 		// gateway does not hold the keys for on a TLS leg. A
 		// credential it cannot read is one it cannot check.
-		se.t.deny(se.ip, "rdp_info_encrypted", "")
+		se.t.deny(se, "rdp_info_encrypted", "")
 		return nil, false, "client_info_encrypted"
 	}
 	info, err := rdp.ParseClientInfo(rest)
 	if err != nil {
-		se.t.deny(se.ip, "rdp_client_info", err.Error())
+		se.t.deny(se, "rdp_client_info", err.Error())
 		return nil, false, "client_protocol"
 	}
 	if reason := se.credential(info); reason != "" {

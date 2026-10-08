@@ -91,6 +91,39 @@ applies to integrity, identity or a bound, because forwarding those would
 mean acting on bytes the code could not read, or admitting somebody who
 did not authenticate — a trial instead of a door.
 
+**Three settings stop a listener enforcing, and they belong to different
+layers.** `policy.mode: shadow` is this switch, the estate's; `monitor_only` is
+a kind's own; and a `learn` run is observe-only unless `learn.enforce` says
+otherwise. They are folded with one precedence — either explicit switch beats a
+learning run, and `shadow` is reported first because it is the one an operator
+who set it will look for — so a listener carrying two of them behaves
+predictably. What it must not do is behave predictably and *report* something
+else: `xproxyctl listeners` shows the mode as `enforce`, `shadow`, `monitor` or
+`learn`, naming which one it is rather than collapsing three reasons into "not
+enforcing", and a configuration that sets two of them is advised on at load,
+because turning one off then changes nothing.
+
+**Every kind bounds the work one client can start, under the name that says what
+it counts.** There are five, and the difference is the unit rather than the
+setting: `max_sessions` (with `max_sessions_per_client`) where the session is the
+protocol's own unit and outlives a connection — ssh, rdp, vnc, ftp, the database
+wire protocols; `max_connections` where the connection is the unit — modbus,
+iec104, imap, snmp over TCP; `max_clients` for a datagram peer (coap);
+`max_in_flight` for queries rather than connections (dns); and `max_tunnels` for
+the forward proxy's CONNECT tunnels. A datagram kind has no connections to bound
+at all, so `bacnet`, `ntp`, `radius` and `tftp` have `rate_limit` instead, which
+is the only ceiling there is when every packet is its own conversation. A kind
+with none of these would be a kind one client can fill, which is why it is
+checked rather than remembered.
+
+**One name, two meanings, and this is the exception to know about.** On thirteen
+kinds `monitor_only` means "evaluate and do not enforce". On [`iec104`](#iec104)
+it means the protocol's own *monitor direction*: the link carries monitoring and
+no control, so every command and every system command is **refused** rather than
+permitted. The two are opposite in effect, which is why the IEC 104 listener's
+`monitor_only` is not one of the three settings above and does not appear in a
+listener's mode.
+
 | Kind | Evaluated and recorded | Still refused |
 |------|------------------------|---------------|
 | `modbus` | every rule: function, unit, address range, value bounds, rate and window | malformed frames, the unit table, the queue bound, rate limits, bans |
@@ -158,6 +191,73 @@ off) logs a warning and lists them under `mismatched_peers`.
 | `connection_rate_per_source` | object | none | `{per_second, burst, ipv4_prefix, ipv6_prefix, max_sources}`: how fast one source network may connect to this listener |
 | `policy` | object | the estate's `policy` | `{mode: enforce|shadow}` for this listener alone; see `policy` |
 
+#### What a refusal leaves behind
+
+Three settings decide what a listener does about a refusal, and they are not the
+same setting. Each kind carries the ones that mean something on its protocol.
+
+**`alert_on_deny`** (every kind, default `true`) decides the **security event**
+and nothing else. With it off, a refusal still:
+
+- increments the refusal counters, the per-reason table and the kind's own
+  counters, so `xproxyctl` and the dashboards see it;
+- writes the access line, where the kind writes one;
+- goes into the session recording, on the kinds that record;
+- reaches the **ban ladder**, so repeated refusals still ban the address; and
+- is still answered: the client is turned away exactly as before.
+
+It is for a listener whose refusals are routine -- an egress proxy where a browser
+reaches for a destination the policy does not carry, a time gateway answering
+hosts that will never be in its list -- where an event per refusal is noise an
+estate has decided it does not want to carry to its collector. Turning the record
+off is not turning the policy down, and nothing about the refusal changes but the
+one line.
+
+**`deny_response`** decides **how** a refusal is said, and exists only where the
+protocol offers more than one way to say it and the session survives being told:
+modbus, iec104, snmp, ldap, dhcp, tftp, opcua, mms, radius, tacacs, kkdcp, imap,
+pop3, amqp, s7, bacnet and the four database relays. Sixteen kinds have no such
+setting, and that is a property of their protocols rather than a gap:
+
+- **Nothing to answer with.** `tcp` and `udp` read no protocol, so there is no
+  message that means "no"; `syslog` is one-way and has no response channel at
+  all. On `udp` an error sent to a source address that did not really send
+  anything is itself an attack on whoever owns that address.
+- **The refusal *is* the end.** On the access gateways -- `ssh`, `telnet`, `vnc`,
+  `rdp` -- a refused session is a session that does not open, and the smaller
+  refusals inside one (a channel, a device, a dynamic channel) each have the one
+  answer the protocol defines, which is what the client's own stack understands.
+- **One right answer, already chosen.** `coap` always answers 4.03 or 4.01,
+  because a dropped confirmable request is retransmitted four or five times and
+  then shows in the device's log as a timeout where a refusal happened. `mqtt`
+  answers the version's own `NotAuthorized` reason code. `smtp` and `ftp` answer
+  with the protocol's reply codes, and on `ftp` the refusal a client sees is
+  often the server's own 5xx relayed through. `forward` answers 403 or 407, or
+  the SOCKS5 reply code. A listener-wide knob here could only make the answer
+  less correct than the one the refusal site already picks.
+- **Already there under the protocol's own word.** `dns` has `block_action`
+  (`nxdomain`, `refuse`, `sinkhole`), and `ntp` has the `kod` section -- the
+  kiss-o'-death packet is the protocol's refusal, with switches of its own.
+  `ntske` answers with the error record RFC 8915 defines for its handshake.
+  Adding `deny_response` to these would be a second name for a control they
+  already have.
+
+**`log_requests`** decides whether the access line per operation is written at
+all, and exists on twelve kinds: the four database relays, and `bacnet`,
+`kkdcp`, `ldap`, `mms`, `opcua`, `radius`, `s7` and `tacacs`. It is a switch on
+those because the line is the audit record there -- the statement, the object,
+the command -- and its volume is the session's, not the connection's.
+
+The other kinds write their access line **unconditionally**, under the access
+log's own switches (`logging.access.enabled`, and the sampling and field
+selection in that section, which apply to every kind). That is the right shape
+where a session is one line, or where the per-operation record is something
+better than a line: on the access gateways it is the **session recording**,
+which holds what was typed and what came back rather than a summary of it.
+`syslog` is the one kind that writes no access line of its own, and for a
+reason -- every record it forwards is already a record, and a line per message
+would double the volume of the thing being relayed.
+
 ### server.listeners[].tcp (kind: tcp)
 
 A `kind: tcp` listener forwards connections at layer 4. TLS connections
@@ -187,6 +287,7 @@ accept as on every listener.
 | `allow_destinations` | list | `[]` | CIDRs an original destination may be in. Required with `original_destination`, and an empty list allows nothing |
 | `destination_ports` | list of int | `[]` (any) | Ports an original destination may have |
 | `yara` | object | none | Apply YARA rules to the bytes of each connection; see below |
+| `alert_on_deny` | bool | `true` | A security event for every refusal |
 
 Endpoints are picked with the upstream's balancer (hash on the client
 address for `hash`), dial failures try the next endpoint and feed outlier
@@ -382,6 +483,7 @@ that owns a UDP socket.
 | `rate_limit.pps` | float | none | Datagrams per second from one source address |
 | `rate_limit.burst` | int | `pps` rounded up | How many may arrive at once |
 | `allow_clients` | list | `[]` (any) | CIDRs a client must come from |
+| `alert_on_deny` | bool | `true` | A security event for every refusal |
 
 Counters: `udp_sessions`, `udp_sessions_open`, `udp_datagrams_in`,
 `udp_datagrams_out`, `udp_bytes_in`, `udp_bytes_out`, `udp_dropped`
@@ -436,6 +538,7 @@ connection limits and the header timeouts apply as on every listener.
 | `socks_udp` | bool | `false` | Allow SOCKS5 `UDP ASSOCIATE` (requires `socks5`) |
 | `masque` | object | none | UDP and IP proxying over extended CONNECT (RFC 9298, RFC 9484); see below |
 | `intercept` | object | none | Terminate TLS inside a CONNECT tunnel and read what passes through it; see below |
+| `alert_on_deny` | bool | `true` | A security event for every refusal |
 
 #### Egress rules: who may send what, where, and when
 
@@ -926,6 +1029,7 @@ browsers should use it) side by side.
 | `cookies` | `off`, `respond`, `require` | `respond` | DNS cookies (RFC 7873): see below |
 | `cookie_lifetime` | duration | `1h` | How long a server cookie stays valid; at most 24h |
 | `deception` | object | none | Answer as a resolver that is not there: where a refusal would be written, or as a whole listener with nothing behind it; see below |
+| `alert_on_deny` | bool | `true` | A security event for every refusal |
 
 #### server.listeners[].dns.cache: serve-stale and prefetch
 
@@ -1749,6 +1853,7 @@ rebinds the listener on reload.
 | `proxy_protocol` | bool | `false` | Send a PROXY protocol v2 header with the client address to the upstream |
 | `allow_clients` | list of CIDR | `[]` (any) | Others get `554` before any session starts (`client_not_allowed`). Empty is right for inbound mail and wrong for submission |
 | `xclient` | bool | `false` | After the proxy's own EHLO, send `XCLIENT ADDR= PORT=` (the Postfix extension) when the upstream advertises it, so the mail server's logs and policies see the real client |
+| `alert_on_deny` | bool | `true` | A security event for every refusal |
 
 Every session writes one `smtp` line to the access log with the client
 address, whether it was encrypted, messages, octets, refusals, the
@@ -1834,6 +1939,7 @@ accept. Changing the `mqtt` section rebinds the listener on reload.
 | `topics` | list | `[]` | Per-topic bounds, below |
 | `sparkplug` | object | | The Sparkplug B policy, below |
 | `learn` | object | | Record what crosses this listener and write proposed topic lists, below |
+| `alert_on_deny` | bool | `true` | A security event for every refusal |
 
 #### server.listeners[].mqtt.learn
 
@@ -2009,6 +2115,7 @@ one datagram per message), on the same address. TLS is RFC 5425.
 | `max_connections` | int | `1000` | Stream connections |
 | `idle_timeout` | duration | `5m` | No traffic on a stream connection |
 | `queue` | int | `4096` | Parsed messages waiting for the collector. When it is full the relay drops and counts, rather than holding every sender behind one slow collector |
+| `alert_on_deny` | bool | `true` | A security event for every refusal |
 
 **The secure upgrade** is `tls_mode: none` with
 `upstream_tls_mode: implicit`: a device that can only send clear syslog
@@ -6458,6 +6565,7 @@ proxy does not hold.
 | `max_connections` | int | `200` | Sessions on this listener |
 | `proxy_protocol` | bool | `false` | PROXY protocol v2 header to the target |
 | `allow_clients` | list | `[]` (any) | CIDRs a client must come from |
+| `alert_on_deny` | bool | `true` | A security event for every refusal |
 
 #### Reading the picture: `pixel_stream` and `bounds`
 
@@ -6911,6 +7019,7 @@ policy that quietly did not apply is worse than a session that stops.
 | `max_connections` | int | `200` | Sessions on this listener |
 | `proxy_protocol` | bool | `false` | PROXY protocol v2 header to the desktop |
 | `allow_clients` | list | `[]` (any) | CIDRs a client must come from |
+| `alert_on_deny` | bool | `true` | A security event for every refusal |
 
 #### The two credentials
 
@@ -7019,6 +7128,7 @@ own into the stream before the target is dialled.
 | `max_connections` | int | `1000` | Sessions on this listener |
 | `proxy_protocol` | bool | `false` | Send a PROXY protocol v2 header with the client address to the target |
 | `allow_clients` | list | `[]` (any) | CIDRs a client must come from |
+| `alert_on_deny` | bool | `true` | A security event for every refusal |
 
 **Options.** The default list is what an interactive session needs and
 nothing else: `echo`, `suppress-go-ahead`, `binary`, `terminal-type`,
@@ -7241,6 +7351,7 @@ assumed.
 | `session_timeout` | duration | `0` (none) | A whole session, however active |
 | `proxy_protocol` | bool | `false` | Send a PROXY protocol v2 header with the client address to the target |
 | `allow_clients` | list of CIDR | `[]` (any) | Others are closed at accept |
+| `alert_on_deny` | bool | `true` | A security event for every refusal |
 
 A control line that is not exactly CRLF-terminated is refused, and so is
 one carrying a telnet `IAC`. Each of them is a way for the proxy and the
@@ -7519,6 +7630,7 @@ the credentials are read then — not per connection, so a key added to
 | `sftp` | object | none | Inspect the SFTP protocol inside an sftp subsystem channel; see below |
 | `proxy_protocol` | bool | `false` | Send a PROXY protocol v2 header with the client address to the target |
 | `allow_clients` | list of CIDR | `[]` (any) | Others are closed before the handshake |
+| `alert_on_deny` | bool | `true` | A security event for every refusal |
 
 #### server.listeners[].ssh.principals
 
@@ -13784,6 +13896,8 @@ on the management socket, where the kernel decides who may throw it.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `name` | string | `rules[i]` | Identifies the rule in `GET /v1/capture` |
+| `listeners` | list of names | any | Only traffic on these listeners. The one selector that works on every kind, HTTP and otherwise |
+| `kinds` | list of kinds | any | Only these listener kinds (`mysql`, `ssh`, `tcp`, ...). Validated against the kinds in the configuration, so a typo is a load error rather than a rule that never matches |
 | `hosts` | list | any | Host patterns, exact or `*.example.com`, matched against the request authority |
 | `routes` | list of names | any | Only requests matched to these routes. A request refused before routing (a ban, the maintenance gate) has no route, so it never matches this selector; an answer-side selector is how those are captured |
 | `methods` | list | any | Upper-case methods |
@@ -13798,6 +13912,70 @@ on the management socket, where the kernel decides who may throw it.
 Selectors within a rule are AND, values within a selector are OR, and
 rules are tried in order. To capture one route for one client, put both
 selectors in one rule; to capture two unrelated things, write two rules.
+
+### Capturing a session on a non-HTTP listener
+
+Most listener kinds carry sessions rather than requests, and they are
+captured too: one pcapng flow per session, holding the bytes each way up
+to `max_body_bytes`, with the protocol, the listener, the login the
+protocol named and the refusal in the flow's comment.
+
+Four selectors apply to a session, because they are the four things that
+are true of one before it has sent anything: `listeners`, `kinds`,
+`client_cidrs` and `denied`. The request-shaped selectors -- `hosts`,
+`routes`, `methods`, `paths`, `statuses`, `reasons` -- cannot be
+answered about a session, so a rule naming any of them never matches
+one; `percent` and `max_flows` work as they do for a request.
+
+```yaml
+capture:
+  enabled: true
+  directory: /var/lib/xproxy/capture
+  bodies: true            # a session *is* payload: without this nothing is written
+  max_body_bytes: 65536
+  rules:
+    # What the database relay turned away, whatever turned it away.
+    - name: refused-sessions
+      kinds: [mysql, postgres, tds]
+      denied: true
+      max_flows: 500
+
+    # One engineer's bastion sessions, for a reported problem.
+    - name: reported-operator
+      listeners: [plant-ssh]
+      client_cidrs: ["198.51.100.7/32"]
+```
+
+`bodies: true` is required and not the default: a session has no head to
+keep the way an HTTP request has one, so with bodies off there is
+nothing to write, and the configuration says so at load rather than
+leaving an operator to find an empty file.
+
+**What the file holds depends on where the kind terminates
+encryption.** A kind that terminates TLS -- the databases, the mail
+protocols, ldap, mqtt, modbus, iec104 -- is captured as plaintext
+protocol, with the handshake left out, so a dissector reads it. A kind
+that does not is captured as it crossed: `tcp` splices TLS records and
+`ntske` relays or terminates a handshake, so those files hold
+ciphertext, which still names the server, the version and the cipher
+suites. `ssh` holds the SSH transport, encrypted after the key
+exchange; `vnc` holds RFB's own TLS where a session negotiates it. On
+`ssh`, `vnc`, `rdp`, `ftp` and `telnet` the plaintext record of a
+session is that kind's own session recording (`recording:` in its listener
+section), which answers a different question: what the operator did,
+rather than what crossed the wire.
+
+The `request_id` in a flow's comment is the kind's own session
+identifier where it has one -- the identifier `xproxyctl sessions`
+lists, and the one a recording file is named after -- so a capture, a
+recording and the access log can be lined up. Kinds that do not
+register with the session table get a random identifier instead, so that
+a file holding several of their sessions still says which packet belongs
+to which.
+
+The `http` and `forward` kinds, and `kkdcp` and `dns`, are
+request-shaped rather than session-shaped: `http` writes one capture per
+request as described above, and the other three are not captured yet.
 
 ## mysql
 

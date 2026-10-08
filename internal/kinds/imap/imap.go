@@ -155,7 +155,15 @@ func tlsModeOf(c *config.IMAPListener, tlsCfg *tls.Config) string {
 
 // enforcing reports whether this listener acts on its policy or only
 // records what it would have done.
-func (t *server) enforcing() bool { return !t.c.MonitorOnly && !t.cfg.Shadowing() }
+func (t *server) enforcing() bool { return t.enforcement().Enforcing() }
+
+// enforcement folds this listener's reasons not to enforce into one answer, so
+// that the precedence, and the name a status view reports, are the same on
+// every kind.
+func (t *server) enforcement() config.Enforcement {
+	e := config.Enforcement{Shadow: t.cfg.Shadowing(), MonitorOnly: t.c.MonitorOnly}
+	return e
+}
 
 func (t *server) alerts() bool { return t.alertOnDeny }
 

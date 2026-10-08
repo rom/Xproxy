@@ -61,6 +61,7 @@ import (
 	"github.com/rom/xproxy/internal/admit"
 	"github.com/rom/xproxy/internal/anomaly"
 	"github.com/rom/xproxy/internal/authorization"
+	"github.com/rom/xproxy/internal/capture"
 	"github.com/rom/xproxy/internal/config"
 	"github.com/rom/xproxy/internal/correlate"
 	"github.com/rom/xproxy/internal/engineering"
@@ -289,15 +290,17 @@ func (t *server) shutdown(ctx context.Context) {
 // traffic is, and a run that refuses half of it has changed the thing it was
 // measuring. A listener in shadow mode records without deciding whether or not
 // it is also learning.
-func (t *server) enforcing() bool {
-	if t.cfg.Shadowing() {
-		return false
+func (t *server) enforcing() bool { return t.enforcement().Enforcing() }
+
+// enforcement folds this listener's reasons not to enforce into one answer, so
+// that the precedence, and the name a status view reports, are the same on
+// every kind.
+func (t *server) enforcement() config.Enforcement {
+	e := config.Enforcement{Shadow: t.cfg.Shadowing()}
+	if l := t.m.Learn; l != nil {
+		e.Learning, e.LearnEnforce = l.Enabled, l.Enforce
 	}
-	l := t.m.Learn
-	if l == nil || !l.Enabled {
-		return true
-	}
-	return l.Enforce
+	return e
 }
 
 // session is one controlling station's connection and the station
@@ -308,6 +311,11 @@ type session struct {
 	client net.Conn
 	up     net.Conn
 	ip     netip.Addr
+
+	// tap records the session for a pcapng capture, and is nil -- usable, and
+	// doing nothing -- whenever no rule wants this one, which is the usual case.
+	tap *capture.Tap
+
 	secure bool
 	live   *sessions.Session
 	pool   *upstream.Pool
@@ -353,7 +361,8 @@ type session struct {
 // hour. Which type identifications and which information objects that station may
 // touch is the `iec104` policy's own business, and the select-before-execute rule
 // is the thing only it can enforce.
-func (t *server) admitClient(ip netip.Addr) string {
+func (t *server) admitClient(se *session) string {
+	ip := se.ip
 	h := t.host
 	return admit.Client(admit.Deps{
 		Lists: h.ThreatIntel(),
@@ -380,7 +389,7 @@ func (t *server) admitClient(ip netip.Addr) string {
 			h.Counters().WouldRefuse("iec104", reason)
 			h.Shadow().Record("iec104", t.cfg.Name, reason, rule, detail)
 		},
-		Deny: func(reason, _, detail string) { t.deny(ip, reason, detail) },
+		Deny: func(reason, _, detail string) { t.deny(se, reason, detail) },
 	})
 }
 
@@ -393,6 +402,12 @@ func (t *server) handle(client net.Conn) {
 	ip := netutil.AddrOf(client.RemoteAddr().String())
 	se := &session{t: t, id: t.nextSession.Add(1), client: client, ip: ip,
 		watch: newWatcher()}
+	// Opened before anything can refuse the session, because a refused session is
+	// the one an operator most often wants and it never dials: after that point
+	// there is nothing left to record. A nil tap wraps nothing and writes nothing.
+	se.tap = t.host.Capture().Open("iec104", t.cfg.Name, "", client.RemoteAddr())
+	defer se.tap.Close()
+	se.client = se.tap.Client(client)
 	defer func() {
 		if se.watch.anything() {
 			// The controlling station, with every substation it named; and the
@@ -428,7 +443,7 @@ func (t *server) handle(client net.Conn) {
 	}()
 	if !t.policy.Client(ip) {
 		s.Counters().IEC104Rejected.Add(1)
-		t.deny(ip, "client_not_allowed", "")
+		t.deny(se, "client_not_allowed", "")
 		t.log(se, start, "client_not_allowed")
 		return
 	}
@@ -438,7 +453,7 @@ func (t *server) handle(client net.Conn) {
 	if g := t.groups.of(ip); g != nil {
 		if !g.join(se.id, ip) {
 			s.Counters().IEC104Rejected.Add(1)
-			t.deny(ip, "iec104_redundancy_full", g.name)
+			t.deny(se, "iec104_redundancy_full", g.name)
 			t.log(se, start, "iec104_redundancy_full")
 			return
 		}
@@ -448,7 +463,7 @@ func (t *server) handle(client net.Conn) {
 	// listener's own address lists -- those are local policy about local
 	// clients, and a feed must not overrule an allow rule an operator wrote --
 	// and before the station is dialled.
-	if reason := t.admitClient(ip); reason != "" {
+	if reason := t.admitClient(se); reason != "" {
 		s.Counters().IEC104Rejected.Add(1)
 		t.log(se, start, reason)
 		return
@@ -457,16 +472,20 @@ func (t *server) handle(client net.Conn) {
 		Kind: "iec104", Listener: t.cfg.Name, Client: client.RemoteAddr().String(),
 	}, func() { _ = client.Close() })
 	defer se.live.Done()
+	se.tap.Name(se.live.ID)
 	if t.m.TLSMode == "implicit" || (t.tlsCfg != nil && t.m.TLSMode == "") {
 		tc := tls.Server(client, t.tlsCfg)
 		_ = tc.SetDeadline(time.Now().Add(10 * time.Second))
 		if err := tc.HandshakeContext(context.Background()); err != nil {
-			t.deny(ip, "tls_handshake", err.Error())
+			t.deny(se, "tls_handshake", err.Error())
 			t.log(se, start, "tls_handshake")
 			return
 		}
 		_ = tc.SetDeadline(time.Time{})
-		se.client, se.secure = tc, true
+		// The tap follows the protocol rather than the TLS records carrying it:
+		// tls.Server reads the socket directly, so nothing recorded the
+		// handshake, and from here the tap sees the plaintext inside it.
+		se.client, se.secure = se.tap.Client(tc), true
 	}
 	// The relay's own end of the association with this client, which is
 	// whatever the octets finally travel over.
@@ -535,7 +554,7 @@ func (se *session) dial() error {
 				"endpoint", e.Address, "error", err.Error())
 			continue
 		}
-		se.up, se.ep = c, e
+		se.up, se.ep = se.tap.Upstream(c), e
 		break
 	}
 	if se.up == nil {
@@ -661,7 +680,7 @@ func (se *session) pump(fromClient bool) string {
 		if max > 0 && len(frame.Raw) > max {
 			t.host.Counters().IEC104Malformed.Add(1)
 			t.host.Counters().Refuse("iec104", "frame_too_long")
-			t.deny(se.ip, "iec104_frame_too_long", itoa(len(frame.Raw)))
+			t.deny(se, "iec104_frame_too_long", itoa(len(frame.Raw)))
 			return "iec104_frame_too_long"
 		}
 		reason, allow := se.decide(frame, fromClient)
@@ -751,7 +770,7 @@ func (se *session) readError(err error, fromClient bool) string {
 		if !fromClient {
 			from = "station"
 		}
-		t.deny(se.ip, "iec104_malformed", from+": "+err.Error())
+		t.deny(se, "iec104_malformed", from+": "+err.Error())
 		return "iec104_malformed"
 	}
 	return ""

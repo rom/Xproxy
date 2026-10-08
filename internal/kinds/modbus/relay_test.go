@@ -1510,3 +1510,60 @@ upstreams:
 		t.Errorf("the ledger does not carry the detector's finding: %+v", s.Shadow().Report())
 	}
 }
+
+// alert_on_deny turns the record off. It must not turn the response off with it.
+//
+// The two are different decisions and the knob is named for only one of them. On a
+// plant the refusals are routine -- that is exactly why an operator reaches for
+// this setting -- and a listener that stopped counting them towards a ban while
+// the operator thought they had turned down the log volume would be a listener
+// whose automatic response had been switched off by accident. The ban observation
+// ran after the security event, inside the same early return, so it was.
+func TestTurningTheAlertOffDoesNotTurnTheBanOff(t *testing.T) {
+	dev := startPLC(t, &plc{framing: wire.FramingTCP})
+	s := proxytest.Start(t, fmt.Sprintf(`
+version: 1
+server:
+  listeners:
+    - name: plant
+      address: "127.0.0.1:0"
+      kind: modbus
+      modbus:
+        upstream: plc
+        default_action: deny
+        alert_on_deny: false
+logging: {access: {enabled: false}}
+bans:
+  triggers:
+    - {name: any, reasons: [modbus_denied], threshold: 1, window: 1m, duration: 1h}
+upstreams:
+  - {name: plc, endpoints: [{address: %q}]}
+`, dev.addr()))
+	addr := proxytest.Addr(t, s, "plant")
+
+	m := dialMaster(t, addr, wire.FramingTCP)
+	// Refused by default_action, so the ladder has its one observation.
+	// The answer does not matter: a refusal may be an exception or a closed
+	// socket depending on deny_response, and either way the ladder has its one
+	// observation.
+	_, _ = m.ask(1, readTwo)
+	if got := s.Stats().Refusals["modbus"]["rule"]; got == 0 {
+		// The reason name is the policy's; what matters is that something was
+		// refused, or the test asserts nothing.
+		if total := s.Stats().Refusals["modbus"]; len(total) == 0 {
+			t.Fatalf("nothing was refused, so this test asserts nothing")
+		}
+	}
+	ip := netip.MustParseAddr("127.0.0.1")
+	bl := s.Bans()
+	if bl == nil {
+		t.Fatal("no ban list")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for !bl.Banned(ip) {
+		if time.Now().After(deadline) {
+			t.Fatal("a refusal on a listener with alert_on_deny off never reached the ban ladder")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}

@@ -7,6 +7,7 @@
 //
 //	xproxy-admin serve [-listen 127.0.0.1:8443] [-socket PATH] [-config PATH] [-users PATH]
 //	                   [-tls-cert PATH -tls-key PATH [-client-ca PATH]] [-restart-cmd "systemctl restart xproxy.service"]
+//	xproxy-admin serve -validate
 //	xproxy-admin user add NAME -role viewer|operator [-cert-only]
 //	xproxy-admin user del NAME
 //	xproxy-admin user list
@@ -20,11 +21,14 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -60,7 +64,7 @@ func run(args []string, in io.Reader, out, errOut io.Writer) int {
 		_, _ = fmt.Fprintln(out, "xproxy-admin", version.String())
 		return 0
 	case "serve":
-		return serve(args[1:], errOut, fail)
+		return serve(args[1:], out, errOut, fail)
 	case "user":
 		return user(args[1:], in, out, errOut, fail)
 	case "passwd":
@@ -71,7 +75,7 @@ func run(args []string, in io.Reader, out, errOut io.Writer) int {
 	}
 }
 
-func serve(args []string, errOut io.Writer, fail func(error) int) int {
+func serve(args []string, out, errOut io.Writer, fail func(error) int) int {
 	fs := flag.NewFlagSet("xproxy-admin serve", flag.ContinueOnError)
 	fs.SetOutput(errOut)
 	var o admin.Options
@@ -96,6 +100,7 @@ func serve(args []string, errOut io.Writer, fail func(error) int) int {
 	fs.StringVar(&oidc.RoleClaim, "oidc-role-claim", "groups", "ID token claim matched against -oidc-operators and -oidc-viewers")
 	operators := fs.String("oidc-operators", "", "role claim values that grant the operator role, comma separated")
 	viewers := fs.String("oidc-viewers", "", `role claim values that grant the viewer role, comma separated ("*" accepts every user)`)
+	check := fs.Bool("validate", false, "check the options, the users file, the certificates and the restart command, then exit without binding")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -112,6 +117,12 @@ func serve(args []string, errOut io.Writer, fail func(error) int) int {
 	if err != nil {
 		return fail(err)
 	}
+	if *check {
+		if err := validate(o, out); err != nil {
+			return fail(err)
+		}
+		return 0
+	}
 	if err := s.Start(); err != nil {
 		return fail(err)
 	}
@@ -124,6 +135,96 @@ func serve(args []string, errOut io.Writer, fail func(error) int) int {
 		return fail(err)
 	}
 	return 0
+}
+
+// validate checks everything the GUI needs before it binds anything, and says
+// what it found.
+//
+// admin.New has already settled the options against each other -- a non-loopback
+// address without mutual TLS, a certificate without a key, a users file that
+// will not parse. What it does not do is touch the files: a certificate and key
+// that do not pair, a client CA that is not a certificate, a configuration file
+// the GUI cannot read, or a restart command that is not on the system are all
+// found at the first use rather than at start-up, and the first use of the
+// restart command is an operator pressing the button during an incident.
+//
+// So this loads each of them. It is the same shape as `xsigner -validate`, for
+// the same reason: the GUI is the one process here that an operator reaches for
+// when something is already wrong.
+func validate(o admin.Options, out io.Writer) error {
+	users, err := admin.LoadUsers(o.UsersFile)
+	if err != nil {
+		return err
+	}
+	var operators, viewers, certOnly int
+	for _, u := range users.List() {
+		switch u.Role {
+		case admin.RoleOperator:
+			operators++
+		case admin.RoleViewer:
+			viewers++
+		}
+		if u.CertOnly() {
+			certOnly++
+		}
+	}
+	if o.TLS.CertFile != "" {
+		if _, err := tls.LoadX509KeyPair(o.TLS.CertFile, o.TLS.KeyFile); err != nil {
+			return fmt.Errorf("tls: %w", err)
+		}
+	}
+	if o.TLS.ClientCAFile != "" {
+		pem, err := os.ReadFile(o.TLS.ClientCAFile)
+		if err != nil {
+			return fmt.Errorf("client CA: %w", err)
+		}
+		if !x509.NewCertPool().AppendCertsFromPEM(pem) {
+			return fmt.Errorf("client CA: %s holds no certificate", o.TLS.ClientCAFile)
+		}
+	}
+	// The configuration file is read, not validated: the data plane owns that
+	// decision and says so through the management socket. What matters here is
+	// whether this process can read the file it offers to edit.
+	if o.ConfigFile != "" {
+		if _, err := os.ReadFile(o.ConfigFile); err != nil {
+			return fmt.Errorf("config: %w", err)
+		}
+	}
+	if len(o.RestartCommand) > 0 {
+		if _, err := exec.LookPath(o.RestartCommand[0]); err != nil {
+			return fmt.Errorf("restart-cmd: %w", err)
+		}
+	}
+	_, _ = fmt.Fprintf(out, "%s: OK (%d users: %d operator, %d viewer, %d certificate only)\n",
+		o.UsersFile, len(users.List()), operators, viewers, certOnly)
+	what := "password"
+	if o.TLS.ClientCAFile != "" {
+		what = "password and client certificate"
+	}
+	if o.OIDC.Enabled() {
+		what += " and single sign-on"
+	}
+	_, _ = fmt.Fprintf(out, "%s: %s, login by %s\n", o.Listen, tlsState(o), what)
+	if o.ConfigFile == "" {
+		_, _ = fmt.Fprintln(out, "  warning: no -config, so the GUI cannot edit the configuration or show the logs")
+	}
+	if len(o.RestartCommand) == 0 {
+		_, _ = fmt.Fprintln(out, "  note: no -restart-cmd, so the restart action is disabled")
+	}
+	return nil
+}
+
+func tlsState(o admin.Options) string {
+	switch {
+	case o.TLS.ClientCAFile != "":
+		return "mutual TLS"
+	case o.TLS.CertFile != "":
+		return "TLS"
+	case strings.HasPrefix(o.Listen, "unix:"):
+		return "a Unix socket"
+	default:
+		return "plaintext on the loopback"
+	}
 }
 
 func user(args []string, in io.Reader, out, errOut io.Writer, fail func(error) int) int {

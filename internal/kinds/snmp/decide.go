@@ -69,6 +69,12 @@ func (t *server) refused(ip netip.Addr, m *wire.Message, d Decision) {
 	c.Refuse("snmp", d.Reason)
 	c.SNMPDenied.Add(1)
 	t.access(ip, m, d, "deny", "")
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
+	if bl := t.host.Bans(); bl != nil && ip.IsValid() {
+		bl.Observe(ip, "snmp_denied")
+	}
+
 	if !t.alerts() {
 		return
 	}
@@ -84,9 +90,6 @@ func (t *server) refused(ip netip.Addr, m *wire.Message, d Decision) {
 		attrs = append(attrs, "detail", d.Detail)
 	}
 	t.host.Logs().SecurityEvent(context.Background(), "deny", d.Reason, attrs...)
-	if bl := t.host.Bans(); bl != nil && ip.IsValid() {
-		bl.Observe(ip, "snmp_denied")
-	}
 }
 
 // deny records a refusal that is not about a message the policy read: a
@@ -94,6 +97,12 @@ func (t *server) refused(ip netip.Addr, m *wire.Message, d Decision) {
 // shadowed -- a relay whose bounds were in shadow mode would be a relay
 // with no bounds.
 func (t *server) deny(ip netip.Addr, what, detail string) {
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
+	if bl := t.host.Bans(); bl != nil && ip.IsValid() {
+		bl.Observe(ip, "snmp_denied")
+	}
+
 	if !t.alerts() {
 		return
 	}
@@ -106,9 +115,6 @@ func (t *server) deny(ip netip.Addr, what, detail string) {
 		attrs = append(attrs, "detail", detail)
 	}
 	t.host.Logs().SecurityEvent(context.Background(), "deny", name, attrs...)
-	if bl := t.host.Bans(); bl != nil && ip.IsValid() {
-		bl.Observe(ip, "snmp_denied")
-	}
 }
 
 // detailOf is one short line describing a message, for the shadow ledger's

@@ -24,7 +24,7 @@ func (se *session) clientNegotiate() string {
 	}
 	cr, err := rdp.ParseConnectionRequest(pdu.Body)
 	if err != nil {
-		t.deny(se.ip, "rdp_negotiate", err.Error())
+		t.deny(se, "rdp_negotiate", err.Error())
 		return "client_negotiate"
 	}
 	se.cookie = cr.Cookie
@@ -42,7 +42,7 @@ func (se *session) clientNegotiate() string {
 			_, _ = se.client.Write(out)
 		}
 		t.engine.Counters().RDPRefused.Add(1)
-		t.deny(se.ip, "rdp_no_protocol", rdp.ProtocolName(cr.Protocols))
+		t.deny(se, "rdp_no_protocol", rdp.ProtocolName(cr.Protocols))
 		return "no_protocol"
 	}
 	se.clientProtocol = protocol
@@ -55,12 +55,17 @@ func (se *session) clientNegotiate() string {
 		return "write"
 	}
 	if protocol == rdp.ProtocolSSL {
+		// The upgrade is in band, after the X.224 negotiation, so the capture
+		// pauses over the handshake and picks the plaintext up again on the far
+		// side: the file then holds one readable stream of the protocol rather
+		// than two packets and then ciphertext.
+		se.tap.Pause()
 		tc := tls.Server(se.client, t.tlsCfg)
 		if err := tc.HandshakeContext(context.Background()); err != nil {
-			t.deny(se.ip, "rdp_tls", err.Error())
+			t.deny(se, "rdp_tls", err.Error())
 			return "client_tls"
 		}
-		se.client = tc
+		se.client = se.tap.Client(tc)
 	}
 	return ""
 }

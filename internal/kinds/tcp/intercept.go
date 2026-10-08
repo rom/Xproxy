@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"time"
 
+	"github.com/rom/xproxy/internal/capture"
 	"github.com/rom/xproxy/internal/relay"
 	"github.com/rom/xproxy/internal/transparent"
 )
@@ -31,12 +32,13 @@ import (
 
 // intercepted relays a connection whose destination comes from the
 // socket.
-func (t *server) intercepted(client net.Conn, ip netip.Addr, start time.Time, sni string, early []byte) {
+func (t *server) intercepted(client net.Conn, ip netip.Addr, start time.Time, sni string, early []byte, tap *capture.Tap) {
 	s := t.engine
 	dst, err := transparent.Destination(client)
 	if err != nil {
 		s.Counters().TCPRejected.Add(1)
 		s.Counters().Refuse("tcp", "no_original_destination")
+		tap.Deny("no_original_destination")
 		t.finish(client, ip, start, sni, "", "", "no_original_destination", 0, 0)
 		return
 	}
@@ -48,12 +50,14 @@ func (t *server) intercepted(client net.Conn, ip netip.Addr, start time.Time, sn
 		s.Counters().TCPErrors.Add(1)
 		s.Logs().Error.Warn("intercepted connection would loop back to this proxy",
 			"listener", t.cfg.Name, "destination", dst.String())
+		tap.Deny("destination_loop")
 		t.finish(client, ip, start, sni, "", dst.String(), "destination_loop", 0, 0)
 		return
 	}
 	if !transparent.Allowed(dst, t.allowDst, t.cfg.TCP.DestinationPorts) {
 		s.Counters().TCPRejected.Add(1)
 		t.deny(ip, dst)
+		tap.Deny("destination_not_allowed")
 		t.finish(client, ip, start, sni, "", dst.String(), "destination_not_allowed", 0, 0)
 		return
 	}
@@ -62,15 +66,18 @@ func (t *server) intercepted(client net.Conn, ip netip.Addr, start time.Time, sn
 		d = transparent.Dialer(d, ip)
 	}
 	up, err := d.DialContext(context.Background(), "tcp", dst.String())
+	up = tap.Upstream(up)
 	if err != nil {
 		s.Counters().TCPErrors.Add(1)
 		s.Logs().Error.Warn("intercepted destination unreachable", "listener", t.cfg.Name,
 			"destination", dst.String(), "err", err.Error())
+		tap.Deny("upstream_unavailable")
 		t.finish(client, ip, start, sni, "", dst.String(), "upstream_unavailable", 0, 0)
 		return
 	}
 	if _, err := up.Write(early); err != nil {
 		_ = up.Close()
+		tap.Deny("upstream_write")
 		t.finish(client, ip, start, sni, "", dst.String(), "upstream_write", 0, 0)
 		return
 	}
@@ -88,12 +95,18 @@ func (t *server) intercepted(client net.Conn, ip netip.Addr, start time.Time, sn
 // sends its traffic is exactly what the policy is there to stop.
 func (t *server) deny(ip netip.Addr, dst netip.AddrPort) {
 	t.engine.Counters().Refuse("tcp", "destination_not_allowed")
-	t.engine.Logs().SecurityEvent(context.Background(), "deny", "tcp_no_route",
-		"listener", t.cfg.Name, "proto", "tcp", "client_ip", ip.String(),
-		"destination", dst.String(), "detail", "destination_not_allowed")
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
 	if bl := t.engine.Bans(); bl != nil && ip.IsValid() {
 		bl.Observe(ip, "tcp_no_route")
 	}
+
+	if !t.alerts() {
+		return
+	}
+	t.engine.Logs().SecurityEvent(context.Background(), "deny", "tcp_no_route",
+		"listener", t.cfg.Name, "proto", "tcp", "client_ip", ip.String(),
+		"destination", dst.String(), "detail", "destination_not_allowed")
 }
 
 // ownAddrs are the addresses this listener is bound to, for the loop

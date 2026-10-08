@@ -18,16 +18,21 @@ import (
 // that way -- postgres, mysql, tds and redis -- each with its own monitor_only and
 // no reference to Shadowing anywhere in the package.
 //
-// So this reads the source of every kind that has an enforcing() and fails on the
-// shape: a body that does not mention Shadowing. It is a source test rather than a
-// behavioural one because the behaviour is per protocol and the defect is not: the
-// two kinds where it is driven over a socket are postgres and redis, and what this
-// adds is that a kind written tomorrow cannot quietly leave the switch out.
+// It is a source test rather than a behavioural one because the behaviour is per
+// protocol and the defect is not: what this adds is that a kind written tomorrow
+// cannot quietly leave the switch out.
+//
+// It now checks two things rather than one, because the enforcement sources were
+// folded into config.Enforcement: enforcing() must delegate to that fold rather
+// than hand-rolling the combination, and the enforcement() that feeds it must take
+// Shadow from the listener. The first half is the new half, and it is the one that
+// keeps the precedence the same on every kind -- a hand-rolled enforcing() that
+// happened to mention Shadowing() would have passed the old shape while ordering
+// the sources differently from its twenty-two siblings.
 func TestEveryKindReadsTheListenersOwnShadowSwitch(t *testing.T) {
 	root := filepath.Join("..", "..", "internal", "kinds")
-	// A one-line enforcing(), or the opening of a multi-line one. modbus writes
-	// the long form; both have to mention Shadowing.
-	oneLine := regexp.MustCompile(`func \(\w+ \*server\) enforcing\(\) bool \{([^\n]*)\n`)
+	enforcing := regexp.MustCompile(`func \(\w+ \*server\) enforcing\(\) bool \{`)
+	enforcement := regexp.MustCompile(`func \(\w+ \*server\) enforcement\(\) config\.Enforcement \{`)
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() || !strings.HasSuffix(path, ".go") ||
 			strings.HasSuffix(path, "_test.go") {
@@ -38,26 +43,56 @@ func TestEveryKindReadsTheListenersOwnShadowSwitch(t *testing.T) {
 			return err
 		}
 		src := string(b)
-		m := oneLine.FindStringSubmatchIndex(src)
+		m := enforcing.FindStringIndex(src)
 		if m == nil {
 			return nil
 		}
-		body := src[m[2]:m[3]]
-		if !strings.Contains(body, "}") {
-			// A multi-line body: read to the closing brace at column zero.
-			rest := src[m[3]:]
-			if end := strings.Index(rest, "\n}"); end >= 0 {
-				body += rest[:end]
-			}
+		if body, ok := funcBody(src, m[1]-1); !ok || !strings.Contains(body, "enforcement().Enforcing()") {
+			t.Errorf("%s: enforcing() does not go through config.Enforcement, so this kind "+
+				"combines the enforcement sources its own way; return <recv>.enforcement().Enforcing()", path)
+			return nil
+		}
+		n := enforcement.FindStringIndex(src)
+		if n == nil {
+			t.Errorf("%s: enforcing() delegates to enforcement() and there is none in this file", path)
+			return nil
+		}
+		body, ok := funcBody(src, n[1]-1)
+		if !ok {
+			t.Errorf("%s: enforcement() does not parse", path)
+			return nil
 		}
 		if !strings.Contains(body, "Shadowing()") {
-			t.Errorf("%s: enforcing() does not read the listener's own shadow "+
+			t.Errorf("%s: enforcement() does not read the listener's own shadow "+
 				"switch, so policy: {mode: shadow} is evaluated and then enforced "+
-				"on this kind; add !cfg.Shadowing() to it", path)
+				"on this kind; set Shadow from cfg.Shadowing()", path)
 		}
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+// funcBody returns the text between the brace at open and its match, so a
+// one-line body and a multi-line one are read the same way. The old version read
+// to the first "\n}" and would have taken the next function's text with it had
+// anything in between closed at column zero.
+func funcBody(src string, open int) (string, bool) {
+	if open < 0 || open >= len(src) || src[open] != '{' {
+		return "", false
+	}
+	depth := 0
+	for i := open; i < len(src); i++ {
+		switch src[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return src[open+1 : i], true
+			}
+		}
+	}
+	return "", false
 }

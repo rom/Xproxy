@@ -38,8 +38,12 @@ type forwardServer struct {
 	// shadow says this listener evaluates its destination policy without
 	// enforcing it.
 	shadow bool
-	policy atomic.Pointer[forwardPolicy]
-	tr     *http.Transport
+	// alertOnDeny says a refusal on this listener is worth a security event.
+	// Read once at construction rather than off the policy pointer: it is a
+	// listener setting, not part of the egress policy a reload swaps.
+	alertOnDeny bool
+	policy      atomic.Pointer[forwardPolicy]
+	tr          *http.Transport
 	// masque is the compiled MASQUE section, nil without one. It is
 	// built once: turning UDP or IP proxying on or off is a listener
 	// change, not a policy swap.
@@ -95,7 +99,8 @@ type forwardDialKey struct{}
 
 func newForwardServer(host proxy.Host, lc config.Listener) (*forwardServer, error) {
 	f := &forwardServer{host: host, name: lc.Name, shadow: lc.Shadowing(),
-		cons: map[net.Conn]struct{}{}, done: make(chan struct{}),
+		alertOnDeny: lc.Forward.AlertOnDeny == nil || *lc.Forward.AlertOnDeny,
+		cons:        map[net.Conn]struct{}{}, done: make(chan struct{}),
 		authCache: map[[32]byte]time.Time{}, authSem: make(chan struct{}, 4)}
 	if err := f.apply(lc.Forward); err != nil {
 		return nil, err
@@ -409,6 +414,9 @@ func (f *forwardServer) recordEgress(client netip.Addr, user, host string, port 
 	// every other refusal on this listener is counted: what is added here is
 	// the rule's name and its comment, which are the two things a refusal
 	// reason cannot carry and the operator most needs.
+	if !f.alerts() {
+		return
+	}
 	f.host.Logs().SecurityEvent(context.Background(), "deny", "forward_egress_denied",
 		"listener", f.name, "client_ip", client.String(), "user", textsafe.Clip64(user),
 		"destination", dest, "rule", textsafe.Clip64(d.Rule),
@@ -597,6 +605,16 @@ func (f *forwardServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // deny answers a refused request and records it. Policy refusals are
 // security events and count toward the forward_denied ban reason.
+// alerts says whether a refusal on this listener is worth a security event.
+//
+// The counters, the access line, the shadow ledger and the ban observation do not
+// go through here: this is the record alone, which is what alert_on_deny is named
+// for. An egress proxy is the listener the setting exists for -- a browser reaching
+// for a destination the policy does not carry is an ordinary afternoon, and an
+// estate that wants the refusals counted without an event for each of them is
+// making a reasonable choice rather than turning the policy off.
+func (f *forwardServer) alerts() bool { return f.alertOnDeny }
+
 func (f *forwardServer) deny(w http.ResponseWriter, r *http.Request, ip netip.Addr, user string, status int, reason string, start time.Time) {
 	h := f.host
 	dest := r.URL.Host
@@ -615,9 +633,14 @@ func (f *forwardServer) deny(w http.ResponseWriter, r *http.Request, ip netip.Ad
 	switch status {
 	case http.StatusForbidden:
 		h.Counters().ForwardDenied.Add(1)
-		h.Logs().SecurityEvent(r.Context(), "deny", "forward_"+reason, "listener", f.name, "client_ip", ip.String(), "user", user, "method", r.Method, "destination", dest)
+		// The ban ladder hears about this before alert_on_deny can silence
+		// the record: turning the log down is not a decision to stop
+		// responding.
 		if bl := h.Bans(); bl != nil {
 			bl.Observe(ip, "forward_denied")
+		}
+		if f.alerts() {
+			h.Logs().SecurityEvent(r.Context(), "deny", "forward_"+reason, "listener", f.name, "client_ip", ip.String(), "user", user, "method", r.Method, "destination", dest)
 		}
 	case http.StatusProxyAuthRequired:
 		if bl := h.Bans(); bl != nil {
@@ -917,10 +940,12 @@ func (f *forwardServer) plain(w http.ResponseWriter, r *http.Request, p *forward
 		if errors.Is(err, errBodyTooLarge) {
 			// The upload was cut at the size the rule names. What had already
 			// gone is gone; the rest did not follow it.
-			f.host.Logs().SecurityEvent(r.Context(), "deny", "forward_egress_denied",
-				"listener", f.name, "client_ip", ip.String(), "user", textsafe.Clip64(user),
-				"destination", r.URL.Host, "rule", textsafe.Clip64(overRule),
-				"comment", textsafe.Clip256(overComment), "detail", "undeclared body over the bound")
+			if f.alerts() {
+				f.host.Logs().SecurityEvent(r.Context(), "deny", "forward_egress_denied",
+					"listener", f.name, "client_ip", ip.String(), "user", textsafe.Clip64(user),
+					"destination", r.URL.Host, "rule", textsafe.Clip64(overRule),
+					"comment", textsafe.Clip256(overComment), "detail", "undeclared body over the bound")
+			}
 			if !f.shadowed("rule_deny", overRule+" -> "+r.URL.Host) {
 				f.deny(w, r, ip, user, http.StatusForbidden, "rule_deny", start)
 				return
@@ -979,11 +1004,13 @@ func (f *forwardServer) plain(w http.ResponseWriter, r *http.Request, p *forward
 			// names the rule: a truncated response with nothing saying why is a
 			// support call rather than a finding.
 			h.Counters().Refuse("forward", "rule_deny")
-			h.Logs().SecurityEvent(r.Context(), "deny", "forward_egress_denied",
-				"listener", f.name, "client_ip", ip.String(), "user", textsafe.Clip64(user),
-				"destination", r.URL.Host, "rule", textsafe.Clip64(byRule),
-				"comment", textsafe.Clip256(byComment),
-				"detail", "undeclared response body over the bound")
+			if f.alerts() {
+				h.Logs().SecurityEvent(r.Context(), "deny", "forward_egress_denied",
+					"listener", f.name, "client_ip", ip.String(), "user", textsafe.Clip64(user),
+					"destination", r.URL.Host, "rule", textsafe.Clip64(byRule),
+					"comment", textsafe.Clip256(byComment),
+					"detail", "undeclared response body over the bound")
+			}
 		}
 		// Cut the connection so the client sees a truncated response
 		// rather than a complete looking one.

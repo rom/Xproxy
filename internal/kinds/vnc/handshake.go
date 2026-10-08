@@ -31,12 +31,12 @@ func (se *session) clientHandshake() string {
 	}
 	cv, err := rfb.ReadVersion(se.client)
 	if err != nil {
-		t.deny(se.ip, "vnc_version", err.Error())
+		t.deny(se, "vnc_version", err.Error())
 		return "client_version"
 	}
 	v, ok := rfb.Negotiated(cv, rfb.V38)
 	if !ok {
-		t.deny(se.ip, "vnc_version", cv.String())
+		t.deny(se, "vnc_version", cv.String())
 		return "client_version"
 	}
 	se.clientVersion = v
@@ -62,7 +62,7 @@ func (se *session) clientHandshake() string {
 		// A client that picks something outside the list it was given
 		// is not confused, it is trying something.
 		t.engine.Counters().VNCRefused.Add(1)
-		t.deny(se.ip, "vnc_security_not_offered", rfb.SecurityName(chosen[0]))
+		t.deny(se, "vnc_security_not_offered", rfb.SecurityName(chosen[0]))
 		se.securityResult(false, "that security type was not offered")
 		return "security_not_offered"
 	}
@@ -167,7 +167,7 @@ func (se *session) clientAuth() string {
 func (se *session) clientVNCAuth() string {
 	if se.t.password == "" {
 		se.t.engine.Counters().VNCRefused.Add(1)
-		se.t.deny(se.ip, "vnc_auth_unconfigured", "")
+		se.t.deny(se, "vnc_auth_unconfigured", "")
 		return se.finishClientAuth(false, "authentication is not configured")
 	}
 	challenge := make([]byte, rfb.ChallengeSize)
@@ -187,7 +187,7 @@ func (se *session) clientVNCAuth() string {
 	}
 	if subtle.ConstantTimeCompare(got, want) != 1 {
 		se.t.engine.Counters().VNCRefused.Add(1)
-		se.t.deny(se.ip, "vnc_auth_failed", "")
+		se.t.deny(se, "vnc_auth_failed", "")
 		return se.finishClientAuth(false, "authentication failed")
 	}
 	return se.finishClientAuth(true, "")
@@ -220,7 +220,7 @@ func (se *session) clientVeNCrypt() string {
 		return "client_vencrypt"
 	}
 	if !slices.Contains(t.subtypes, sub) {
-		t.deny(se.ip, "vnc_subtype_not_offered", rfb.SubtypeName(sub))
+		t.deny(se, "vnc_subtype_not_offered", rfb.SubtypeName(sub))
 		return "subtype_not_offered"
 	}
 	se.clientSubtype = sub
@@ -231,7 +231,7 @@ func (se *session) clientVeNCrypt() string {
 		}
 		tc := tls.Server(se.client, t.tlsCfg)
 		if err := tc.HandshakeContext(context.Background()); err != nil {
-			t.deny(se.ip, "vnc_tls", err.Error())
+			t.deny(se, "vnc_tls", err.Error())
 			return "client_tls"
 		}
 		se.client = tc
@@ -290,10 +290,11 @@ func (se *session) namedCredential(user, secret string) string {
 	// to check them against.
 	if t.password == "" || subtle.ConstantTimeCompare([]byte(secret), []byte(t.password)) != 1 {
 		t.engine.Counters().VNCRefused.Add(1)
-		t.deny(se.ip, "vnc_auth_failed", textsafe.Clip64(user))
+		t.deny(se, "vnc_auth_failed", textsafe.Clip64(user))
 		return se.finishClientAuth(false, "authentication failed")
 	}
 	se.user = user
+	se.tap.User(user)
 	se.live.Annotate(user, "", "")
 	return se.finishClientAuth(true, "")
 }
@@ -309,7 +310,7 @@ func (se *session) clientAnonTLS() string {
 	t := se.t
 	tc := tls.Server(se.client, t.tlsCfg)
 	if err := tc.HandshakeContext(context.Background()); err != nil {
-		t.deny(se.ip, "vnc_tls", err.Error())
+		t.deny(se, "vnc_tls", err.Error())
 		return "client_tls"
 	}
 	se.client = tc

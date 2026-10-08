@@ -162,7 +162,15 @@ func (s *server) requestTimeout() time.Duration {
 	return 10 * time.Second
 }
 
-func (s *server) enforcing() bool { return !s.cfg.Shadowing() }
+func (s *server) enforcing() bool { return s.enforcement().Enforcing() }
+
+// enforcement folds this listener's reasons not to enforce into one answer, so
+// that the precedence, and the name a status view reports, are the same on
+// every kind.
+func (s *server) enforcement() config.Enforcement {
+	e := config.Enforcement{Shadow: s.cfg.Shadowing()}
+	return e
+}
 func (s *server) alerts() bool    { return on(s.m.AlertOnDeny) }
 func (s *server) answering() bool { return on(s.m.AnswerRefusals) }
 

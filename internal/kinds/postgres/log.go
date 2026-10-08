@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"net/netip"
 	"strings"
 
 	"github.com/rom/xproxy/internal/textsafe"
@@ -31,9 +30,16 @@ func (t *server) refused(se *session, d Decision, what string) {
 		t.wouldRefuse(se, d, what)
 		return
 	}
+	se.tap.Deny(d.Reason)
 	c := t.host.Counters()
 	c.Refuse("postgres", d.Reason)
 	t.log(se, d, what, "deny")
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
+	if bl := t.host.Bans(); bl != nil && se.ip.IsValid() {
+		bl.Observe(se.ip, "postgres_denied")
+	}
+
 	if !t.alerts() {
 		return
 	}
@@ -64,9 +70,6 @@ func (t *server) refused(se *session, d Decision, what string) {
 		attrs = append(attrs, "detail", textsafe.Clip64(d.Detail))
 	}
 	t.host.Logs().SecurityEvent(context.Background(), "deny", "postgres_"+d.Reason, attrs...)
-	if bl := t.host.Bans(); bl != nil && se.ip.IsValid() {
-		bl.Observe(se.ip, "postgres_denied")
-	}
 }
 
 // wouldRefuse records a decision that is not being enforced, for a caller that
@@ -89,9 +92,17 @@ func (t *server) wouldRefuse(se *session, d Decision, what string) {
 // client that may not connect, a message the reader could not frame, a bound.
 // None of these is ever shadowed, because each means the relay does not know
 // what it would be forwarding.
-func (t *server) deny(ip netip.Addr, reason, detail string) {
+func (t *server) deny(se *session, reason, detail string) {
+	ip := se.ip
+	se.tap.Deny(reason)
 	c := t.host.Counters()
 	c.Refuse("postgres", reason)
+	// The ban ladder hears about this before alert_on_deny can silence the
+	// record below: turning the log down is not a decision to stop responding.
+	if bl := t.host.Bans(); bl != nil && ip.IsValid() {
+		bl.Observe(ip, "postgres_denied")
+	}
+
 	if !t.alerts() {
 		return
 	}
@@ -101,9 +112,6 @@ func (t *server) deny(ip netip.Addr, reason, detail string) {
 		attrs = append(attrs, "detail", textsafe.Clip64(detail))
 	}
 	t.host.Logs().SecurityEvent(context.Background(), "deny", "postgres_"+reason, attrs...)
-	if bl := t.host.Bans(); bl != nil && ip.IsValid() {
-		bl.Observe(ip, "postgres_denied")
-	}
 }
 
 // log writes the access record.
@@ -134,3 +142,19 @@ func (t *server) log(se *session, d Decision, what, action string) {
 }
 
 func argsOf(a []any) []any { return a }
+
+// allowed writes the access line for a statement this relay forwarded.
+//
+// Off unless log_requests asks for it, because a busy database is a great many
+// lines a second. The refusal line above is written either way: a refusal is rare
+// and it is the one line nobody would choose to lose.
+//
+// It carries the statement kind rather than the text, for the reason the refusal
+// record gives: the kind is what the policy decided about, and the text is the
+// data.
+func (t *server) allowed(se *session, what string) {
+	if !t.pc.LogRequests {
+		return
+	}
+	t.log(se, Decision{Allow: true}, what, "allow")
+}

@@ -160,6 +160,42 @@ func (v *validator) icapRef(p, name string) {
 	v.errf("%s: no icap service named %q; configured: %s", p, name, strings.Join(have, ", "))
 }
 
+// enforcementSources advises on a listener that says the same thing twice.
+//
+// Three settings switch enforcement off and they belong to different layers, so
+// a listener can carry two or three of them at once. That loads and behaves
+// correctly -- Enforcement folds them with one precedence -- but it leaves an
+// operator turning one off and finding the listener still refuses nothing,
+// which is how a shadow run becomes permanent. Saying so at load is cheaper
+// than finding out.
+func (v *validator) enforcementSources(p string, ln *Listener) {
+	shadow := ln.Shadowing()
+	sec := kindSectionValue(ln)
+	mon := sectionBool(sec, "monitor_only")
+	learnOn := sectionNestedBool(sec, "learn", "enabled")
+	learnEnforce := sectionNestedBool(sec, "learn", "enforce")
+	// iec104's monitor_only is the protocol's monitor direction and refuses
+	// every command rather than permitting them, so it is not one of these.
+	if ln.Kind == "iec104" {
+		mon = false
+	}
+	var set []string
+	if shadow {
+		set = append(set, "policy.mode: shadow")
+	}
+	if mon {
+		set = append(set, "monitor_only")
+	}
+	if learnOn && !learnEnforce {
+		set = append(set, "learn without enforce")
+	}
+	if len(set) > 1 {
+		v.warnf("%s: %s all stop this listener enforcing, so turning one off changes nothing; xproxyctl listeners reports the mode as %q",
+			p, strings.Join(set, " and "), Enforcement{Shadow: shadow, MonitorOnly: mon,
+				Learning: learnOn, LearnEnforce: learnEnforce}.Mode())
+	}
+}
+
 func (v *validator) errf(format string, args ...interface{}) {
 	v.problems = append(v.problems, fmt.Sprintf(format, args...))
 }
@@ -1152,6 +1188,7 @@ func (v *validator) server(s *Server) {
 				v.errf("%s.policy.mode: must be enforce or shadow", p)
 			}
 		}
+		v.enforcementSources(p, ln)
 		if ln.FTP != nil && ln.Kind != "ftp" {
 			v.errf("%s.ftp: set on a %s listener (kind: ftp)", p, ln.Kind)
 		}
@@ -3114,9 +3151,18 @@ func (v *validator) capture(c *Capture, routes map[string]bool) {
 			"with xproxyctl capture start and off again")
 	}
 	names := map[string]bool{}
+	var sessionRules int
 	for i := range c.Rules {
 		r := &c.Rules[i]
 		q := fmt.Sprintf("%s.rules[%d]", p, i)
+		if len(r.Listeners) > 0 || len(r.Kinds) > 0 {
+			sessionRules++
+		}
+		for j, k := range r.Kinds {
+			if _, ok := listener.RoleOf(strings.ToLower(strings.TrimSpace(k))); !ok {
+				v.errf("%s.kinds[%d]: %q is not a listener kind", q, j, k)
+			}
+		}
 		if r.Name != "" {
 			if names[r.Name] {
 				v.errf("%s.name: duplicate %q", q, r.Name)
@@ -3161,6 +3207,15 @@ func (v *validator) capture(c *Capture, routes map[string]bool) {
 		if r.MaxFlows < 0 || r.MaxFlows > 10_000_000 {
 			v.errf("%s.max_flows: must be between 0 and 10000000", q)
 		}
+	}
+	// A session is payload: there is no head to keep the way an HTTP request
+	// has one, so `bodies: false` records nothing at all for a relayed or gated
+	// session. Saying so beats an operator starting a capture for a database
+	// listener and finding an empty file.
+	if sessionRules > 0 && !c.Bodies {
+		v.warnf("capture has %d rule(s) selecting sessions by listener or kind, and capture.bodies is off: "+
+			"a session is payload rather than a head, so nothing is recorded for one. Set bodies: true "+
+			"(with a redact list) to capture sessions", sessionRules)
 	}
 }
 

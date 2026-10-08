@@ -113,7 +113,15 @@ func (t *server) reading() bool { return len(t.secret) > 0 }
 
 // enforcing reports whether this listener acts on its policy or only
 // records what it would have done.
-func (t *server) enforcing() bool { return !t.r.MonitorOnly && !t.cfg.Shadowing() }
+func (t *server) enforcing() bool { return t.enforcement().Enforcing() }
+
+// enforcement folds this listener's reasons not to enforce into one answer, so
+// that the precedence, and the name a status view reports, are the same on
+// every kind.
+func (t *server) enforcement() config.Enforcement {
+	e := config.Enforcement{Shadow: t.cfg.Shadowing(), MonitorOnly: t.r.MonitorOnly}
+	return e
+}
 
 // maxMessage is the largest datagram this listener will read.
 func (t *server) maxMessage() int {

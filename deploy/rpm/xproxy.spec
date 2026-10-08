@@ -230,6 +230,7 @@ install -D -m 0644 docs/man/xgate.8      %{buildroot}%{_mandir}/man8/xgate.8
 install -D -m 0644 docs/man/xrelay.8     %{buildroot}%{_mandir}/man8/xrelay.8
 install -D -m 0644 docs/man/xot.8        %{buildroot}%{_mandir}/man8/xot.8
 install -D -m 0644 docs/man/xproxyctl.8   %{buildroot}%{_mandir}/man8/xproxyctl.8
+install -D -m 0644 docs/man/xproxy-admin.8 %{buildroot}%{_mandir}/man8/xproxy-admin.8
 install -D -m 0644 docs/man/xproxy-replay.8 %{buildroot}%{_mandir}/man8/xproxy-replay.8
 install -D -m 0644 docs/man/xproxy-simulate.8 %{buildroot}%{_mandir}/man8/xproxy-simulate.8
 install -D -m 0644 docs/man/xproxy-fleet.8 %{buildroot}%{_mandir}/man8/xproxy-fleet.8
@@ -424,6 +425,7 @@ fi
 %files admin
 %{_bindir}/xproxy-admin
 %{_unitdir}/xproxy-admin.service
+%{_mandir}/man8/xproxy-admin.8*
 
 %files fleet
 %{_bindir}/xproxy-fleet

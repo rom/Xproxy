@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/netip"
 	"sync"
 	"time"
 
@@ -88,7 +87,8 @@ func newServer(host proxy.Host, cfg config.Listener, ln net.Listener, tlsCfg *tl
 // arrive in the SASL exchange, which has not happened. So this decides on the
 // address, the listener, the pool and the hour, and a rule naming users matches
 // nobody at this point. The name gets its own question in admitUser below.
-func (t *server) admitClient(ip netip.Addr) string {
+func (t *server) admitClient(se *session) string {
+	ip := se.ip
 	h := t.host
 	return admit.Client(admit.Deps{
 		Lists: h.ThreatIntel(),
@@ -110,7 +110,7 @@ func (t *server) admitClient(ip netip.Addr) string {
 			h.Counters().WouldRefuse("amqp", reason)
 			h.Shadow().Record("amqp", t.name, reason, rule, detail)
 		},
-		Deny: func(reason, _, detail string) { t.deny(ip, reason, detail) },
+		Deny: func(reason, _, detail string) { t.deny(se, reason, detail) },
 	})
 }
 
@@ -158,11 +158,19 @@ func (t *server) admitUser(se *session) string {
 			h.Counters().WouldRefuse("amqp", reason)
 			h.Shadow().Record("amqp", t.name, reason, rule, detail)
 		},
-		Deny: func(reason, _, detail string) { t.deny(se.ip, reason, detail) },
+		Deny: func(reason, _, detail string) { t.deny(se, reason, detail) },
 	})
 }
 
-func (t *server) enforcing() bool { return !t.ac.MonitorOnly && !t.cfg.Shadowing() }
+func (t *server) enforcing() bool { return t.enforcement().Enforcing() }
+
+// enforcement folds this listener's reasons not to enforce into one answer, so
+// that the precedence, and the name a status view reports, are the same on
+// every kind.
+func (t *server) enforcement() config.Enforcement {
+	e := config.Enforcement{Shadow: t.cfg.Shadowing(), MonitorOnly: t.ac.MonitorOnly}
+	return e
+}
 
 func (t *server) serve() {
 	for {
@@ -209,13 +217,23 @@ func (t *server) handle(c net.Conn) {
 	defer func() { _ = c.Close() }()
 	ip := netutil.AddrOf(c.RemoteAddr().String())
 	se := newSession(t, c, ip)
+	// Opened before anything can refuse the session, because a refused session is
+	// the one an operator most often wants and it never dials: after that point
+	// there is nothing left to record. A nil tap wraps nothing and writes nothing.
+	se.tap = t.host.Capture().Open("amqp", t.name, "", c.RemoteAddr())
+	defer se.tap.Close()
 
 	if t.tlsCfg != nil {
 		if err := t.upgradeClient(se); err != nil {
-			t.deny(ip, "tls_handshake", err.Error())
+			t.deny(se, "tls_handshake", err.Error())
 			return
 		}
 	}
+	// Wrapped after the handshake rather than before it, so the capture holds the
+	// protocol and not the TLS records carrying it. On a listener with no
+	// certificate this is the socket itself.
+	se.client = se.tap.Client(se.client)
+
 	if d := t.policy.Connect(se.sess()); !d.Allow {
 		t.refused(se, d, "connect")
 		return
@@ -224,7 +242,7 @@ func (t *server) handle(c net.Conn) {
 	// kind's own client list -- that is local policy about local clients, and a
 	// feed must not overrule an allow rule an operator wrote -- and before the
 	// broker is dialled.
-	if t.admitClient(ip) != "" {
+	if t.admitClient(se) != "" {
 		return
 	}
 	if !t.admit(se) {
@@ -242,7 +260,7 @@ func (t *server) handle(c net.Conn) {
 	se.cliReader = wire.NewReader(se.client, t.policy.MaxFrame())
 	h, err := se.cliReader.Header()
 	if err != nil {
-		t.deny(ip, "no_protocol_header", err.Error())
+		t.deny(se, "no_protocol_header", err.Error())
 		return
 	}
 	_ = se.client.SetReadDeadline(time.Time{})
@@ -260,15 +278,15 @@ func (t *server) handle(c net.Conn) {
 
 	up, err := t.dial(se)
 	if err != nil {
-		t.deny(ip, "upstream_unavailable", err.Error())
+		t.deny(se, "upstream_unavailable", err.Error())
 		return
 	}
 	defer func() { _ = up.Close() }()
-	se.up = up
+	se.up = se.tap.Upstream(up)
 	se.upReader = wire.NewReader(up, t.policy.MaxFrame())
 	se.upReader.SetVersion(h.Version())
 	if err := se.writeUp(h.Bytes()); err != nil {
-		t.deny(ip, "upstream_unavailable", err.Error())
+		t.deny(se, "upstream_unavailable", err.Error())
 		return
 	}
 	t.relay(se)
@@ -282,7 +300,7 @@ func (t *server) handle(c net.Conn) {
 func (t *server) admit(se *session) bool {
 	ok, reason := t.gate.Enter(se.ip)
 	if !ok {
-		t.deny(se.ip, reason, "")
+		t.deny(se, reason, "")
 	}
 	return ok
 }

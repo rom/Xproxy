@@ -520,7 +520,7 @@ func (se *session) serveDecoy() string {
 		if max > 0 && len(frame.Raw) > max {
 			t.host.Counters().IEC104Malformed.Add(1)
 			t.host.Counters().Refuse("iec104", "frame_too_long")
-			t.deny(se.ip, "iec104_frame_too_long", itoa(len(frame.Raw)))
+			t.deny(se, "iec104_frame_too_long", itoa(len(frame.Raw)))
 			return "iec104_frame_too_long"
 		}
 		if err := se.answerDecoy(as, frame); err != nil {
