@@ -852,11 +852,12 @@ func run(args []string, out, errOut io.Writer) int {
 		cfs := flag.NewFlagSet("capture", flag.ContinueOnError)
 		cfs.SetOutput(errOut)
 		dur := cfs.Duration("duration", 0, "how long to record; the configured max_duration when unset")
-		if err := cfs.Parse(fs.Args()[1:]); err != nil {
+		sub, ok := parseAfterWord(cfs, fs.Args()[1:])
+		if !ok {
 			return 2
 		}
 		var on *bool
-		switch cfs.Arg(0) {
+		switch sub {
 		case "", "status":
 		case "start":
 			v := true
@@ -905,10 +906,11 @@ func run(args []string, out, errOut io.Writer) int {
 		ofs.SetOutput(errOut)
 		host := ofs.String("host", "", "Host header to send (default: the endpoint host)")
 		path := ofs.String("path", "/", "request path to probe")
-		if err := ofs.Parse(fs.Args()[1:]); err != nil {
+		which, ok := parseAfterWord(ofs, fs.Args()[1:])
+		if !ok {
 			return 2
 		}
-		res, err := c.OriginCheck(ofs.Arg(0), *host, *path)
+		res, err := c.OriginCheck(which, *host, *path)
 		if err != nil {
 			return fail(err)
 		}
@@ -1675,6 +1677,30 @@ func run(args []string, out, errOut io.Writer) int {
 		usage(errOut)
 		return 2
 	}
+}
+
+// parseAfterWord parses args, and when the first of them is a word rather
+// than a flag it parses what follows the word again.
+//
+// It exists because several commands document the subcommand before its flags
+// -- `capture start -duration 5m`, `origin-check app -host h` -- and the flag
+// package stops at the first argument that is not a flag. Without this the
+// flag is silently ignored, which for a capture means recording somebody's
+// traffic for the configured maximum rather than for the five minutes that
+// were asked for. The word is returned; the flags are in the flag set either
+// way, so a caller can take them in whichever order they arrived.
+func parseAfterWord(fs *flag.FlagSet, args []string) (string, bool) {
+	if err := fs.Parse(args); err != nil {
+		return "", false
+	}
+	rest := fs.Args()
+	if len(rest) == 0 {
+		return "", true
+	}
+	if err := fs.Parse(rest[1:]); err != nil {
+		return "", false
+	}
+	return rest[0], true
 }
 
 func printJSON(out io.Writer, v any) int {
