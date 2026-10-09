@@ -231,14 +231,3 @@ func (c *amqpEvents) find(t *testing.T, reason string) amqpEvent {
 	t.Fatalf("no %s event; saw %+v", reason, c.events)
 	return amqpEvent{}
 }
-
-func (c *amqpEvents) seen(reason string) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for _, e := range c.events {
-		if e.reason == reason {
-			return true
-		}
-	}
-	return false
-}
