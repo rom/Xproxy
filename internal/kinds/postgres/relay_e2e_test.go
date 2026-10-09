@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"crypto/tls"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -36,6 +37,10 @@ type fakeServer struct {
 	// to the server is a decision of its own.
 	sslAsked  int
 	sslAnswer byte
+	// sslCfg is the certificate this fake serves once it has answered the
+	// request with 'S'. Without it an answer of 'S' is a server that offered
+	// an upgrade it cannot perform, which is its own test.
+	sslCfg *tls.Config
 	// authRequest is the authentication method the server asks for.
 	authRequest int32
 	cancels     int
@@ -87,10 +92,17 @@ func (s *fakeServer) session(c net.Conn) {
 		case wire.SSLRequest:
 			s.mu.Lock()
 			s.sslAsked++
-			ans := s.sslAnswer
+			ans, cfg := s.sslAnswer, s.sslCfg
 			s.mu.Unlock()
 			if _, err := c.Write([]byte{ans}); err != nil {
 				return
+			}
+			if ans == wire.AllowTLS && cfg != nil {
+				tc := tls.Server(c, cfg)
+				if err := tc.Handshake(); err != nil {
+					return
+				}
+				c, rd = tc, wire.NewReader(tc, wire.FromClient, 0)
 			}
 			continue
 		case wire.CancelRequest:

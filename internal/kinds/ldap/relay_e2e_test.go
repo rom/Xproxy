@@ -35,6 +35,11 @@ type directory struct {
 	serverTLS *tls.Config
 	// startTLS makes it answer the StartTLS extended operation and upgrade.
 	startTLS bool
+	// startTLSCfg is the certificate the in-band upgrade presents. It is
+	// separate from serverTLS because serverTLS makes the directory expect
+	// TLS from the first octet, which is the other transport entirely: a
+	// directory that upgrades in band is in clear until it does.
+	startTLSCfg *tls.Config
 	// mute answers nothing at all, which is a directory that is reachable
 	// and not talking.
 	mute bool
@@ -139,7 +144,11 @@ func (d *directory) serve(t *testing.T, c net.Conn) {
 				continue
 			}
 			_, _ = c.Write(wire.StartTLSResponse(m.ID, wire.ResultSuccess, ""))
-			tc := tls.Server(c, d.serverTLS)
+			cfg := d.startTLSCfg
+			if cfg == nil {
+				cfg = d.serverTLS
+			}
+			tc := tls.Server(c, cfg)
 			if err := tc.Handshake(); err != nil {
 				return
 			}
