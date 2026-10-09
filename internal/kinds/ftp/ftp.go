@@ -459,13 +459,21 @@ func (t *server) handle(client net.Conn) {
 	// session an operator wants to see and be able to close. Closing the
 	// client's socket is what ends it; the kind closes the target's leg in
 	// its own deferred work.
+	//
+	// The socket is taken by value for the two closures that end the
+	// session from elsewhere -- an operator killing it, the session
+	// bound expiring. client itself is replaced below, by the TLS
+	// server and then by the capture tap, and a closure reading the
+	// variable would be racing this goroutine for it. Closing the
+	// socket underneath ends the session whatever is wrapped round it.
+	sock := client
 	se.live = s.Sessions().Register(sessions.Info{
 		Kind: "ftp", Listener: t.cfg.Name, Client: client.RemoteAddr().String(),
-	}, func() { _ = client.Close() })
+	}, func() { _ = sock.Close() })
 	defer se.live.Done()
 	se.tap.Name(se.live.ID)
 	if t.f.SessionTimeout > 0 {
-		timer := time.AfterFunc(t.f.SessionTimeout.D(), func() { _ = client.Close() })
+		timer := time.AfterFunc(t.f.SessionTimeout.D(), func() { _ = sock.Close() })
 		defer timer.Stop()
 	}
 	if t.f.TLSMode == "implicit" {
@@ -1499,30 +1507,42 @@ func (se *session) moveData(d *dataConn, c wire.Command, upload bool) (int64, st
 	}
 	defer func() { _ = far.Close() }()
 
+	// Which side is which is not which side connected: on a passive
+	// transfer the client dials in and the proxy dials the server, and
+	// on an active one it is the other way round. Everything below is
+	// about the client's leg and the server's leg, so they are named
+	// that way here -- a transfer relayed by who connected moves the
+	// file backwards in active mode, and protects the wrong leg with
+	// the wrong certificate.
+	client, server := near, far
+	if d.active {
+		client, server = far, near
+	}
+
 	// The proxy is one end of both connections, so it is also the one
 	// that protects them. A session that asked for PROT P gets TLS on
 	// both sides rather than an opaque tunnel, which is what keeps the
 	// transfer both private and readable here.
 	if se.prot == "P" {
 		if se.secure && se.t.tlsCfg != nil {
-			tc := tls.Server(near, se.t.tlsCfg)
+			tc := tls.Server(client, se.t.tlsCfg)
 			if err := tc.HandshakeContext(context.Background()); err != nil {
 				return 0, "the data connection would not start TLS"
 			}
-			near = tc
+			client = tc
 		}
 		if se.t.upTLS != nil {
-			tc := tls.Client(far, se.upstreamTLS(se.ep))
+			tc := tls.Client(server, se.upstreamTLS(se.ep))
 			if err := tc.HandshakeContext(context.Background()); err != nil {
 				return 0, "the server's data connection would not start TLS"
 			}
-			far = tc
+			server = tc
 		}
 	}
 
-	src, dst := near, far
+	src, dst := client, server
 	if !upload {
-		src, dst = far, near
+		src, dst = server, client
 	}
 	var scan *streamscan.Stream
 	if upload && se.policy.yara != nil {

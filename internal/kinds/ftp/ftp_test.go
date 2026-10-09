@@ -6,6 +6,7 @@ import (
 
 	"bufio"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	_ "github.com/rom/xproxy/internal/kinds/ftp"
 	"io"
@@ -29,6 +30,10 @@ type targetFTP struct {
 	stored string
 	// tls, when set, is what the target upgrades to on AUTH TLS.
 	tls *tls.Config
+	// dataTLS, when set, is what the target expects on its data
+	// connections, which is what a server does once a session has
+	// asked for PROT P.
+	dataTLS *tls.Config
 	// expectProxy makes the target read a PROXY protocol v2 header
 	// before the session. The real thing does not sniff for one: a
 	// server that reads the header only when it sees it lets a client
@@ -123,11 +128,32 @@ func (tg *targetFTP) serve(c net.Conn) {
 		return
 	}
 	var dataLn net.Listener
+	var active string
 	defer func() {
 		if dataLn != nil {
 			_ = dataLn.Close()
 		}
 	}()
+	// open is the server's side of the next transfer: a connection it
+	// accepts on the port it announced, or one it dials where an active
+	// transfer told it to.
+	open := func() (net.Conn, error) {
+		if active != "" {
+			to := active
+			active = ""
+			return net.DialTimeout("tcp", to, 5*time.Second)
+		}
+		if dataLn == nil {
+			return nil, errors.New("no data connection")
+		}
+		dc, err := dataLn.Accept()
+		_ = dataLn.Close()
+		dataLn = nil
+		if err != nil {
+			return nil, err
+		}
+		return dc, nil
+	}
 	for {
 		line, err := br.ReadString('\n')
 		if err != nil {
@@ -177,38 +203,50 @@ func (tg *targetFTP) serve(c net.Conn) {
 			_, port := splitHostPortForTest(tg.t, l.Addr().String())
 			write(fmt.Sprintf("229 Entering Extended Passive Mode (|||%d|)\r\n", port))
 		case "PORT", "EPRT":
+			// An active transfer is the server dialling out, so what the
+			// proxy names here is where the next transfer goes.
+			a, ok := activeTarget(strings.ToUpper(verb), arg)
+			if !ok {
+				write("501 unreadable address\r\n")
+				continue
+			}
+			active = a
 			write("200 ok\r\n")
 		case "RETR", "LIST", "NLST", "MLSD":
-			if dataLn == nil {
+			if dataLn == nil && active == "" {
 				write("425 no data connection\r\n")
 				continue
 			}
 			write("150 opening data connection\r\n")
-			dc, err := dataLn.Accept()
+			dc, err := open()
 			if err != nil {
+				write("426 failed\r\n")
+				continue
+			}
+			if dc, err = tg.protect(dc); err != nil {
 				write("426 failed\r\n")
 				continue
 			}
 			_, _ = io.WriteString(dc, tg.content)
 			_ = dc.Close()
-			_ = dataLn.Close()
-			dataLn = nil
 			write("226 transfer complete\r\n")
 		case "STOR", "APPE", "STOU":
-			if dataLn == nil {
+			if dataLn == nil && active == "" {
 				write("425 no data connection\r\n")
 				continue
 			}
 			write("150 opening data connection\r\n")
-			dc, err := dataLn.Accept()
+			dc, err := open()
 			if err != nil {
+				write("426 failed\r\n")
+				continue
+			}
+			if dc, err = tg.protect(dc); err != nil {
 				write("426 failed\r\n")
 				continue
 			}
 			b, _ := io.ReadAll(dc)
 			_ = dc.Close()
-			_ = dataLn.Close()
-			dataLn = nil
 			<-tg.mu
 			tg.stored = string(b)
 			tg.mu <- struct{}{}
@@ -247,6 +285,36 @@ func (tg *targetFTP) serve(c net.Conn) {
 			write("502 not implemented: " + arg + "\r\n")
 		}
 	}
+}
+
+// activeTarget reads the address a PORT or EPRT names, in the two
+// spellings FTP has for one.
+func activeTarget(verb, arg string) (string, bool) {
+	if verb == "PORT" {
+		var h1, h2, h3, h4, p1, p2 int
+		if _, err := fmt.Sscanf(arg, "%d,%d,%d,%d,%d,%d", &h1, &h2, &h3, &h4, &p1, &p2); err != nil {
+			return "", false
+		}
+		return fmt.Sprintf("%d.%d.%d.%d:%d", h1, h2, h3, h4, p1<<8|p2), true
+	}
+	parts := strings.Split(arg, "|")
+	if len(parts) < 4 {
+		return "", false
+	}
+	return net.JoinHostPort(parts[2], parts[3]), true
+}
+
+// protect wraps a data connection the way a server does when the
+// session asked for PROT P, and leaves it alone otherwise.
+func (tg *targetFTP) protect(dc net.Conn) (net.Conn, error) {
+	if tg.dataTLS == nil {
+		return dc, nil
+	}
+	tc := tls.Server(dc, tg.dataTLS)
+	if err := tc.Handshake(); err != nil {
+		return nil, err
+	}
+	return tc, nil
 }
 
 func splitHostPortForTest(t *testing.T, addr string) (string, int) {

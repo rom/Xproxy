@@ -117,6 +117,15 @@ func (se *session) scanTransfer(svc *icap.Service, src io.Reader, path string, u
 			return icapDecision{head: b, scanned: true}, nil
 		}
 	}
+	// An encapsulated HTTP error is how a service refuses a download:
+	// RESPMOD has no "replaced" shape of its own, so the block page
+	// comes back as the response. An FTP client cannot be handed an
+	// HTTP error, and delivering the page as the file would be a
+	// refused transfer reported as a finished one, so the transfer is
+	// cut here instead.
+	if v.Kind == icap.ModifiedResponse && v.Response != nil && v.Response.StatusCode >= 400 {
+		return icapDecision{blocked: se.icapBlockReason(v), head: body, scanned: true}, nil
+	}
 	if v.Kind == icap.ModifiedResponse && v.Response != nil && v.Response.Body != nil {
 		b, rerr := io.ReadAll(io.LimitReader(v.Response.Body, limit))
 		_ = v.Response.Body.Close()
@@ -211,10 +220,11 @@ func (se *session) scanned(svc *icap.Service, dst io.Writer, src io.Reader, c wi
 	}
 	// What was held goes out now, through the same bounds a streamed
 	// transfer passes: the size limit and the rule set still apply.
-	total, reason := se.copyData(dst, bytes.NewReader(d.head), scan)
-	if reason != "" {
-		return total, reason
-	}
-	n, reason := se.copyData(dst, src, scan)
-	return total + n, reason
+	//
+	// Held bytes and the rest are one stream, not two copies: copyData
+	// closes its side of the write when its source ends, so copying the
+	// held part on its own would end the transfer before the remainder
+	// -- everything past max_body on a bypassed file -- had been sent,
+	// and the client and the server would both be told it finished.
+	return se.copyData(dst, io.MultiReader(bytes.NewReader(d.head), src), scan)
 }
