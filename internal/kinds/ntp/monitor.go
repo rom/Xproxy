@@ -146,14 +146,22 @@ func (m *Monitor) round() {
 			continue
 		}
 		switch {
+		// The kiss first, because it is the more specific reading of the
+		// same packet and the two overlap: RFC 5905 section 7.4 has a
+		// kiss-o'-death carry leap indicator 3, so a conforming server
+		// being asked to slow down looks unsynchronised as well. Reading
+		// it that way round reported a source that is *refusing* us as a
+		// source whose clock is wrong, which sends an operator to look at
+		// the wrong thing -- stratum 0 is unambiguous, and the four
+		// reference octets say which kiss it is.
+		case pkt.KissOfDeath():
+			m.fail(i, b, StateUnreachable, "kiss-o'-death: "+pkt.KissCode())
+			continue
 		case pkt.Unsynchronised():
 			m.fail(i, b, StateUnsynchronised, "the server says its clock is not synchronised")
 			continue
 		case pkt.Stratum >= 16:
 			m.fail(i, b, StateUnsynchronised, fmt.Sprintf("stratum %d", pkt.Stratum))
-			continue
-		case pkt.KissOfDeath():
-			m.fail(i, b, StateUnreachable, "kiss-o'-death: "+pkt.KissCode())
 			continue
 		}
 		// The probe is also a measurement of what this server is, and
