@@ -11,7 +11,7 @@ it, what each layer is responsible for and what is added in later phases.
 | `make test` | Unit and integration tests |
 | `make test-race` | Same under the race detector (the CI default) |
 | `make cover` | Coverage profile under race with cross-package instrumentation; prints total |
-| `make cover-gate` | `make cover` then the gate: core packages at least 80 % together, none below 60 % (`COVER_MIN`, `COVER_FLOOR`) |
+| `make cover-gate` | `make cover` then the gate: core packages at least 80 % together, none below 85 % (`COVER_MIN`, `COVER_FLOOR`) |
 | `make mutate` | Mutation testing with gremlins on `limits`, `router` and `netutil` (`.gremlins.yaml` sets the thresholds) |
 | `make fuzz FUZZTIME=30s` | Runs every `Fuzz*` target for the given budget |
 | `make lint` | `golangci-lint` with the configuration in `.golangci.yml`. The binary has to be built with a Go at least as new as `go.mod`'s directive, or it refuses to load the configuration: `GOTOOLCHAIN=go1.26.0 go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.5.0` builds one |
@@ -502,7 +502,18 @@ CI (`.github/workflows/ci.yml`) on every push and pull request.
 `internal/kinds/http` counts towards the packages it exercises, and runs under
 the race detector. `make cover-gate` then applies two rules through
 `test/covergate`: the core packages together must reach 80 %, and no
-single package may fall below 60 %. Both numbers are Makefile variables.
+single package may fall below 85 %. Both numbers are Makefile variables.
+
+The floor is the rule that does the work. A total is held up by whatever is
+easy to cover, so a parser nobody has driven can sit at half of it without the
+figure moving; the floor is what makes that one package fail the build. It was
+60 % for as long as some packages were there, and it is 85 % now because every
+gated package has been taken past it -- which means the margin is thin. A
+package whose own tests only just clear the floor is one to look at before
+adding to it: the gate reads the union of every test binary, so a figure that
+depends on another package's tests reaching into it is a figure that moves with
+the scheduler.
+
 Excluded from the gate: every `main` package except `cmd/xproxyctl`,
 the test fakes (`acmetest`, `icaptest`, `filtertest`, `testutil`),
 `version` and the `filters` registration list, and `sandbox`, whose
@@ -552,9 +563,12 @@ packages' tests reach in it):
 | `internal/textsafe` | 100 % | 27 |
 | `internal/safe` | 100 % | 15 |
 | `internal/paths` | 100 % | 3 |
+| `internal/listener` | 100 % | 62 |
+| `internal/streamscan` | 100 % | 40 |
 | `internal/qr` | 99 % | 279 |
 | `internal/pop3` | 99 % | 150 |
-| `internal/schedule` | 99 % | 66 |
+| `internal/fakeshell` | 99 % | 275 |
+| `internal/schedule` | 98 % | 66 |
 | `internal/deception` | 98 % | 111 |
 | `internal/shadow` | 98 % | 54 |
 | `internal/engineering` | 98 % | 96 |
@@ -575,13 +589,15 @@ packages' tests reach in it):
 | `internal/config/schema/schemagen` | 96 % | 159 |
 | `internal/attack` | 96 % | 113 |
 | `internal/sessions` | 96 % | 88 |
+| `internal/kerberos` | 96 % | 757 |
+| `internal/replay` | 96 % | 558 |
 | `internal/originsig` | 95 % | 84 |
 | `internal/authorization` | 95 % | 144 |
 | `internal/filters/apiabuse` | 95 % | 203 |
 | `internal/jsonschema` | 95 % | 362 |
 | `internal/metrics` | 95 % | 295 |
-| `internal/acme/jose` | 95 % | 55 |
-| `internal/respwire` | 95 % | 253 |
+| `internal/acme/jose` | 94 % | 55 |
+| `internal/respwire` | 94 % | 253 |
 | `internal/filter` | 94 % | 140 |
 | `internal/passwd` | 94 % | 69 |
 | `internal/siv` | 94 % | 115 |
@@ -590,10 +606,9 @@ packages' tests reach in it):
 | `internal/ntske` | 94 % | 365 |
 | `internal/ntlm` | 94 % | 157 |
 | `internal/eax` | 94 % | 78 |
-| `internal/relay` | 94 % | 62 |
 | `internal/filters/formguard` | 94 % | 139 |
+| `internal/geoip` | 94 % | 296 |
 | `internal/tui` | 93 % | 764 |
-| `internal/geoip` | 93 % | 296 |
 | `internal/challenge` | 93 % | 380 |
 | `internal/dhcp` | 93 % | 299 |
 | `internal/imap` | 93 % | 383 |
@@ -602,6 +617,10 @@ packages' tests reach in it):
 | `internal/ftp` | 93 % | 177 |
 | `internal/capture` | 93 % | 557 |
 | `internal/filters/headerguard` | 93 % | 54 |
+| `internal/tracing` | 93 % | 164 |
+| `internal/telnet` | 93 % | 102 |
+| `internal/kinds/smtp` | 93 % | 519 |
+| `internal/relay` | 92 % | 62 |
 | `internal/filters/oidc` | 92 % | 482 |
 | `internal/upstream` | 92 % | 1287 |
 | `internal/sqlkind` | 92 % | 282 |
@@ -615,7 +634,7 @@ packages' tests reach in it):
 | `internal/waf` | 92 % | 845 |
 | `internal/filters/sensitive` | 92 % | 551 |
 | `internal/tacacs` | 92 % | 375 |
-| `internal/tracing` | 92 % | 164 |
+| `internal/yara` | 92 % | 777 |
 | `internal/modbus` | 91 % | 592 |
 | `internal/filters/ldapauth` | 91 % | 172 |
 | `internal/filters/openapi` | 91 % | 748 |
@@ -624,12 +643,12 @@ packages' tests reach in it):
 | `internal/filters/graphql` | 91 % | 473 |
 | `internal/filters/wasm` | 91 % | 376 |
 | `internal/ldap/ldaptest` | 91 % | 170 |
-| `internal/grpcmsg` | 91 % | 116 |
-| `internal/filters/uploadguard` | 91 % | 295 |
-| `internal/icap` | 91 % | 398 |
+| `internal/rdp` | 91 % | 985 |
+| `internal/mgmt` | 91 % | 1104 |
+| `internal/grpcmsg` | 90 % | 116 |
+| `internal/filters/uploadguard` | 90 % | 295 |
+| `internal/icap` | 90 % | 398 |
 | `internal/filters/bodyrewrite` | 90 % | 125 |
-| `internal/rdp` | 90 % | 985 |
-| `internal/mgmt` | 90 % | 1104 |
 | `internal/keysource` | 90 % | 375 |
 | `internal/filters/xmlguard` | 90 % | 121 |
 | `internal/smtp` | 90 % | 131 |
@@ -646,7 +665,15 @@ packages' tests reach in it):
 | `internal/recenc` | 90 % | 125 |
 | `internal/tlsconf` | 90 % | 913 |
 | `internal/mysqlwire` | 90 % | 429 |
-| `internal/dtlsx` | 90 % | 285 |
+| `internal/kinds/pop3` | 90 % | 641 |
+| `internal/kinds/ldap` | 90 % | 946 |
+| `internal/kinds/ntske` | 90 % | 363 |
+| `internal/signerd` | 90 % | 135 |
+| `internal/asciicast` | 90 % | 113 |
+| `internal/daemon` | 90 % | 281 |
+| `internal/sftp` | 90 % | 148 |
+| `internal/proxytest` | 90 % | 51 |
+| `internal/dtlsx` | 89 % | 285 |
 | `internal/h3` | 89 % | 173 |
 | `internal/masque` | 89 % | 145 |
 | `internal/logging` | 89 % | 975 |
@@ -655,8 +682,9 @@ packages' tests reach in it):
 | `internal/secret` | 89 % | 133 |
 | `internal/acme` | 89 % | 430 |
 | `internal/admin` | 89 % | 1104 |
+| `internal/kinds/dns` | 89 % | 319 |
+| `internal/kinds/telnet` | 89 % | 526 |
 | `internal/sessionrec` | 88 % | 328 |
-| `internal/kinds/dns` | 88 % | 319 |
 | `internal/s7` | 88 % | 422 |
 | `internal/admit` | 88 % | 43 |
 | `internal/mqtt` | 88 % | 313 |
@@ -666,79 +694,62 @@ packages' tests reach in it):
 | `internal/xmlsafe` | 88 % | 240 |
 | `internal/mfa` | 88 % | 624 |
 | `internal/saml/samltest` | 88 % | 131 |
+| `internal/rfb` | 88 % | 991 |
+| `internal/intel` | 88 % | 791 |
+| `internal/kinds/modbus` | 88 % | 1747 |
+| `internal/kinds/mms` | 88 % | 1315 |
+| `internal/packs` | 88 % | 411 |
+| `internal/kinds/opcua` | 88 % | 1507 |
+| `internal/amqpwire` | 88 % | 822 |
+| `internal/filters/yarascan` | 88 % | 139 |
+| `internal/kinds/imap` | 88 % | 906 |
+| `internal/kinds/kkdcp` | 88 % | 616 |
+| `internal/ech` | 88 % | 139 |
+| `internal/kinds/postgres` | 88 % | 989 |
+| `internal/kinds/radius` | 88 % | 765 |
+| `internal/unixsock` | 88 % | 24 |
 | `internal/filters/flow` | 87 % | 203 |
 | `internal/csaf` | 87 % | 653 |
 | `internal/kinds/dhcp` | 87 % | 828 |
 | `internal/kinds/s7` | 87 % | 1447 |
 | `internal/bacnet` | 87 % | 575 |
-| `internal/rfb` | 87 % | 991 |
-| `internal/pgwire` | 86 % | 309 |
+| `internal/pgwire` | 87 % | 309 |
+| `internal/kinds/iec104` | 87 % | 2041 |
+| `internal/transparent` | 87 % | 71 |
+| `internal/saml` | 87 % | 883 |
+| `internal/kinds/tftp` | 87 % | 929 |
+| `internal/kinds/tacacs` | 87 % | 893 |
+| `internal/scim` | 87 % | 605 |
+| `internal/kinds/coap` | 87 % | 906 |
+| `internal/kinds/redis` | 87 % | 1028 |
+| `internal/kinds/snmp` | 87 % | 1908 |
+| `internal/kinds/udp` | 87 % | 254 |
+| `internal/simulate` | 87 % | 812 |
+| `cmd/xproxyctl` | 87 % | 2801 |
+| `internal/kinds/syslog` | 87 % | 344 |
+| `internal/kinds/bacnet` | 87 % | 807 |
+| `internal/kinds/ftp` | 87 % | 1004 |
 | `internal/kinds/mqtt` | 86 % | 856 |
 | `internal/filters/grpcguard` | 86 % | 163 |
 | `internal/mitm` | 86 % | 198 |
-| `internal/intel` | 86 % | 787 |
 | `internal/filters/mfagate` | 86 % | 324 |
-| `internal/kinds/modbus` | 86 % | 1747 |
-| `internal/fakeshell` | 86 % | 275 |
-| `internal/kinds/ssh` | 85 % | 1946 |
-| `internal/kinds/iec104` | 85 % | 2041 |
-| `internal/kinds/ntp` | 85 % | 1357 |
-| `internal/transparent` | 85 % | 73 |
-| `internal/kinds/mms` | 85 % | 1315 |
-| `internal/kinds/pop3` | 85 % | 641 |
-| `internal/packs` | 85 % | 411 |
-| `internal/kinds/opcua` | 85 % | 1507 |
-| `internal/saml` | 84 % | 883 |
-| `internal/kinds/ldap` | 84 % | 946 |
-| `internal/kinds/tftp` | 84 % | 926 |
-| `internal/amqpwire` | 84 % | 822 |
-| `internal/kinds/ntske` | 84 % | 363 |
-| `internal/filters/yarascan` | 84 % | 139 |
-| `internal/kinds/tacacs` | 83 % | 893 |
-| `internal/proxy` | 83 % | 2646 |
-| `internal/mms` | 83 % | 869 |
-| `internal/scim` | 83 % | 605 |
-| `internal/config` | 82 % | 10067 |
-| `internal/listener` | 82 % | 62 |
-| `internal/kinds/coap` | 82 % | 906 |
-| `internal/signerd` | 82 % | 135 |
-| `internal/kinds/imap` | 82 % | 906 |
-| `internal/kinds/kkdcp` | 82 % | 616 |
-| `internal/kinds/redis` | 82 % | 1028 |
-| `internal/kinds/snmp` | 81 % | 1908 |
-| `internal/kerberos` | 81 % | 757 |
-| `internal/ech` | 81 % | 139 |
-| `internal/kinds/postgres` | 81 % | 989 |
-| `internal/yara` | 81 % | 777 |
-| `internal/kinds/tds` | 81 % | 712 |
-| `internal/kinds/dhcp6` | 81 % | 897 |
-| `internal/kinds/radius` | 81 % | 765 |
-| `internal/kinds/amqp` | 80 % | 1060 |
-| `internal/kinds/udp` | 80 % | 254 |
-| `internal/kinds/telnet` | 79 % | 525 |
-| `internal/kinds/mysql` | 79 % | 1101 |
-| `internal/unixsock` | 79 % | 24 |
-| `internal/asciicast` | 79 % | 113 |
-| `internal/replay` | 79 % | 558 |
-| `internal/daemon` | 78 % | 281 |
-| `internal/simulate` | 78 % | 812 |
-| `cmd/xproxyctl` | 78 % | 2791 |
-| `internal/kinds/syslog` | 78 % | 344 |
-| `internal/streamscan` | 78 % | 40 |
-| `internal/telnet` | 78 % | 102 |
-| `internal/kinds/rdp` | 77 % | 1132 |
-| `internal/webauthn` | 77 % | 563 |
-| `internal/kinds/bacnet` | 77 % | 807 |
-| `internal/sftp` | 76 % | 148 |
-| `internal/kinds/vnc` | 76 % | 1025 |
-| `internal/kinds/forward` | 76 % | 1873 |
-| `internal/kinds/ftp` | 75 % | 1002 |
-| `internal/kinds/smtp` | 75 % | 519 |
-| `internal/kinds/tcp` | 74 % | 537 |
-| `internal/proxytest` | 71 % | 51 |
+| `internal/kinds/ssh` | 86 % | 1951 |
+| `internal/kinds/ntp` | 86 % | 1357 |
+| `internal/mms` | 86 % | 869 |
+| `internal/kinds/tds` | 86 % | 712 |
+| `internal/kinds/dhcp6` | 86 % | 896 |
+| `internal/kinds/amqp` | 86 % | 1060 |
+| `internal/kinds/mysql` | 86 % | 1101 |
+| `internal/kinds/rdp` | 86 % | 1132 |
+| `internal/webauthn` | 86 % | 563 |
+| `internal/kinds/vnc` | 86 % | 1026 |
+| `internal/kinds/forward` | 86 % | 1873 |
+| `internal/kinds/tcp` | 86 % | 537 |
+| `internal/proxy` | 85 % | 2646 |
+| `internal/config` | 85 % | 10069 |
 | `internal/sandbox` | the mechanisms run in a confined child that cannot write a coverage file; the child's probes assert the effects instead (excluded from the gate and from the coverage run) | |
 | `cmd/xproxy-fleet` | 92 % from its own tests (not part of the gate) | |
-| **core packages together** | **86.1 % of 112138 statements** | |
+| **core packages together** | **89.0 % of 112163 statements** | |
 
 Not covered: the descriptor handover of socket activation (the matching
 and the refusals are tested; inheriting a real descriptor needs

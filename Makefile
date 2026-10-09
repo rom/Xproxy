@@ -104,7 +104,7 @@ cover:
 # Gate: core packages together at least COVER_MIN percent, no package
 # below COVER_FLOOR. See docs/TESTS.md.
 COVER_MIN   ?= 80
-COVER_FLOOR ?= 60
+COVER_FLOOR ?= 85
 cover-gate: cover
 	$(GO) run ./test/covergate -profile coverage.out -min $(COVER_MIN) -floor $(COVER_FLOOR)
 
