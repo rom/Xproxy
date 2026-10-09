@@ -58,6 +58,8 @@ type fakeServer struct {
 	message []string
 	// fail names the commands answered -ERR.
 	fail map[string]bool
+	// garbage names the commands answered with a line that is not a reply.
+	garbage map[string]bool
 	// sasl answers AUTH with a challenge and then an +OK, which is the
 	// exchange whose lines are credential material.
 	sasl bool
@@ -142,6 +144,12 @@ func (f *fakeServer) serve(c net.Conn) {
 		name := strings.ToUpper(fields[0])
 		if f.fail[name] {
 			_, _ = fmt.Fprintf(c, "-ERR %s refused\r\n", name)
+			continue
+		}
+		if f.garbage[name] {
+			// Not a reply at all: no +OK, no -ERR, nothing this protocol
+			// can read as a status.
+			_, _ = fmt.Fprintf(c, "nonsense from the server\r\n")
 			continue
 		}
 		switch name {

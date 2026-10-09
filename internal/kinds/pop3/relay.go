@@ -313,6 +313,17 @@ func (t *server) reply(c *conn, cmd *wire.Command) error {
 		if r.OK {
 			return t.capa(c, line)
 		}
+	case "DELE":
+		// Counted here, on the reply, because the mailbox changed only if
+		// the server said it did -- and counted here rather than in body(),
+		// where it was: body carries a multi-line reply, and DELE's is one
+		// line (RFC 1939 section 5), so the count could never happen. A
+		// deletion is the one thing a mail client does through this relay
+		// that an operator cannot undo, and `pop3_deletes` read zero however
+		// many of them crossed.
+		if r.OK {
+			t.host.Counters().POP3Deletes.Add(1)
+		}
 	case "USER", "PASS", "APOP":
 		if !r.OK {
 			t.authFailed(c, cmd.Name)
@@ -370,9 +381,6 @@ func (t *server) body(c *conn, cmd *wire.Command) error {
 			t.host.Counters().POP3RetrievedBytes.Add(uint64(carried))
 		}
 		t.logRetrieval(c, cmd, carried)
-	}
-	if cmd.Name == "DELE" {
-		t.host.Counters().POP3Deletes.Add(1)
 	}
 	return c.write([]byte(".\r\n"))
 }
