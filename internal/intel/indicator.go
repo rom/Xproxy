@@ -198,6 +198,14 @@ func trimPort(s string) (host string, ok bool) {
 	if i < 0 {
 		return s, false
 	}
+	if strings.Contains(s[:i], ":") {
+		// An unbracketed IPv6 literal, whose last group can be all digits:
+		// "2001:db8::1" would otherwise lose that group to a port that is
+		// not there and be refused -- correctly, for having no dot -- under
+		// a name the operator never wrote. The check below catches only the
+		// literals whose last group is not numeric.
+		return s, false
+	}
 	rest := s[i+1:]
 	if rest == "" {
 		return s, false
@@ -276,6 +284,11 @@ func urlCandidates(rawURL string, segs int, fn func(string) bool) bool {
 	// /dl by asking for /dl?x=1 would have a bypass one character long.
 	if i := strings.Index(path, "?"); i >= 0 {
 		path = path[:i]
+	}
+	if path == "/" {
+		// The exact key above was the site, so there is nothing else to
+		// offer: walking on would ask the list the same question twice more.
+		return false
 	}
 	// The host with no path, which is how a feed lists a whole site.
 	if fn(host + "/") {
