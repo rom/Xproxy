@@ -1,6 +1,7 @@
 package ssh
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -221,6 +222,27 @@ func newServer(engine proxy.Host, cfg config.Listener, ln net.Listener) (*server
 	return t, nil
 }
 
+// moreKeys says whether anything left in an authorized-keys style file could
+// be a key.
+//
+// ParseAuthorizedKey reports "ssh: no key found" for a remainder of nothing
+// but blank lines and comments, which is how an ordinary key file ends: a
+// trailing newline, or a line saying whose key was removed and when. Walking
+// with len(raw) > 0 took that for an unreadable line and refused to start --
+// over a file OpenSSH accepts, with a message saying no key was found in a
+// file that has one. A line that looks like a key and does not parse is still
+// refused: that is the check at each call site, and it is the one that
+// matters.
+func moreKeys(raw []byte) bool {
+	for _, line := range bytes.Split(raw, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if len(line) > 0 && line[0] != '#' {
+			return true
+		}
+	}
+	return false
+}
+
 // loadCredentials reads the keys the listener accepts and the key it
 // presents onwards.
 func (t *server) loadCredentials() error {
@@ -231,7 +253,7 @@ func (t *server) loadCredentials() error {
 			return fmt.Errorf("ssh authorized_keys: %w", err)
 		}
 		hardware := 0
-		for len(raw) > 0 {
+		for moreKeys(raw) {
 			key, _, options, rest, err := cssh.ParseAuthorizedKey(raw)
 			if err != nil {
 				// One unreadable line must not silently shorten the
@@ -275,7 +297,7 @@ func (t *server) loadCredentials() error {
 		if err != nil {
 			return fmt.Errorf("ssh trusted_user_ca_keys: %w", err)
 		}
-		for len(raw) > 0 {
+		for moreKeys(raw) {
 			key, _, _, rest, err := cssh.ParseAuthorizedKey(raw)
 			if err != nil {
 				return fmt.Errorf("ssh trusted_user_ca_keys: %w", err)
@@ -292,7 +314,7 @@ func (t *server) loadCredentials() error {
 		if err != nil {
 			return fmt.Errorf("ssh revoked_keys: %w", err)
 		}
-		for len(raw) > 0 {
+		for moreKeys(raw) {
 			key, _, _, rest, err := cssh.ParseAuthorizedKey(raw)
 			if err != nil {
 				return fmt.Errorf("ssh revoked_keys: %w", err)
