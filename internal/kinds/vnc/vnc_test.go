@@ -57,6 +57,14 @@ type target struct {
 	// ardDegenerate makes an ARD target send parameters that fix the
 	// shared secret.
 	ardDegenerate bool
+	// cutAfter, when set, makes this target close the connection once
+	// it has written that many octets of an otherwise correct
+	// handshake, which is how a desktop that dies partway through one
+	// is spelled. A negative value closes before anything is written.
+	cutAfter int
+	// resultFails makes the target refuse the gateway at the security
+	// result, which is what a desktop says to a wrong password.
+	resultFails bool
 
 	mu   sync.Mutex
 	got  []byte
@@ -121,6 +129,9 @@ func (tg *target) addr() string { return tg.ln.Addr().String() }
 
 func (tg *target) session(c net.Conn) {
 	defer func() { _ = c.Close() }()
+	if tg.cutAfter != 0 {
+		c = &cutConn{Conn: c, left: tg.cutAfter}
+	}
 	if _, err := c.Write(tg.version.Handshake()); err != nil {
 		return
 	}
@@ -180,7 +191,10 @@ func (tg *target) session(c net.Conn) {
 		}
 	}
 	if rfb.SendsResult(tg.version, chosen) && !skipResult {
-		if _, err := c.Write(rfb.SecurityResult(tg.version, true, "")); err != nil {
+		if _, err := c.Write(rfb.SecurityResult(tg.version, !tg.resultFails, "the desktop says no")); err != nil {
+			return
+		}
+		if tg.resultFails {
 			return
 		}
 	}
@@ -222,6 +236,30 @@ func (tg *target) session(c net.Conn) {
 			return
 		}
 	}
+}
+
+// cutConn writes at most left octets and then closes, so a peer that
+// dies partway through a handshake can be spelled as a byte count
+// rather than as a half-written script.
+type cutConn struct {
+	net.Conn
+	left int
+}
+
+func (c *cutConn) Write(b []byte) (int, error) {
+	if c.left <= 0 {
+		_ = c.Close()
+		return 0, errors.New("cut")
+	}
+	if len(b) > c.left {
+		b = b[:c.left]
+	}
+	n, err := c.Conn.Write(b)
+	c.left -= n
+	if c.left <= 0 {
+		_ = c.Close()
+	}
+	return n, err
 }
 
 // vncAuth runs the DES challenge as a server.
@@ -482,6 +520,31 @@ func (tg *target) waitSeen(want []byte) bool {
 func gateway(t *testing.T, tg *target, extra string) (*proxy.Server, string) {
 	t.Helper()
 	return gatewayFor(t, tg.addr(), extra)
+}
+
+// gatewayWithTop is gateway with lines outside the listener too, for
+// the sections -- bans, for one -- that are the estate's rather than
+// this listener's.
+func gatewayWithTop(t *testing.T, tg *target, extra, top string) (*proxy.Server, string) {
+	t.Helper()
+	yaml := fmt.Sprintf(`
+version: 1
+server:
+  listeners:
+    - name: desktops
+      address: "127.0.0.1:0"
+      kind: vnc
+      vnc:
+        upstream: screens
+%s
+logging: {access: {enabled: false}}
+upstreams:
+  - name: screens
+    endpoints: [{address: %s}]
+%s
+`, extra, tg.addr(), top)
+	s := proxytest.Start(t, yaml)
+	return s, proxytest.Addr(t, s, "desktops")
 }
 
 // gatewayFor is the same with the pool pointed at an address of the
