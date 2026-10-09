@@ -82,9 +82,16 @@ func (t *server) decideEngineering(c *conn, m *wire.Message, ops []Operation) st
 		return ""
 	}
 	a := c.assoc()
-	// This protocol has an identity -- the association's own -- so the work
-	// order can name a person rather than an address.
-	subject := a.Identity()
+	// This protocol has an identity -- the association's own AP-title -- so the
+	// grant can name a person rather than an address.
+	//
+	// The field rather than Identity(): that renders a placeholder for an
+	// association that sent no AP-title, and a placeholder is a label, not a
+	// subject. Keyed on it, a grant filed for one unnamed client would admit
+	// every unnamed client on the listener, and a grant filed for the address
+	// -- the only thing an operator can see about such a client -- would never
+	// match at all. An association with no identity is its address.
+	subject := a.APTitle
 	if subject == "" {
 		subject = c.ip.String()
 	}
