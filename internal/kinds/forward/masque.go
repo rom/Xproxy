@@ -240,7 +240,10 @@ func (f *forwardServer) masqueIP(w http.ResponseWriter, r *http.Request, p *forw
 	}
 	defer func() { _ = dev.Close() }()
 	if target.Target != "*" {
-		if _, reason := f.check(r.Context(), p, ip, user, target.Target, 0, "", nil); reason != "" && reason != "port" {
+		// No port: CONNECT-IP names a target and an IP protocol, not a
+		// service, so the port test is skipped and every other check
+		// applies.
+		if _, reason := f.check(r.Context(), p, ip, user, target.Target, -1, "", nil); reason != "" {
 			f.deny(w, r, ip, user, http.StatusForbidden, reason, start)
 			return
 		}
@@ -354,13 +357,21 @@ type tunnel interface {
 	Allowed(packet []byte) bool
 }
 
+// openTun is the tunnel opener, taken through a variable so the
+// forwarding half of CONNECT-IP can be driven without one: attaching a
+// tun device needs a privilege a test suite does not have, and the
+// half worth testing is the packet path -- which packets are let
+// through, which are spoofing, and what the client is told before it
+// may send any.
+var openTun = openTunnel
+
 // masqueDevice opens the configured tunnel, or nil when there is none.
 func (f *forwardServer) masqueDevice() tunnel {
 	p := f.policy.Load()
 	if p == nil || p.cfg.Masque == nil || p.cfg.Masque.IPDevice == "" {
 		return nil
 	}
-	t, err := openTunnel(p.cfg.Masque.IPDevice, p.cfg.Masque.IPAssign, p.cfg.Masque.IPRoutes)
+	t, err := openTun(p.cfg.Masque.IPDevice, p.cfg.Masque.IPAssign, p.cfg.Masque.IPRoutes)
 	if err != nil {
 		f.host.Logs().Error.Warn("connect-ip tunnel unavailable", "listener", f.name,
 			"device", p.cfg.Masque.IPDevice, "err", err.Error())

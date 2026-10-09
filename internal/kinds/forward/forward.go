@@ -273,7 +273,14 @@ func (f *forwardServer) shadowed(reason, dest string) bool {
 // reqURL are for the imported threat lists at the end; user is for the estate's
 // authorisation policy, which is the one question here that is about a person.
 func (f *forwardServer) check(ctx context.Context, p *forwardPolicy, client netip.Addr, user, host string, port int, reqURL string, rf *requestFacts) ([]netip.Addr, string) {
-	if !p.ports[port] && !f.shadowed("port", net.JoinHostPort(host, strconv.Itoa(port))) {
+	// A negative port means the protocol has no port to check: that is
+	// CONNECT-IP, which carries whole packets to a target rather than a
+	// connection to a service. The test is skipped rather than failed,
+	// because failing it here would return before every check below it
+	// -- which is what this did, so a CONNECT-IP target reached the
+	// device without being looked at by the deny list, the allow list,
+	// the egress rules or the imported lists.
+	if port >= 0 && !p.ports[port] && !f.shadowed("port", net.JoinHostPort(host, strconv.Itoa(port))) {
 		return nil, "port"
 	}
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
