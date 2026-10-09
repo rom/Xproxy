@@ -58,6 +58,15 @@ func (t *server) decideEngineering(ip netip.Addr, op wire.Op, path wire.Path) st
 				t.host.Shadow().Record("tftp", t.cfg.Name, reason, "engineering", e.String())
 			},
 			Refused: func(e engineering.Operation, reason string) {
+				// Counted here, as every other refusal on this kind is.
+				// deny writes the record and feeds the ban ladder but
+				// counts nothing -- every one of its other callers bumps
+				// these two beside it -- and a refused firmware write that
+				// no counter sees is the most consequential refusal this
+				// relay makes, invisible to every dashboard and alert.
+				c := t.host.Counters()
+				c.Refuse("tftp", reason)
+				c.TFTPDenied.Add(1)
 				t.deny(ip, reason, e.String())
 			},
 		})
