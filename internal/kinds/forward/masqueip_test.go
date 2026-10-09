@@ -239,9 +239,21 @@ func TestACONNECTIPSessionCannotSpoofItsSourceOrItsDestination(t *testing.T) {
 	}
 	_ = pw.Close()
 
+	// Wait for all five capsules to be accounted for -- the one that
+	// was allowed and the four that were refused -- not merely for the
+	// first packet to land. The allowed packet is the one sent first,
+	// so waiting on the device alone let the test read the counters
+	// while the session was still working through the rest, and under
+	// the load of the full suite it read three refusals of four.
 	deadline := time.Now().Add(10 * time.Second)
-	for len(dev.sent()) == 0 && time.Now().Before(deadline) {
+	for time.Now().Before(deadline) {
+		if len(dev.sent()) > 0 && s.Stats().MasqueDropped >= 4 {
+			break
+		}
 		time.Sleep(5 * time.Millisecond)
+	}
+	if n := s.Stats().MasqueDropped; n < 4 {
+		t.Errorf("masque_dropped %d, want the four that were refused", n)
 	}
 	got := dev.sent()
 	if len(got) != 1 {
@@ -249,9 +261,6 @@ func TestACONNECTIPSessionCannotSpoofItsSourceOrItsDestination(t *testing.T) {
 	}
 	if string(got[0][20:]) != "ok" {
 		t.Errorf("the packet that reached the device was %q", got[0][20:])
-	}
-	if n := s.Stats().MasqueDropped; n < 4 {
-		t.Errorf("masque_dropped %d, want the four that were refused", n)
 	}
 }
 
