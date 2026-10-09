@@ -488,7 +488,7 @@ func (r *rule) matches(req request, now time.Time) bool {
 	if len(r.vendor) > 0 && !matchAny(r.vendor, vendorClass(in)) {
 		return false
 	}
-	if len(r.user) > 0 && !matchAny(r.user, optString(in, wire.OptionUserClass)) {
+	if len(r.user) > 0 && !matchAny(r.user, userClass(in)) {
 		return false
 	}
 	if !r.sched.InForce(now) {
@@ -832,18 +832,19 @@ func vendorClass(m *wire.Message) string {
 	return printable(v[4:])
 }
 
-// optString is an option read as text, for the ones that carry some.
-func optString(m *wire.Message, code uint16) string {
-	v, ok := m.Get(code)
+// userClass is the user class option read as text.
+//
+// RFC 8415 s21.15 makes it a sequence of length-prefixed strings. A rule
+// matches the first, which is what every client that sends one sends; a
+// length that runs off the end of the option is not read as one, and the
+// whole value is rendered instead.
+func userClass(m *wire.Message) string {
+	v, ok := m.Get(wire.OptionUserClass)
 	if !ok {
 		return ""
 	}
-	if code == wire.OptionUserClass && len(v) >= 2 {
-		// RFC 8415 s21.15: a user class option is a sequence of
-		// length-prefixed strings. A rule matches the first, which is what
-		// every client that sends one sends.
-		n := int(v[0])<<8 | int(v[1])
-		if len(v) >= 2+n {
+	if len(v) >= 2 {
+		if n := int(v[0])<<8 | int(v[1]); len(v) >= 2+n {
 			return printable(v[2 : 2+n])
 		}
 	}

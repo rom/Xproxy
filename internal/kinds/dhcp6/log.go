@@ -207,7 +207,7 @@ func (s *server) observeRequest(m *wire.Message, from netip.Addr) {
 	o := assets.Observation{
 		Listener: s.cfg.Name, Proto: "dhcp6",
 		VendorClass: vendorClass(in),
-		UserClass:   optString(in, wire.OptionUserClass),
+		UserClass:   userClass(in),
 	}
 	if d, ok := m.ClientDUID(); ok {
 		if mac := d.HardwareAddr(); mac != "" {
