@@ -418,9 +418,14 @@ func (t *server) handle(client net.Conn) {
 	// close. Closing the client's socket is what ends it -- both pumps
 	// are reading it -- and the kind closes the target's leg in its own
 	// deferred work.
+	// The socket is taken by value for this closure and for the session
+	// bound below: client is replaced by the TLS server and the capture
+	// tap, and se.client again when rsa-aes-ne leaves its channel, so a
+	// closure reading either would be racing the session goroutine.
+	sock := client
 	se.live = s.Sessions().Register(sessions.Info{
 		Kind: "vnc", Listener: t.cfg.Name, Client: client.RemoteAddr().String(),
-	}, func() { _ = client.Close() })
+	}, func() { _ = sock.Close() })
 	defer se.live.Done()
 	se.tap.Name(se.live.ID)
 	// Only tls_mode: wrap makes the socket itself TLS. In the default
@@ -440,7 +445,7 @@ func (t *server) handle(client net.Conn) {
 	se.client = client
 	defer func() { _ = se.client.Close() }()
 	if t.v.SessionTimeout > 0 {
-		timer := time.AfterFunc(t.v.SessionTimeout.D(), func() { _ = se.client.Close() })
+		timer := time.AfterFunc(t.v.SessionTimeout.D(), func() { _ = sock.Close() })
 		defer timer.Stop()
 	}
 	// The handshake has a deadline of its own: a peer that never

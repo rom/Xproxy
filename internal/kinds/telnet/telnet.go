@@ -392,9 +392,15 @@ func (t *server) handle(client net.Conn) {
 	// session an operator wants to see and be able to close. Closing the
 	// client's socket is what ends it; the kind closes the target's leg in
 	// its own deferred work.
+	//
+	// The socket is taken by value: client itself is replaced below, by
+	// the TLS server and then by the capture tap, and an operator
+	// killing the session meanwhile would have this closure racing the
+	// session goroutine for the variable.
+	sock := client
 	se.live = s.Sessions().Register(sessions.Info{
 		Kind: "telnet", Listener: t.cfg.Name, Client: client.RemoteAddr().String(),
-	}, func() { _ = client.Close() })
+	}, func() { _ = sock.Close() })
 	defer se.live.Done()
 	se.tap.Name(se.live.ID)
 	if t.tlsCfg != nil {
