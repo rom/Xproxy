@@ -1,6 +1,7 @@
 package snmp
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -306,4 +307,41 @@ upstreams:
 	awaitCounter(t, s2, func(sn proxy.Snapshot) bool {
 		return sn.Refusals["snmp"]["read_only"] >= 1
 	}, "the refusal with the alerts off")
+}
+
+// A shutdown whose grace is already spent closes the streams it was not given
+// time for. On this transport that matters more than on datagrams: a poller
+// holds its connection open between polls, so a gateway that waited for the
+// sessions to end on their own would wait for the next restart of every
+// monitoring system in the estate.
+func TestAShutdownClosesTheStreamsItWasNotGivenTimeFor(t *testing.T) {
+	a := startAgent(t, &agent{})
+	s, addr := snmpServer(t, streamHead+"        default_action: allow", a.tcpAddr())
+
+	c, rd := dialStream(t, addr)
+	if _, err := c.Write(v2c("public", get(4200, 1, 3, 6, 1, 2, 1, 1, 1, 0))); err != nil {
+		t.Fatal(err)
+	}
+	_ = c.SetReadDeadline(time.Now().Add(10 * time.Second))
+	if _, err := rd.next(); err != nil {
+		t.Fatalf("the session never got an answer: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already past
+	done := make(chan struct{})
+	go func() {
+		_ = s.Shutdown(ctx)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the shutdown waited on the open stream")
+	}
+	// And the stream is gone, which is what the closing was for.
+	_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := rd.next(); err == nil {
+		t.Error("the stream outlived the shutdown")
+	}
 }
