@@ -5,7 +5,7 @@ go 1.26.0
 require (
 	github.com/andybalholm/brotli v1.2.4
 	github.com/corazawaf/coraza-coreruleset/v4 v4.25.0
-	github.com/corazawaf/coraza/v3 v3.7.0
+	github.com/corazawaf/coraza/v3 v3.8.1
 	github.com/klauspost/compress v1.20.0
 	github.com/pion/dtls/v3 v3.1.10
 	github.com/quic-go/quic-go v0.61.0
@@ -20,10 +20,10 @@ require (
 )
 
 require (
-	github.com/corazawaf/libinjection-go v0.3.2 // indirect
+	github.com/corazawaf/libinjection-go v0.3.3 // indirect
 	github.com/dunglas/httpsfv v1.1.0 // indirect
 	github.com/goccy/go-json v0.10.5 // indirect
-	github.com/goccy/go-yaml v1.18.0 // indirect
+	github.com/goccy/go-yaml v1.19.2 // indirect
 	github.com/gotnospirit/makeplural v0.0.0-20180622080156-a5f48d94d976 // indirect
 	github.com/gotnospirit/messageformat v0.0.0-20221001023931-dfe49f1eb092 // indirect
 	github.com/kaptinlin/go-i18n v0.1.4 // indirect
